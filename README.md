@@ -58,7 +58,14 @@ npm start
 ### CachyOS / Arch quick start
 
 CachyOS is Arch-based, so everything installs from the official repos with
-`pacman`. From a fresh setup:
+`pacman`.
+
+#### Recommended: install as a real desktop application
+
+This builds a native package and installs it system-wide. Afterwards
+**WebVideoDownloader appears in your application menu** — you click its icon to
+open it (or type `webvideodownloader` from anywhere). No `npm`, no `cd`, no
+terminal command every time.
 
 ```bash
 # 1. Install prerequisites (Node.js ships npm; git to clone the repo)
@@ -71,35 +78,54 @@ cd DownloaderWeb
 # 3. Install dependencies (downloads the Linux ffmpeg/ffprobe binaries)
 npm install
 
-# 4. Run it
+# 4. Build the native pacman package
+npm run build:linux            # produces dist/*.pkg.tar.zst
+
+# 5. Install it (registers the app + menu icon)
+sudo pacman -U dist/WebVideoDownloader-*.pkg.tar.zst
+```
+
+Now open it from your app launcher like any other program. To update later,
+`git pull`, rebuild (steps 3–4), and reinstall (step 5). To uninstall:
+`sudo pacman -R webvideodownloader`.
+
+> Prefer a portable file instead? `npm run build:linux` also produces an
+> **AppImage** in `dist/`. Make it executable and double-click it — no install
+> needed: `chmod +x dist/WebVideoDownloader-*.AppImage`. (To get a menu entry
+> for an AppImage, use a tool like Gear Lever / AppImageLauncher.)
+
+#### Alternative: run from source (developer mode)
+
+Use this only if you're hacking on the code. It launches the app but you must
+run the command from the project folder each time — it does **not** create a
+menu icon:
+
+```bash
+npm install
 npm start
 ```
 
-If the app window fails to open on a hardened/CachyOS kernel (Chromium sandbox),
-either enable unprivileged user namespaces or launch without the sandbox:
+#### Troubleshooting the Chromium sandbox
+
+If the app fails to open on a hardened/CachyOS kernel, either enable
+unprivileged user namespaces or launch without the sandbox:
 
 ```bash
 # Option A: enable unprivileged user namespaces (persist with a sysctl.d file)
 sudo sysctl kernel.unprivileged_userns_clone=1
 
-# Option B: run without the sandbox
+# Option B (dev mode only): run without the sandbox
 npm start -- --no-sandbox
 ```
 
-Optional — install the Mullvad CLI so VPN monitoring can use it (the app also
-works via an HTTP check if the CLI is absent):
+#### Optional: Mullvad CLI
+
+Install the Mullvad CLI so VPN monitoring can use it (the app also works via an
+HTTP check if the CLI is absent):
 
 ```bash
 sudo pacman -S mullvad-vpn   # or the AUR/official package
 mullvad status               # should print Connected / Disconnected
-```
-
-Prefer a native package instead of running from source? Build the pacman
-package and install it (see [Building installers](#building-installers)):
-
-```bash
-npm run build:linux                       # produces dist/*.pkg.tar.zst
-sudo pacman -U dist/WebVideoDownloader-*.pkg.tar.zst
 ```
 
 ### Linux (CachyOS / Arch and others)
