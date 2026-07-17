@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;" />
+    <title>WebVideoDownloader</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top tab bar -->
+      <header class="topbar">
+        <div class="brand">WebVideoDownloader</div>
+        <nav class="tabs">
+          <button class="tab active" data-page="browser">Browser</button>
+          <button class="tab" data-page="queue">
+            Download Queue <span id="tab-queue-count" class="tab-badge hidden">0</span>
+          </button>
+          <button class="tab" data-page="schedule">Scheduled</button>
+          <button class="tab" data-page="log">Activity Log</button>
+        </nav>
+        <div id="vpn-badge" class="vpn-badge unknown" title="Mullvad VPN status">
+          <span class="dot"></span><span id="vpn-text">Mullvad: checking&hellip;</span>
+        </div>
+      </header>
+
+      <main class="pages">
+        <!-- ===== Page: Browser ===== -->
+        <section class="page active" id="page-browser">
+          <div class="browser-toolbar">
+            <div class="nav-group">
+              <button id="btn-back" class="icon-btn" title="Back">&#8592;</button>
+              <button id="btn-forward" class="icon-btn" title="Forward">&#8594;</button>
+              <button id="btn-reload" class="icon-btn" title="Reload">&#8635;</button>
+            </div>
+            <form id="address-form" class="address-form">
+              <input id="address" class="address" type="text" spellcheck="false"
+                     placeholder="Enter a URL and press Enter" />
+            </form>
+            <button id="btn-bulk" class="primary-btn">Bulk Download</button>
+            <button id="btn-toggle-detected" class="icon-btn" title="Toggle detected videos">&#9707;</button>
+          </div>
+
+          <div class="browser-body">
+            <main class="browser">
+              <webview id="view" partition="persist:web" src="https://www.google.com" allowpopups></webview>
+              <div id="vpn-overlay" class="vpn-overlay">
+                <div class="vpn-overlay-card">
+                  <div class="vpn-shield">&#128737;</div>
+                  <h2>Mullvad VPN is offline</h2>
+                  <p>Browsing and downloads are disabled until Mullvad is connected. Turn on
+                     your Mullvad VPN to continue.</p>
+                  <div class="spinner"></div>
+                  <p class="small" id="vpn-overlay-status">Waiting for Mullvad to connect&hellip;</p>
+                </div>
+              </div>
+            </main>
+
+            <aside class="detected-panel" id="detected-panel">
+              <div class="panel-head">
+                <h2>Detected videos</h2>
+                <div class="queue-controls">
+                  <button id="btn-bulk-detected" class="ghost-btn">Bulk download</button>
+                  <button id="btn-clear-detected" class="ghost-btn">Clear</button>
+                </div>
+              </div>
+              <ul id="detected-list" class="list">
+                <li class="empty">Navigate to a video page; detected streams appear here.</li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
+        <!-- ===== Page: Download Queue ===== -->
+        <section class="page" id="page-queue">
+          <div class="page-head">
+            <h1>Download Queue</h1>
+            <div class="queue-controls">
+              <button id="btn-pause" class="ghost-btn">Pause</button>
+              <button id="btn-resume" class="ghost-btn">Resume</button>
+              <button id="btn-stop" class="ghost-btn danger">Stop</button>
+              <button id="btn-clear-queue" class="ghost-btn danger">Clear all</button>
+            </div>
+          </div>
+          <ul id="queue-list" class="list big">
+            <li class="empty">No downloads yet.</li>
+          </ul>
+        </section>
+
+        <!-- ===== Page: Scheduled series ===== -->
+        <section class="page" id="page-schedule">
+          <div class="page-head">
+            <h1>Scheduled Series</h1>
+            <button id="btn-check-schedules" class="ghost-btn">Check now</button>
+          </div>
+          <ul id="schedule-list" class="list big">
+            <li class="empty">Use &ldquo;Schedule&rdquo; on a series to auto-grab new episodes each week.</li>
+          </ul>
+        </section>
+
+        <!-- ===== Page: Activity log ===== -->
+        <section class="page" id="page-log">
+          <div class="page-head">
+            <h1>Activity Log</h1>
+            <button id="btn-clear-log" class="ghost-btn">Clear</button>
+          </div>
+          <div id="log" class="log big"></div>
+        </section>
+      </main>
+
+      <!-- Banner for stopped batch / notices -->
+      <div id="banner" class="banner hidden"></div>
+    </div>
+
+    <!-- Bulk-this-series modal (shared by both Bulk Download buttons) -->
+    <div id="series-modal" class="modal hidden">
+      <div class="modal-card small">
+        <div class="modal-head">
+          <h2>Bulk download series</h2>
+          <button id="series-close" class="icon-btn">&times;</button>
+        </div>
+        <p class="hint">All episodes are detected and downloaded automatically (DUB,
+          best quality). Use <b>Schedule</b> to also auto-grab new episodes each week.</p>
+        <div class="field">
+          <label>Series name (auto-generated &mdash; edit if needed)</label>
+          <input id="series-name" type="text" placeholder="Series name" />
+        </div>
+        <div class="field two">
+          <div>
+            <label>Season (optional)</label>
+            <input id="series-season" type="text" placeholder="auto" />
+          </div>
+          <div>
+            <label>Audio</label>
+            <select id="series-mode">
+              <option value="dub">Dub (default)</option>
+              <option value="sub">Sub (embed subtitles)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label>Download folder</label>
+          <div class="folder-row">
+            <input id="series-folder" type="text" readonly placeholder="Choose a folder&hellip;" />
+            <button id="series-choose-folder" class="ghost-btn">Browse&hellip;</button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="series-cancel" class="ghost-btn">Cancel</button>
+          <button id="series-schedule" class="ghost-btn">Schedule weekly</button>
+          <button id="series-go" class="primary-btn">Download all episodes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Single-download naming modal -->
+    <div id="name-modal" class="modal hidden">
+      <div class="modal-card small">
+        <div class="modal-head">
+          <h2>Download video</h2>
+          <button id="name-close" class="icon-btn">&times;</button>
+        </div>
+        <div class="field">
+          <label>File name (series / title)</label>
+          <input id="name-series" type="text" placeholder="e.g. Golden Kamuy" />
+        </div>
+        <div class="field two">
+          <div>
+            <label>Season (optional)</label>
+            <input id="name-season" type="text" placeholder="e.g. 3" />
+          </div>
+          <div>
+            <label>Episode (optional)</label>
+            <input id="name-episode" type="text" placeholder="e.g. 1" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Download folder</label>
+          <div class="folder-row">
+            <input id="name-folder" type="text" readonly placeholder="Choose a folder&hellip;" />
+            <button id="name-choose-folder" class="ghost-btn">Browse&hellip;</button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="name-cancel" class="ghost-btn">Cancel</button>
+          <button id="name-go" class="primary-btn">Download</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
