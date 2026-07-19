@@ -13,10 +13,30 @@ class AbortError extends Error {
   }
 }
 
+// On Linux/macOS a bundled static binary is useless without the executable bit.
+// ffprobe-static in particular often ships without it, so downloads fail with
+// EACCES ("Permission denied") even though the identical setup works on Windows
+// (where the exec bit is irrelevant). Best-effort chmod fixes writable installs
+// (npm start / AppImage); read-only installs (pacman) rely on the postinstall
+// chmod instead, so a failure here is non-fatal.
+function ensureExecutable(p) {
+  if (!p || process.platform === 'win32') return p;
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+  } catch (e) {
+    try {
+      fs.chmodSync(p, 0o755);
+    } catch (e2) {
+      // read-only location or not owner; leave as-is and let spawn surface it
+    }
+  }
+  return p;
+}
+
 function ffmpegPath() {
   let p = require('ffmpeg-static');
   if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
-  return p;
+  return ensureExecutable(p);
 }
 
 function headerLines(headers, ua) {
@@ -170,13 +190,31 @@ function downloadHls(detection, partPath, { signal, onProgress } = {}) {
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    proc.on('error', (err) => reject(err));
+    proc.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
     proc.on('close', (code) => {
       if (aborted) return reject(new AbortError());
       if (code === 0) return resolve({ bytes: safeSize(partPath) });
       reject(new Error(`ffmpeg exited with code ${code}: ${stderrTail.split('\n').slice(-3).join(' ')}`));
     });
   });
+}
+
+// Turns cryptic spawn errors for the bundled binaries into an actionable
+// message (these are commonly mistaken for "video is protected/DRM" errors).
+function describeBinaryError(err, binPath) {
+  if (err && err.code === 'EACCES') {
+    return new Error(
+      `Cannot run bundled ffmpeg (permission denied): ${binPath}. ` +
+        'The binary is missing its executable bit - run "chmod +x" on it or reinstall dependencies.'
+    );
+  }
+  if (err && err.code === 'ENOENT') {
+    return new Error(
+      `Bundled ffmpeg not found at: ${binPath}. ` +
+        'Reinstall dependencies on this machine (do not copy node_modules across OSes).'
+    );
+  }
+  return err;
 }
 
 function safeSize(p) {

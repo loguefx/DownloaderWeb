@@ -4,11 +4,31 @@ const fs = require('fs');
 const { execFile } = require('child_process');
 const config = require('./config');
 
+// On Linux/macOS ffprobe-static frequently ships without the executable bit,
+// so verification fails with EACCES ("Permission denied") on every download -
+// even though the identical setup works on Windows (where the exec bit is
+// irrelevant). Best-effort chmod fixes writable installs (npm start / AppImage);
+// read-only installs (pacman) rely on the postinstall chmod, so failing here is
+// non-fatal.
+function ensureExecutable(p) {
+  if (!p || process.platform === 'win32') return p;
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+  } catch (e) {
+    try {
+      fs.chmodSync(p, 0o755);
+    } catch (e2) {
+      // read-only location or not owner; leave as-is and let execFile surface it
+    }
+  }
+  return p;
+}
+
 // Resolve the bundled ffprobe binary (works in dev and packaged/asar-unpacked).
 function ffprobePath() {
   let p = require('ffprobe-static').path;
   if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
-  return p;
+  return ensureExecutable(p);
 }
 
 // Validates a finished media file: must exist, exceed a minimum size, and have
@@ -35,7 +55,7 @@ function verifyFile(filePath) {
       ],
       { timeout: 30000 },
       (err, stdout) => {
-        if (err) return resolve({ ok: false, reason: 'ffprobe failed: ' + err.message });
+        if (err) return resolve({ ok: false, reason: describeProbeError(err) });
         try {
           const info = JSON.parse(stdout || '{}');
           const duration = parseFloat(info.format && info.format.duration);
@@ -49,6 +69,18 @@ function verifyFile(filePath) {
       }
     );
   });
+}
+
+// Cryptic ffprobe spawn errors (esp. EACCES) are easily mistaken for the video
+// being "protected"; make the real cause explicit instead.
+function describeProbeError(err) {
+  if (err && err.code === 'EACCES') {
+    return `Cannot run bundled ffprobe (permission denied): ${ffprobePath()}. The binary is missing its executable bit - run "chmod +x" on it or reinstall dependencies.`;
+  }
+  if (err && err.code === 'ENOENT') {
+    return `Bundled ffprobe not found at: ${ffprobePath()}. Reinstall dependencies on this machine (do not copy node_modules across OSes).`;
+  }
+  return 'ffprobe failed: ' + err.message;
 }
 
 module.exports = { verifyFile, ffprobePath };

@@ -118,6 +118,35 @@ sudo sysctl kernel.unprivileged_userns_clone=1
 npm start -- --no-sandbox
 ```
 
+#### Troubleshooting: downloads fail as "protected" / permission denied (Linux)
+
+If every download fails on Linux with something that looks like the video being
+"protected" (localized desktops often translate this from *"Permission denied"*),
+the cause is almost always the bundled `ffmpeg`/`ffprobe` binaries missing their
+Unix **executable bit** — Linux then refuses to run them (`EACCES`), while the
+identical setup works on Windows (which ignores the exec bit). It is **not** DRM.
+
+This is now handled automatically:
+
+- `npm install` runs a `postinstall` step that `chmod +x`'s both binaries.
+- The app also best-effort `chmod`s them at runtime for writable installs.
+- The packaged **pacman**/**AppImage** build runs an `afterPack` hook so the
+  binaries ship executable even in read-only install locations.
+
+If you hit it on an older checkout, just update and reinstall:
+
+```bash
+git pull
+npm install            # re-runs the chmod postinstall
+```
+
+Or fix an existing install manually:
+
+```bash
+chmod +x node_modules/ffmpeg-static/ffmpeg
+chmod +x node_modules/ffprobe-static/bin/linux/x64/ffprobe
+```
+
 #### Optional: Mullvad CLI
 
 Install the Mullvad CLI so VPN monitoring can use it (the app also works via an

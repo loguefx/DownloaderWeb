@@ -7,6 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "postinstall": "node scripts/postinstall.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
@@ -30,6 +31,7 @@
       "node_modules/ffmpeg-static/**",
       "node_modules/ffprobe-static/**"
     ],
+    "afterPack": "scripts/after-pack.js",
     "win": {
       "target": "nsis"
     },
