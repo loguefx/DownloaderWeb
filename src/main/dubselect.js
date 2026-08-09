@@ -21,20 +21,25 @@ function dubVariantUrl(url, marker) {
   return url.replace(re, (m, slug, ep) => `/${slug}${marker}/${ep}/`);
 }
 
-// Verifies a constructed stream URL actually exists (HTTP 200 + looks like an
-// HLS playlist) before we commit to downloading it as the dub. Uses the original
-// request headers (referer/cookie/etc.) so the CDN doesn't 403 us.
-function urlIsPlayable(url, headers) {
+// Verifies a *constructed* stream URL (e.g. slug + "-dub") actually exists
+// before we commit to it. Uses the original request headers so the CDN doesn't
+// 403 us. Hard-capped so a stalled CDN can never leave an episode stuck in
+// "resolving". Accepts HLS playlists and direct MP4/DASH (HTTP 2xx).
+function urlIsPlayable(url, headers, redirectsLeft = 3) {
   return new Promise((resolve) => {
     let done = false;
     const fin = (v) => {
       if (done) return;
       done = true;
+      clearTimeout(hardTimer);
       resolve(v);
     };
+    const hardTimer = setTimeout(() => fin(false), 8000);
     let mod;
+    let parsed;
     try {
-      mod = new URL(url).protocol === 'https:' ? https : http;
+      parsed = new URL(url);
+      mod = parsed.protocol === 'https:' ? https : http;
     } catch (e) {
       return fin(false);
     }
@@ -44,10 +49,20 @@ function urlIsPlayable(url, headers) {
     }
     let req;
     try {
-      req = mod.get(url, { headers: h, timeout: 8000 }, (res) => {
-        if (res.statusCode !== 200) {
+      req = mod.get(url, { headers: h, timeout: 7000 }, (res) => {
+        const code = res.statusCode || 0;
+        if (code >= 300 && code < 400 && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          return urlIsPlayable(new URL(res.headers.location, url).toString(), headers, redirectsLeft - 1).then(fin);
+        }
+        if (code < 200 || code >= 300) {
           res.resume();
           return fin(false);
+        }
+        // Direct media files: a live 2xx is enough (no playlist body to inspect).
+        if (/\.(mp4|mpd)(\?|$)/i.test(url) || /video\//i.test(res.headers['content-type'] || '')) {
+          res.resume();
+          return fin(true);
         }
         let buf = '';
         res.on('data', (c) => {
@@ -58,10 +73,12 @@ function urlIsPlayable(url, headers) {
             } catch (e) {
               /* ignore */
             }
-            fin(/#EXTM3U/i.test(buf));
+            fin(/#EXTM3U/i.test(buf) || /#EXT-X-/i.test(buf) || /<MPD[\s>]/i.test(buf));
           }
         });
-        res.on('end', () => fin(/#EXTM3U/i.test(buf)));
+        res.on('end', () =>
+          fin(/#EXTM3U/i.test(buf) || /#EXT-X-/i.test(buf) || /<MPD[\s>]/i.test(buf) || buf.length > 0)
+        );
       });
     } catch (e) {
       return fin(false);
@@ -259,6 +276,17 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
 
   await delay(dub.pageSettleMs);
 
+  // Optional per-site prep (e.g. FilmeHD clicks the in-page episode button).
+  if (typeof profile.beforeResolve === 'function') {
+    const epMatch = String(url || '').match(/[#&?]ep[=-]?(\d+)/i);
+    const episode = epMatch ? parseInt(epMatch[1], 10) : null;
+    try {
+      await profile.beforeResolve(wc, { episode, mode, url, onLog });
+    } catch (e) {
+      onLog(`Site beforeResolve error: ${e.message || e}`);
+    }
+  }
+
   const wantSub = mode === 'sub';
   const MODE = wantSub ? 'SUB' : 'DUB';
   const OTHER = wantSub ? 'DUB' : 'SUB';
@@ -272,6 +300,8 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     return isDub && !isSub ? 'dub' : isSub && !isDub ? 'sub' : null;
   };
 
+  let dubUnplayable = false;
+
   // For sites that tag audio in the path (e.g. ".../show-dub/3/..."): derive the
   // dub URL from a bare-slug stream and verify it over HTTP. Deterministic - it
   // can never download the sub. Only meaningful for same-host providers (Vidplay);
@@ -281,37 +311,36 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     const dubUrl = dubVariantUrl(any.url, dub.dubPathMarker);
     if (!dubUrl || dubUrl === any.url) return null;
     onLog(`Probing DUB variant: ${dubUrl}`);
-    if (!(await urlIsPlayable(dubUrl, any.headers))) return null;
+    if (!(await urlIsPlayable(dubUrl, any.headers))) {
+      // Constructed -dub URL isn't live - often means still encoding.
+      dubUnplayable = true;
+      return null;
+    }
     onLog('Confirmed DUB variant exists.');
     return { url: dubUrl, type: any.type || 'hls', headers: any.headers, webContentsId: id, ts: Date.now() };
   };
 
-  let dubUnplayable = false;
-
   // Decides the DUB detection to use from a stream a server produced:
   //   - explicit "-sub" URL -> never dub (reject)
-  //   - explicit "-dub" URL  -> use it if it's actually live (else: still encoding)
+  //   - explicit "-dub" URL  -> trust it (sniffer only records 2xx now)
   //   - unmarked URL         -> prefer a verified "-dub" variant (same-host
   //                             providers like Vidplay); else, if the button came
   //                             from the DUB row, TRUST the row and use the stream
-  //                             as-is (this is what makes the tokenised BYFMS/DGHG
-  //                             CDNs work - they carry no "-dub" marker at all).
+  //                             as-is (tokenised BYFMS/DGHG/playmogo CDNs carry
+  //                             no "-dub" marker and usually block Node probes).
+  // IMPORTANT: never re-probe sniffed streams with Node http. Those CDNs often
+  // 403/challenge outside Chromium, which used to reject every server, burn the
+  // full sourceWaitMs on each, and leave the UI stuck on "resolving".
   const resolveDub = async (s, fromRow) => {
     if (!s) return null;
     const m = urlMode(s.url);
     if (m === 'sub') return null;
-    if (m === 'dub') {
-      if (await urlIsPlayable(s.url, s.headers)) return s;
-      dubUnplayable = true;
-      return null;
-    }
+    if (m === 'dub') return s;
     const variant = await tryDubVariant(s);
     if (variant) return variant;
     if (fromRow === 'DUB') {
       onLog(`Stream has no -dub/-sub marker; trusting DUB row for ${s.url}`);
-      if (await urlIsPlayable(s.url, s.headers)) return s;
-      dubUnplayable = true;
-      return null;
+      return s;
     }
     return null;
   };
@@ -338,31 +367,58 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   }
 
   // 1) Scan for server buttons and try them left-to-right.
-  const scan = await wc.executeJavaScript(scanScript(dub), true).catch(() => null);
+  const logScan = (scan) => {
+    const fmt = (arr) => (arr && arr.length ? arr.map((s) => `"${s.label || s.index}"`).join(', ') : 'none');
+    onLog(
+      `Scan: DUB toggle=${scan.hasDub ? 'yes' : 'NO'}, SUB toggle=${scan.hasSub ? 'yes' : 'NO'}; ` +
+        `DUB servers=[${fmt(scan.dubSources)}]; SUB servers=[${fmt(scan.subSources)}]`
+    );
+  };
+
+  let scan = await wc.executeJavaScript(scanScript(dub), true).catch(() => null);
   if (!scan) return { status: 'failed', reason: 'Could not scan the page (did it load?)' };
 
   // Diagnostics: show exactly how the page's servers were split into rows. If the
   // rows are swapped/empty this is where a DUB request ends up grabbing a SUB.
-  const fmt = (arr) => (arr && arr.length ? arr.map((s) => `"${s.label || s.index}"`).join(', ') : 'none');
-  onLog(
-    `Scan: DUB toggle=${scan.hasDub ? 'yes' : 'NO'}, SUB toggle=${scan.hasSub ? 'yes' : 'NO'}; ` +
-      `DUB servers=[${fmt(scan.dubSources)}]; SUB servers=[${fmt(scan.subSources)}]`
-  );
+  logScan(scan);
+
+  // Cold first loads (especially episode 1 under bulk concurrency) often paint
+  // the player before the SUB/DUB server row hydrates. Re-scan once so we don't
+  // misread an empty row as "dub not released".
+  if (!(scan.dubSources || []).length && !(scan.subSources || []).length) {
+    onLog('No server buttons yet; waiting for the page to finish rendering...');
+    await delay(Math.max(1500, dub.pageSettleMs));
+    const again = await wc.executeJavaScript(scanScript(dub), true).catch(() => null);
+    if (again) {
+      scan = again;
+      logScan(scan);
+    }
+  }
 
   const reqAttr = wantSub ? 'sub' : 'dub';
   const otherAttr = wantSub ? 'dub' : 'sub';
   const primary = (wantSub ? scan.subSources : scan.dubSources).map((s) => ({ ...s, attr: reqAttr, from: MODE }));
   const fallback = (wantSub ? scan.dubSources : scan.subSources).map((s) => ({ ...s, attr: otherAttr, from: OTHER }));
-  const tryList = primary.concat(fallback);
+  // When the requested-audio row has servers, only try those. Falling through
+  // every SUB server after DUB timeouts made bulk runs look "stuck resolving"
+  // for minutes under concurrency (6 × sourceWaitMs per episode).
+  const tryList = primary.length ? primary : fallback;
 
   if (!tryList.length) {
     return { status: 'failed', reason: 'No video sources found on the page' };
   }
 
-  onLog(`Found ${primary.length} ${MODE} + ${fallback.length} ${OTHER} server(s); trying ${MODE} left-to-right.`);
+  onLog(
+    `Found ${primary.length} ${MODE} + ${fallback.length} ${OTHER} server(s); ` +
+      `trying ${primary.length ? MODE : OTHER} left-to-right` +
+      (primary.length ? '' : ` (${MODE} row empty)`) +
+      '.'
+  );
 
   let sawStream = false;
+  let primaryGotStream = false;
   for (const src of tryList) {
+    const isPrimary = src.from === MODE;
     sniffer.clear(id); // only count streams produced by THIS click
     onLog(`Trying ${src.from} server "${src.label || src.index}"...`);
     const clicked = await wc
@@ -381,7 +437,10 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
       continue;
     }
     const s = sniffer.best(id);
-    if (s) sawStream = true;
+    if (s) {
+      sawStream = true;
+      if (isPrimary) primaryGotStream = true;
+    }
     const det = wantSub
       ? resolveSub(sniffer.bestForMode(id, 'sub', hints, false))
       : await resolveDub(s, src.from);
@@ -392,8 +451,26 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     onLog(`"${src.label || src.index}" produced ${s ? s.url : 'no usable stream'} (not a playable ${MODE}); trying next.`);
   }
 
-  // A dub URL existed but 404'd (encoding), or only the other audio was found ->
-  // treat as "not out yet" so the weekly watcher retries, instead of failing.
+  // Classify carefully:
+  //   unavailable = the requested audio truly isn't out yet (watcher retries later)
+  //   failed      = transient (timeouts / load) so the queue retries this episode
+  //
+  // Under bulk concurrency, episode 1 often times out on every DUB server while
+  // a SUB fallback still produces a stream. The old `sawStream` check treated
+  // that as "dub not released" and skipped retries — the intermittent first-ep
+  // failure. Only park on the waiting list when we have real evidence.
+  if (primary.length > 0 && !primaryGotStream && !dubUnplayable) {
+    onLog(
+      `All ${MODE} servers timed out or produced no stream (likely transient under load); will retry.`
+    );
+    return {
+      status: 'failed',
+      reason: `No ${MODE} server produced a stream (timeout/load)`
+    };
+  }
+
+  // A MODE URL existed but 404'd (still encoding), or primary/fallback produced
+  // only the other audio -> not out yet.
   if (dubUnplayable || sawStream) {
     onLog(`No playable ${MODE} stream yet - ${MODE} not out/still encoding; adding to the waiting list.`);
     return { status: 'unavailable', reason: `${MODE} not released yet` };

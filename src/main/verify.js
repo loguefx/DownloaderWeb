@@ -24,8 +24,17 @@ function ensureExecutable(p) {
   return p;
 }
 
-// Resolve the bundled ffprobe binary (works in dev and packaged/asar-unpacked).
+// Prefer system ffprobe when available (matches downloader's ffmpeg choice).
 function ffprobePath() {
+  try {
+    const which = require('child_process').execFileSync('which', ['ffprobe'], {
+      encoding: 'utf8',
+      timeout: 2000
+    }).trim();
+    if (which) return which;
+  } catch (e) {
+    // fall through
+  }
   let p = require('ffprobe-static').path;
   if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
   return ensureExecutable(p);

@@ -34,39 +34,184 @@ function urlMode(url, hints) {
 // URL together with the request headers (referer/cookie/user-agent/origin)
 // needed to download it later. Attribution is per webContents so each tab /
 // offscreen window has its own detection list.
+//
+// Many embeds (echovideo / Vidplay) call getSources, receive the m3u8 URL, then
+// never actually start playback in Electron — so media requests never fire.
+// We therefore also pull stream URLs out of those source-list API responses.
 class Sniffer extends EventEmitter {
   constructor() {
     super();
     // Map<webContentsId, Map<url, detection>>
     this.byTab = new Map();
     this.attached = false;
+    this._sourcesMeta = new Map(); // apiUrl -> { webContentsId, headers }
+    this._sourcesFetched = new Set();
   }
 
   attach() {
     if (this.attached) return;
     const sess = session.fromPartition(config.sessionPartition);
 
-    // Capture request headers as the request is sent.
+    // Capture media requests with their headers as they are sent.
     sess.webRequest.onSendHeaders((details) => {
-      if (!this._isMediaUrl(details.url)) return;
-      this._record(details, details.requestHeaders || {});
+      if (this._isMediaUrl(details.url)) {
+        this._record(details, details.requestHeaders || {});
+      }
+      if (this._isSourcesApi(details.url)) {
+        this._sourcesMeta.set(details.url, {
+          webContentsId: details.webContentsId,
+          headers: details.requestHeaders || {}
+        });
+      }
     });
 
-    // Also catch media identified by response content-type (URL without a
-    // recognizable extension, e.g. tokenized playlists).
+    // Content-type media + soft iframe unlock (XFO only — stripping CSP broke
+    // some players into https://undefined/... embeds).
     sess.webRequest.onHeadersReceived((details, cb) => {
       try {
+        const status = details.statusCode || 0;
         const ct = this._headerValue(details.responseHeaders, 'content-type');
-        if (ct && this._isMediaContentType(ct) && !this._isIgnoredHost(details.url)) {
-          this._record(details, {});
+        const byType = ct && this._isMediaContentType(ct) && !this._isIgnoredHost(details.url);
+        const byUrl = this._isMediaUrl(details.url);
+
+        if ((byUrl || byType) && status >= 200 && status < 300) {
+          const existing = this.byTab.get(details.webContentsId);
+          const prev = existing && existing.get(details.url);
+          this._record(details, (prev && prev.headers) || {});
+        } else if (byUrl && status >= 400) {
+          this._forget(details.webContentsId, details.url);
+        }
+
+        if (details.resourceType === 'subFrame') {
+          const headers = { ...(details.responseHeaders || {}) };
+          for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === 'x-frame-options') delete headers[key];
+          }
+          cb({ responseHeaders: headers });
+        } else {
+          cb({});
         }
       } catch (e) {
-        // ignore
+        cb({});
       }
-      cb({});
+    });
+
+    // When a player source-list API succeeds, pull stream URLs from the JSON
+    // body. JW players often never request the m3u8 themselves under Electron.
+    sess.webRequest.onCompleted((details) => {
+      if (!this._isSourcesApi(details.url)) return;
+      if (details.statusCode < 200 || details.statusCode >= 300) return;
+      if (this._sourcesFetched.has(details.url)) return;
+      this._sourcesFetched.add(details.url);
+      setTimeout(() => this._sourcesFetched.delete(details.url), 120000);
+      const meta = this._sourcesMeta.get(details.url) || {};
+      this._pullSources(details.url, details.webContentsId || meta.webContentsId, meta.headers || {}).catch(
+        () => {}
+      );
     });
 
     this.attached = true;
+  }
+
+  _isSourcesApi(url) {
+    return /\/getSources(?:\?|$)/i.test(url) || /\/mediainfo(?:\?|$)/i.test(url);
+  }
+
+  async _pullSources(apiUrl, webContentsId, reqHeaders) {
+    if (webContentsId == null) return;
+    const sess = session.fromPartition(config.sessionPartition);
+    const headers = {};
+    for (const [k, v] of Object.entries(reqHeaders || {})) {
+      if (['referer', 'origin', 'cookie', 'user-agent', 'authorization'].includes(k.toLowerCase())) {
+        headers[k] = v;
+      }
+    }
+    if (!Object.keys(headers).some((k) => k.toLowerCase() === 'user-agent')) {
+      headers['User-Agent'] = config.download.userAgent;
+    }
+
+    const resp = await sess.fetch(apiUrl, { headers });
+    if (!resp.ok) return;
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      return;
+    }
+
+    const urls = this._extractUrlsFromSourcesJson(data);
+    if (!urls.length) return;
+
+    let referer = headers.Referer || headers.referer || '';
+    let origin = headers.Origin || headers.origin || '';
+    try {
+      if (!origin && referer) origin = new URL(referer).origin;
+      if (!referer && origin) referer = origin + '/';
+    } catch (e) {
+      /* ignore */
+    }
+
+    const mediaHeaders = {
+      'User-Agent': headers['User-Agent'] || headers['user-agent'] || config.download.userAgent
+    };
+    if (referer) mediaHeaders.Referer = referer;
+    if (origin) mediaHeaders.Origin = origin;
+
+    for (const url of urls) {
+      this._record({ url, webContentsId }, mediaHeaders);
+    }
+  }
+
+  _extractUrlsFromSourcesJson(data) {
+    const out = [];
+    const add = (u) => {
+      if (typeof u !== 'string') return;
+      const s = u.trim();
+      if (!/^https?:\/\//i.test(s)) return;
+      if (this._isMediaUrl(s) || /\.(m3u8|mpd|mp4)(\?|$)/i.test(s)) out.push(s);
+    };
+
+    if (data == null) return out;
+    if (typeof data === 'string') {
+      const t = data.trim();
+      if (t.startsWith('{') || t.startsWith('[')) {
+        try {
+          return this._extractUrlsFromSourcesJson(JSON.parse(t));
+        } catch (e) {
+          add(t);
+          return out;
+        }
+      }
+      add(t);
+      return out;
+    }
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        if (typeof item === 'string') add(item);
+        else if (item && typeof item === 'object') {
+          add(item.file);
+          add(item.src);
+          add(item.url);
+          if (item.sources != null) out.push(...this._extractUrlsFromSourcesJson(item.sources));
+        }
+      }
+      return [...new Set(out)];
+    }
+    if (typeof data === 'object') {
+      if (data.sources != null) out.push(...this._extractUrlsFromSourcesJson(data.sources));
+      if (data.playlist != null) out.push(...this._extractUrlsFromSourcesJson(data.playlist));
+      add(data.file);
+      add(data.src);
+      add(data.url);
+    }
+    return [...new Set(out)];
+  }
+
+  _forget(webContentsId, url) {
+    const tabMap = this.byTab.get(webContentsId);
+    if (!tabMap) return;
+    tabMap.delete(url);
   }
 
   _headerValue(headers, name) {
@@ -108,12 +253,19 @@ class Sniffer extends EventEmitter {
     if (id == null) return;
     if (!this.byTab.has(id)) this.byTab.set(id, new Map());
     const tabMap = this.byTab.get(id);
-    if (tabMap.has(details.url)) return; // dedupe
+    const picked = this._pickHeaders(requestHeaders);
+    if (tabMap.has(details.url)) {
+      const prev = tabMap.get(details.url);
+      if (picked && Object.keys(picked).length && (!prev.headers || !Object.keys(prev.headers).length)) {
+        prev.headers = picked;
+      }
+      return;
+    }
 
     const detection = {
       url: details.url,
       type: this._type(details.url),
-      headers: this._pickHeaders(requestHeaders),
+      headers: picked,
       webContentsId: id,
       ts: Date.now()
     };
@@ -121,7 +273,6 @@ class Sniffer extends EventEmitter {
     this.emit('detected', detection);
   }
 
-  // Keep only the headers servers commonly require for the media request.
   _pickHeaders(requestHeaders) {
     const wanted = ['referer', 'origin', 'cookie', 'user-agent', 'authorization'];
     const out = {};
@@ -136,30 +287,18 @@ class Sniffer extends EventEmitter {
     return tabMap ? Array.from(tabMap.values()) : [];
   }
 
-  // Newest detection of a downloadable type (hls/mp4/dash) for a tab.
   latest(webContentsId, types = ['hls', 'mp4', 'dash']) {
     const items = this.list(webContentsId).filter((d) => types.includes(d.type));
     if (!items.length) return null;
     return items.sort((a, b) => b.ts - a.ts)[0];
   }
 
-  // The single best stream to download for a tab. Prefers an HLS *master*
-  // playlist (it contains every quality, so ffmpeg picks the best), then the
-  // highest-resolution variant, then mp4/dash, newest as the tiebreaker. This is
-  // what guarantees one file per episode in bulk.
   best(webContentsId) {
     const items = this.list(webContentsId).filter((d) => ['hls', 'mp4', 'dash'].includes(d.type));
     if (!items.length) return null;
     return items.sort((a, b) => baseScore(b) - baseScore(a) || b.ts - a.ts)[0];
   }
 
-  // Like best(), but filtered by requested audio mode using URL hints.
-  //   strict=false (default): accept URLs marked for `mode` OR unmarked/neutral
-  //     (we trust the click). Rejects URLs clearly marked for the OTHER audio.
-  //   strict=true: accept ONLY URLs explicitly marked for `mode`. Used when a
-  //     site is known to tag the audio in the path (e.g. ".../show-dub/..."), so
-  //     an unmarked stream is assumed to be the default (sub) and is rejected.
-  // Returns null when nothing qualifies.
   bestForMode(webContentsId, mode, hints, strict = false) {
     const items = this.list(webContentsId).filter((d) => ['hls', 'mp4', 'dash'].includes(d.type));
     if (!items.length) return null;
@@ -172,14 +311,12 @@ class Sniffer extends EventEmitter {
     return ok.sort((a, b) => score(b) - score(a) || b.ts - a.ts)[0];
   }
 
-  // True if any detected stream is explicitly marked for `mode`.
   hasMode(webContentsId, mode, hints) {
     return this.list(webContentsId)
       .filter((d) => ['hls', 'mp4', 'dash'].includes(d.type))
       .some((d) => urlMode(d.url, hints) === mode);
   }
 
-  // Newest subtitle file detected for a tab (used by Sub mode).
   latestSub(webContentsId) {
     const items = this.list(webContentsId).filter((d) => d.type === 'sub');
     if (!items.length) return null;

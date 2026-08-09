@@ -60,7 +60,7 @@ module.exports = {
     useCliFallback: true // try `mullvad status` if the HTTP check is inconclusive
   },
 
-  // Download behaviour.
+  // download.concurrency: how many episodes resolve/download at once.
   download: {
     // How many episodes to download at the same time.
     concurrency: 5,

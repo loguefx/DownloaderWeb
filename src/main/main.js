@@ -23,6 +23,11 @@ app.commandLine.appendSwitch('log-level', '3');
 // refuse to begin in the visible browser.
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+// Keep offscreen discovery windows from suspending media / timers.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+
 // A realistic Chrome User-Agent. Many video hosts/players serve a broken page or
 // refuse to play when they see Electron's default UA. We derive the real bundled
 // Chromium version so it looks like ordinary Chrome.

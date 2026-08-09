@@ -34,9 +34,52 @@ function ensureExecutable(p) {
 }
 
 function ffmpegPath() {
+  // Prefer a system ffmpeg when present. The ffmpeg-static binary SIGSEGVs on
+  // some newer distros (e.g. CachyOS), and system builds understand current HLS
+  // demuxer flags we need for extensionless CDN segments.
+  try {
+    const which = require('child_process').execFileSync('which', ['ffmpeg'], {
+      encoding: 'utf8',
+      timeout: 2000
+    }).trim();
+    if (which) return which;
+  } catch (e) {
+    // fall through to bundled
+  }
   let p = require('ffmpeg-static');
   if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
   return ensureExecutable(p);
+}
+
+function ffprobePath() {
+  try {
+    const which = require('child_process').execFileSync('which', ['ffprobe'], {
+      encoding: 'utf8',
+      timeout: 2000
+    }).trim();
+    if (which) return which;
+  } catch (e) {
+    // fall through
+  }
+  try {
+    const ffprobeStatic = require('ffprobe-static');
+    let p = ffprobeStatic && ffprobeStatic.path;
+    if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
+    return ensureExecutable(p);
+  } catch (e) {
+    return null;
+  }
+}
+
+// HLS demuxer flags so extensionless CDN segment URLs (common on aniwave /
+// echovideo mirrors) are accepted. FFmpeg 7+ defaults to extension_picky=1 and
+// rejects /cdn/<hash> segment paths without these.
+//
+// Do NOT probe via `ffmpeg -h` — that writes help to stderr (leaks into the app
+// log as a fake "ffmpeg failed" banner) and we previously read only stdout, so
+// the flags were often missing and downloads failed.
+function hlsRelaxArgs() {
+  return ['-extension_picky', '0', '-allowed_extensions', 'ALL', '-allowed_segment_extensions', 'ALL'];
 }
 
 function headerLines(headers, ua) {
@@ -129,6 +172,8 @@ function downloadHls(detection, partPath, { signal, onProgress } = {}) {
     const hLines = headerLines(headers, ua);
     if (hLines.length) args.push('-headers', hLines.join('\r\n') + '\r\n');
     args.push('-user_agent', ua);
+    // Must come before -i (hls demuxer options).
+    args.push(...hlsRelaxArgs());
     args.push('-i', detection.url);
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;

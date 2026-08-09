@@ -17,13 +17,16 @@ function pad(num, width = 2) {
   return s.length >= width ? s : '0'.repeat(width - s.length) + s;
 }
 
-// Best-effort season number from a slug like "golden-kamuy-3rd-season".
+// Best-effort season number from a slug like "golden-kamuy-3rd-season"
+// or Romanian "dark-sezonul-2".
 function parseSeasonFromUrl(url) {
   if (!url) return null;
   const m = String(url).match(/(\d+)(?:st|nd|rd|th)?[-_\s]*season/i);
   if (m) return parseInt(m[1], 10);
   const s = String(url).match(/season[-_\s]*(\d+)/i);
   if (s) return parseInt(s[1], 10);
+  const ro = String(url).match(/sezonul[-_\s]*(\d+)/i);
+  if (ro) return parseInt(ro[1], 10);
   return null;
 }
 

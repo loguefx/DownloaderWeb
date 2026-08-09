@@ -27,16 +27,25 @@ function hasEpisodeToken(template) {
 // Converts a pasted sample episode URL into a template by tokenizing the
 // episode number (and a season marker if present). Handles common shapes:
 //   .../ep-12  .../episode-12  .../ep_12  .../e12  .../12 (trailing)
+//   ...#ep-12  (hash token used by sites with in-page episode buttons)
 // Returns { template, season } where season is parsed if found in the path.
 function toTemplate(sampleUrl) {
   let t = String(sampleUrl || '').trim();
   let season = null;
 
-  // Season markers like "3rd-season" or "season-3".
+  // Season markers like "3rd-season", "season-3", or Romanian "sezonul-2".
   const sOrdinal = t.match(/(\d+)(?:st|nd|rd|th)[-_\s]*season/i);
   const sPlain = t.match(/season[-_\s]*(\d+)/i);
+  const sRo = t.match(/sezonul[-_\s]*(\d+)/i);
   if (sOrdinal) season = parseInt(sOrdinal[1], 10);
   else if (sPlain) season = parseInt(sPlain[1], 10);
+  else if (sRo) season = parseInt(sRo[1], 10);
+
+  // Already has a hash episode token (e.g. FilmeHD season pages).
+  if (/#ep[=-]?\{?episode\}?/i.test(t) || /#ep[=-]?\d+/i.test(t)) {
+    t = t.replace(/#ep[=-]?\d+/i, '#ep-{episode}');
+    return { template: t, season };
+  }
 
   // Episode as a query parameter: "?ep=8", "&episode=12", "?e=3". Checked first
   // because HiAnime-style sites (e.g. enma.lol) put the episode in the query while
@@ -59,6 +68,14 @@ function toTemplate(sampleUrl) {
   const trailingNum = /(\/)(\d+)(\/?)((?:[?#].*)?)$/;
   if (trailingNum.test(t)) {
     t = t.replace(trailingNum, (m, slash1, _num, slash2, tail) => `${slash1}{episode}${slash2}${tail}`);
+    return { template: t, season };
+  }
+
+  // FilmeHD (and similar): season page hosts all episodes as in-page buttons.
+  // Encode the episode in the hash so bulk can still generate per-episode URLs
+  // without inventing a fake path the site does not serve.
+  if (/filmehd\.to/i.test(t) && /\/seriale\//i.test(t) && /sezonul[-_]?\d+/i.test(t)) {
+    t = t.replace(/\/?(#.*)?$/, '') + '#ep-{episode}';
     return { template: t, season };
   }
 

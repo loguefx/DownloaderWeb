@@ -197,6 +197,13 @@ Each site is a small adapter object. The fallback `generic` profile uses pure
 heuristics so new sites work immediately; add a profile only when a site needs
 tweaks.
 
+Built-in profiles:
+
+- **Aniwave** (`aniwaves.ru`) — `/ep-{n}` paths, SUB/DUB server rows
+- **Enma** (`enma.lol`) — `?ep=` query, `data-type` server buttons
+- **FilmeHD** (`filmehd.to`) — season pages (`…-sezonul-N/`) with in-page
+  episode buttons under Vidmoly / Vidsrc / Doodstream
+
 Global defaults live in [`src/main/config.js`](src/main/config.js):
 
 - `dub.dubLabelText` / `dub.subLabelText` — the DUB/SUB toggle text.
@@ -231,10 +238,15 @@ Or, without editing code, add a JSON profile (string `match` patterns) at
 Per-episode discovery returns one of three outcomes:
 
 - **resolved** — a dub source produced a stream; it downloads.
-- **unavailable** — no dub sources present (sub-only / not released). The episode
-  goes to the **Waiting for dub** list and the run continues.
-- **failed** — dub sources exist but none worked; the bulk run stops and reports
-  the episode (watcher-triggered retries never stop the queue).
+- **unavailable** — the requested audio truly isn't out yet (explicit dub URL
+  still encoding, or only the other audio is present). The episode goes to the
+  **Waiting for dub** list and the run continues.
+- **failed** — dub sources exist but timed out / produced no stream (common under
+  load on the first episode of a bulk run). The queue retries that episode a few
+  times, then gives up on just that one; other episodes keep going.
+
+Timeouts are never treated as "not released" — otherwise episode 1 can land on
+the waiting list while later episodes succeed under the same conditions.
 
 ## Building installers
 

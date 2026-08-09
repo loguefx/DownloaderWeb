@@ -10,6 +10,7 @@ const dubselect = require('./dubselect');
 const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
+const sites = require('./sites');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const range = (a, b) => {
@@ -26,8 +27,12 @@ function loadWithTimeout(win, url, timeoutMs) {
       settled = true;
       resolve();
     };
-    win.webContents.once('dom-ready', () => setTimeout(done, config.dub.pageSettleMs));
-    win.webContents.once('did-finish-load', done);
+    // Always wait pageSettleMs after load. Resolving on bare did-finish-load
+    // races the SUB/DUB server-row JS (especially on cold first episodes) and
+    // makes discovery look like timeouts / empty server lists.
+    const afterLoad = () => setTimeout(done, config.dub.pageSettleMs);
+    win.webContents.once('dom-ready', afterLoad);
+    win.webContents.once('did-finish-load', afterLoad);
     win.loadURL(url).catch(() => {});
     setTimeout(done, timeoutMs);
   });
@@ -36,23 +41,48 @@ function loadWithTimeout(win, url, timeoutMs) {
 // Just-in-time discovery for one episode URL: opens a hidden window, loads the
 // page, selects DUB, and tries each source. Returns the dubselect outcome
 // ({ status: 'resolved'|'unavailable'|'failed', ... }). Runs fresh on each retry.
+// Hard-capped so a hung page/player can never leave the queue stuck on "resolving".
+const DISCOVER_TIMEOUT_MS = 90000;
+
 function makeDiscover(url, onLog = () => {}, mode = 'dub') {
   return async () => {
+    // Off-screen but shown: fully hidden windows often never start JW Player
+    // playback, so getSources alone (via the sniffer) is what saves us — still
+    // keep the window "visible" to Chromium so embeds behave normally.
     const win = new BrowserWindow({
-      show: false,
+      show: true,
+      x: -20000,
+      y: 0,
       width: 1280,
       height: 720,
+      opacity: 0,
+      skipTaskbar: true,
+      focusable: false,
       webPreferences: {
         partition: config.sessionPartition,
         backgroundThrottling: false,
         sandbox: true
       }
     });
+    let timer = null;
     try {
       onLog(`Loading ${url}`);
       await loadWithTimeout(win, url, 30000);
-      return await dubselect.selectDubAndResolve(win.webContents, url, onLog, mode);
+      const outcome = await Promise.race([
+        dubselect.selectDubAndResolve(win.webContents, url, onLog, mode),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Discovery timed out')),
+            DISCOVER_TIMEOUT_MS
+          );
+        })
+      ]);
+      return outcome;
+    } catch (e) {
+      onLog(`Discovery error for ${url}: ${e.message || e}`);
+      return { status: 'failed', reason: e.message || 'Discovery failed' };
     } finally {
+      if (timer) clearTimeout(timer);
       if (!win.isDestroyed()) win.destroy();
     }
   };
@@ -202,29 +232,36 @@ function episodeScanScript() {
 
 // Opens the page and detects how many episodes exist (the list is often loaded
 // by JS, so we retry a few times). Prefers the actual episode-link list; falls
-// back to the aired-episode count from the info box.
+// back to the aired-episode count from the info box. Site profiles may supply
+// a custom episodeScan script (e.g. FilmeHD in-page episode buttons).
 async function detectEpisodes(url, onLog = () => {}) {
+  const profile = sites.resolve(url);
+  const scanJs = (profile && profile.episodeScan) || episodeScanScript();
+
   // Fast path: read the server-rendered HTML directly (no heavy video window).
-  try {
-    const fast = parseEpisodesFromHtml(await fetchPageHtml(url));
-    if (fast && ((fast.list && fast.list.length > 1) || fast.aired > 0)) {
-      const listLen = fast.list ? fast.list.length : 0;
-      let list;
-      // Trust the "Episodes: N" count when it's at least as large as the number
-      // of links we scraped (nav sometimes shows only a few links while N is the
-      // real aired total); otherwise use the scraped episode-number list.
-      if (fast.aired >= listLen && fast.aired > 0) {
-        list = range(1, fast.aired);
-        const note = fast.total && fast.total !== fast.aired ? ` (of ${fast.total} total)` : '';
-        onLog(`Detected ${fast.aired} aired episode(s)${note} from the page info.`);
-      } else {
-        list = fast.list;
-        onLog(`Detected ${list.length} episode(s) from the page.`);
+  // Skip when the site profile needs a live DOM scan (in-page episode buttons).
+  if (!(profile && profile.episodeScan)) {
+    try {
+      const fast = parseEpisodesFromHtml(await fetchPageHtml(url));
+      if (fast && ((fast.list && fast.list.length > 1) || fast.aired > 0)) {
+        const listLen = fast.list ? fast.list.length : 0;
+        let list;
+        // Trust the "Episodes: N" count when it's at least as large as the number
+        // of links we scraped (nav sometimes shows only a few links while N is the
+        // real aired total); otherwise use the scraped episode-number list.
+        if (fast.aired >= listLen && fast.aired > 0) {
+          list = range(1, fast.aired);
+          const note = fast.total && fast.total !== fast.aired ? ` (of ${fast.total} total)` : '';
+          onLog(`Detected ${fast.aired} aired episode(s)${note} from the page info.`);
+        } else {
+          list = fast.list;
+          onLog(`Detected ${list.length} episode(s) from the page.`);
+        }
+        return { list, max: list.length ? list[list.length - 1] : 0, aired: fast.aired, total: fast.total };
       }
-      return { list, max: list.length ? list[list.length - 1] : 0, aired: fast.aired, total: fast.total };
+    } catch (e) {
+      // fall through to the window-based scan
     }
-  } catch (e) {
-    // fall through to the window-based scan
   }
 
   const win = new BrowserWindow({
@@ -238,7 +275,7 @@ async function detectEpisodes(url, onLog = () => {}) {
     let res = { list: [], max: 0, aired: 0, total: 0 };
     for (let i = 0; i < 8; i++) {
       res = await win.webContents
-        .executeJavaScript(episodeScanScript(), true)
+        .executeJavaScript(scanJs, true)
         .catch(() => ({ list: [], max: 0, aired: 0, total: 0 }));
       // Good enough once we have a real list (>1) or an aired count.
       if ((res.list && res.list.length > 1) || res.aired > 0) break;
@@ -253,6 +290,9 @@ async function detectEpisodes(url, onLog = () => {}) {
       list = range(1, res.aired);
       const note = res.total && res.total !== res.aired ? ` (of ${res.total} total)` : '';
       onLog(`Detected ${res.aired} aired episode(s)${note} from the page info.`);
+    } else if (res.list && res.list.length === 1) {
+      list = res.list;
+      onLog(`Detected 1 episode from the page.`);
     } else {
       list = [];
       onLog('Could not detect episode count from the page.');
