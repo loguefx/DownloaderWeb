@@ -3,7 +3,7 @@
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { spawn } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 const config = require('./config');
 
 class AbortError extends Error {
@@ -33,53 +33,73 @@ function ensureExecutable(p) {
   return p;
 }
 
-function ffmpegPath() {
-  // Prefer a system ffmpeg when present. The ffmpeg-static binary SIGSEGVs on
-  // some newer distros (e.g. CachyOS), and system builds understand current HLS
-  // demuxer flags we need for extensionless CDN segments.
+function findOnPath(name) {
+  // `which` is Unix-only; Windows needs `where`. execFile bypasses the shell so
+  // PowerShell's `where` alias is not a problem.
+  const cmd = process.platform === 'win32' ? 'where' : 'which';
   try {
-    const which = require('child_process').execFileSync('which', ['ffmpeg'], {
+    const out = execFileSync(cmd, [name], {
       encoding: 'utf8',
-      timeout: 2000
-    }).trim();
-    if (which) return which;
-  } catch (e) {
-    // fall through to bundled
-  }
-  let p = require('ffmpeg-static');
-  if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
-  return ensureExecutable(p);
-}
-
-function ffprobePath() {
-  try {
-    const which = require('child_process').execFileSync('which', ['ffprobe'], {
-      encoding: 'utf8',
-      timeout: 2000
-    }).trim();
-    if (which) return which;
-  } catch (e) {
-    // fall through
-  }
-  try {
-    const ffprobeStatic = require('ffprobe-static');
-    let p = ffprobeStatic && ffprobeStatic.path;
-    if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
-    return ensureExecutable(p);
+      timeout: 2000,
+      windowsHide: true
+    });
+    const first = String(out || '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s && fs.existsSync(s));
+    return first || null;
   } catch (e) {
     return null;
   }
 }
 
-// HLS demuxer flags so extensionless CDN segment URLs (common on aniwave /
-// echovideo mirrors) are accepted. FFmpeg 7+ defaults to extension_picky=1 and
-// rejects /cdn/<hash> segment paths without these.
-//
-// Do NOT probe via `ffmpeg -h` — that writes help to stderr (leaks into the app
-// log as a fake "ffmpeg failed" banner) and we previously read only stdout, so
-// the flags were often missing and downloads failed.
+function unpackAsar(p) {
+  if (p && p.includes('app.asar')) return p.replace('app.asar', 'app.asar.unpacked');
+  return p;
+}
+
+function ffmpegPath() {
+  // Prefer a system ffmpeg when present. The ffmpeg-static binary SIGSEGVs on
+  // some newer distros (e.g. CachyOS), and system builds understand current HLS
+  // demuxer flags we need for extensionless CDN segments.
+  const fromPath = findOnPath('ffmpeg');
+  if (fromPath) return fromPath;
+  let p = require('ffmpeg-static');
+  return ensureExecutable(unpackAsar(p));
+}
+
+function ffprobePath() {
+  const fromPath = findOnPath('ffprobe');
+  if (fromPath) return fromPath;
+  try {
+    const ffprobeStatic = require('ffprobe-static');
+    let p = ffprobeStatic && ffprobeStatic.path;
+    return ensureExecutable(unpackAsar(p));
+  } catch (e) {
+    return null;
+  }
+}
+
+// ffmpeg-static on Windows is 6.1.1 (no -extension_picky / -allowed_segment_extensions).
+// Linux distro ffmpeg is often 7+, which defaults extension_picky=1 and *needs* those
+// flags for extensionless CDN segments. Always passing the FFmpeg 7 flags makes every
+// Windows download die at argument parsing: "Unrecognized option 'extension_picky'".
+// Probe once, silently (do not attach this to a download's stderr log).
+let cachedHlsRelaxArgs = null;
 function hlsRelaxArgs() {
-  return ['-extension_picky', '0', '-allowed_extensions', 'ALL', '-allowed_segment_extensions', 'ALL'];
+  if (cachedHlsRelaxArgs) return cachedHlsRelaxArgs;
+  const probed = spawnSync(ffmpegPath(), ['-hide_banner', '-h', 'demuxer=hls'], {
+    encoding: 'utf8',
+    timeout: 5000,
+    windowsHide: true
+  });
+  const help = `${probed.stdout || ''}${probed.stderr || ''}${probed.error ? probed.error.message : ''}`;
+  const args = [];
+  if (/extension_picky/i.test(help)) args.push('-extension_picky', '0');
+  if (/allowed_extensions/i.test(help)) args.push('-allowed_extensions', 'ALL');
+  if (/allowed_segment_extensions/i.test(help)) args.push('-allowed_segment_extensions', 'ALL');
+  cachedHlsRelaxArgs = args;
+  return args;
 }
 
 function headerLines(headers, ua) {
@@ -172,8 +192,12 @@ function downloadHls(detection, partPath, { signal, onProgress } = {}) {
     const hLines = headerLines(headers, ua);
     if (hLines.length) args.push('-headers', hLines.join('\r\n') + '\r\n');
     args.push('-user_agent', ua);
-    // Must come before -i (hls demuxer options).
-    args.push(...hlsRelaxArgs());
+    // HLS demuxer options must come before -i. Skip them for DASH so a DASH
+    // demuxer doesn't reject unknown private options.
+    if (detection.type !== 'dash') {
+      args.push(...hlsRelaxArgs());
+      if (detection.type === 'hls') args.push('-f', 'hls');
+    }
     args.push('-i', detection.url);
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;
@@ -198,7 +222,7 @@ function downloadHls(detection, partPath, { signal, onProgress } = {}) {
     }
     args.push('-f', 'mp4', partPath);
 
-    const proc = spawn(ffmpegPath(), args);
+    const proc = spawn(ffmpegPath(), args, { windowsHide: true });
     let durationSec = 0;
     let stderrTail = '';
 
@@ -276,4 +300,4 @@ function download(detection, partPath, opts) {
   return downloadHls(detection, partPath, opts); // hls / dash / content-type-detected
 }
 
-module.exports = { download, downloadMp4, downloadHls, AbortError, ffmpegPath };
+module.exports = { download, downloadMp4, downloadHls, AbortError, ffmpegPath, ffprobePath };

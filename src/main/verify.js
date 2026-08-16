@@ -3,42 +3,7 @@
 const fs = require('fs');
 const { execFile } = require('child_process');
 const config = require('./config');
-
-// On Linux/macOS ffprobe-static frequently ships without the executable bit,
-// so verification fails with EACCES ("Permission denied") on every download -
-// even though the identical setup works on Windows (where the exec bit is
-// irrelevant). Best-effort chmod fixes writable installs (npm start / AppImage);
-// read-only installs (pacman) rely on the postinstall chmod, so failing here is
-// non-fatal.
-function ensureExecutable(p) {
-  if (!p || process.platform === 'win32') return p;
-  try {
-    fs.accessSync(p, fs.constants.X_OK);
-  } catch (e) {
-    try {
-      fs.chmodSync(p, 0o755);
-    } catch (e2) {
-      // read-only location or not owner; leave as-is and let execFile surface it
-    }
-  }
-  return p;
-}
-
-// Prefer system ffprobe when available (matches downloader's ffmpeg choice).
-function ffprobePath() {
-  try {
-    const which = require('child_process').execFileSync('which', ['ffprobe'], {
-      encoding: 'utf8',
-      timeout: 2000
-    }).trim();
-    if (which) return which;
-  } catch (e) {
-    // fall through
-  }
-  let p = require('ffprobe-static').path;
-  if (p && p.includes('app.asar')) p = p.replace('app.asar', 'app.asar.unpacked');
-  return ensureExecutable(p);
-}
+const { ffprobePath } = require('./downloader');
 
 // Validates a finished media file: must exist, exceed a minimum size, and have
 // a probe-able video stream with a positive duration.
@@ -62,7 +27,7 @@ function verifyFile(filePath) {
         '-of', 'json',
         filePath
       ],
-      { timeout: 30000 },
+      { timeout: 30000, windowsHide: true },
       (err, stdout) => {
         if (err) return resolve({ ok: false, reason: describeProbeError(err) });
         try {
