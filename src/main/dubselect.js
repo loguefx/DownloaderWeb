@@ -224,11 +224,82 @@ function scanScript(opts) {
 function clickScript(selector) {
   return `(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return false;
+    if (!el) return null;
     el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
     el.click();
-    return true;
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
   })()`;
+}
+
+async function clickSource(wc, selector) {
+  const pt = await wc.executeJavaScript(clickScript(selector), true).catch(() => null);
+  if (!pt) return false;
+  try {
+    wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
+  } catch (e) {
+    // JS click already ran
+  }
+  return true;
+}
+
+async function iframeSrcs(wc) {
+  return wc
+    .executeJavaScript(
+      `Array.from(document.querySelectorAll('iframe')).map((f) => f.src || f.getAttribute('src') || '')`,
+      true
+    )
+    .catch(() => []);
+}
+
+function isBrokenEmbed(src) {
+  return /https?:\/\/undefined\b/i.test(src || '');
+}
+
+async function setIframeSrc(wc, url) {
+  return wc
+    .executeJavaScript(
+      `(() => {
+        const frames = Array.from(document.querySelectorAll('iframe'));
+        const el = frames.find((f) => {
+          const s = f.src || f.getAttribute('src') || '';
+          return !s || /https?:\\/\\/undefined\\b/i.test(s);
+        }) || frames[0];
+        if (!el) return false;
+        el.src = ${JSON.stringify(url)};
+        return true;
+      })()`,
+      true
+    )
+    .catch(() => false);
+}
+
+// After a server click, wait briefly for the iframe URL. If the site dropped
+// the embed host (https://undefined/...), stitch in the ajax embed link.
+async function repairBrokenEmbed(wc, id, onLog) {
+  let srcs = [];
+  for (let i = 0; i < 8; i++) {
+    await delay(250);
+    srcs = await iframeSrcs(wc);
+    if (srcs.some(isBrokenEmbed)) break;
+    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return srcs;
+  }
+  const broken = srcs.filter(isBrokenEmbed);
+  if (!broken.length) return srcs;
+  let embed = sniffer.lastEmbed(id);
+  for (let i = 0; i < 8 && !(embed && embed.url); i++) {
+    await delay(250);
+    embed = sniffer.lastEmbed(id);
+  }
+  if (!embed || !embed.url) {
+    onLog('Player iframe has no host (https://undefined/...) and no embed API URL to repair it.');
+    return srcs;
+  }
+  onLog(`Repairing broken player iframe with embed ${embed.url}`);
+  await setIframeSrc(wc, embed.url);
+  await delay(500);
+  return iframeSrcs(wc);
 }
 
 // Synthesizes a real mouse click at the centre of the player area. Third-party
@@ -421,19 +492,24 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     const isPrimary = src.from === MODE;
     sniffer.clear(id); // only count streams produced by THIS click
     onLog(`Trying ${src.from} server "${src.label || src.index}"...`);
-    const clicked = await wc
-      .executeJavaScript(clickScript(`[data-wvd-source="${src.attr}-${src.index}"]`), true)
-      .catch(() => false);
+    const clicked = await clickSource(wc, `[data-wvd-source="${src.attr}-${src.index}"]`);
     if (!clicked) continue;
 
     // Many providers are third-party iframes that won't start from a programmatic
     // click - send a real mouse click into the player to trigger playback.
     await delay(700);
+    const frames = await repairBrokenEmbed(wc, id, onLog);
+    if (frames.some(isBrokenEmbed)) {
+      onLog(`"${src.label || src.index}" player iframe still has no host; trying next.`);
+      continue;
+    }
     await clickPlayerArea(wc);
 
     const arrived = await waitForMedia(id, dub.sourceWaitMs);
     if (!arrived) {
-      onLog(`"${src.label || src.index}" gave no stream; trying next.`);
+      const srcs = await iframeSrcs(wc);
+      const note = srcs.length ? ` iframe=${srcs.map((s) => s.slice(0, 80)).join(' | ')}` : ' (no iframe)';
+      onLog(`"${src.label || src.index}" gave no stream${note}; trying next.`);
       continue;
     }
     const s = sniffer.best(id);

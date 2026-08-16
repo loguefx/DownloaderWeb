@@ -350,7 +350,14 @@ class DownloadManager extends EventEmitter {
         }
         item.status = 'queued';
         this._emit();
-        await delay(config.download.retryBaseDelayMs * item.attempts);
+        const rateLimited = /429|too many requests/i.test(err.message || '');
+        const wait = rateLimited
+          ? Math.min(60000, 15000 * item.attempts)
+          : config.download.retryBaseDelayMs * item.attempts;
+        if (rateLimited) {
+          this._log(`CDN rate-limited "${item.label}"; waiting ${Math.round(wait / 1000)}s before retry.`);
+        }
+        await delay(wait);
       }
     }
   }

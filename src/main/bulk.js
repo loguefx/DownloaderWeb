@@ -44,6 +44,26 @@ function loadWithTimeout(win, url, timeoutMs) {
 // Hard-capped so a hung page/player can never leave the queue stuck on "resolving".
 const DISCOVER_TIMEOUT_MS = 90000;
 
+const discoverGate = {
+  active: 0,
+  waiters: []
+};
+
+async function withDiscoverGate(fn) {
+  const limit = Math.max(1, config.download.discoverConcurrency || 2);
+  while (discoverGate.active >= limit) {
+    await new Promise((r) => discoverGate.waiters.push(r));
+  }
+  discoverGate.active += 1;
+  try {
+    return await fn();
+  } finally {
+    discoverGate.active -= 1;
+    const w = discoverGate.waiters.shift();
+    if (w) w();
+  }
+}
+
 function mainBrowserWindow() {
   return (
     BrowserWindow.getAllWindows().find((w) => {
@@ -78,7 +98,7 @@ function createDiscoverWindow() {
     webPreferences: {
       partition: config.sessionPartition,
       backgroundThrottling: false,
-      sandbox: true
+      sandbox: false
     }
   });
   try {
@@ -97,10 +117,17 @@ function createDiscoverWindow() {
 }
 
 function makeDiscover(url, onLog = () => {}, mode = 'dub') {
-  return async () => {
+  return async () =>
+    withDiscoverGate(async () => {
     const win = createDiscoverWindow();
     let timer = null;
+    const onFail = (_e, _code, desc, failedUrl) => {
+      if (/:\/\/undefined\b/i.test(failedUrl || '')) {
+        onLog(`Player embed failed to load (missing host): ${desc}`);
+      }
+    };
     try {
+      win.webContents.on('did-fail-load', onFail);
       onLog(`Loading ${url}`);
       await loadWithTimeout(win, url, 30000);
       const outcome = await Promise.race([
@@ -118,9 +145,14 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
       return { status: 'failed', reason: e.message || 'Discovery failed' };
     } finally {
       if (timer) clearTimeout(timer);
+      try {
+        win.webContents.removeListener('did-fail-load', onFail);
+      } catch (e) {
+        // ignore
+      }
       if (!win.isDestroyed()) win.destroy();
     }
-  };
+    });
 }
 
 // Fetches the raw (server-rendered) HTML for a page using the shared session's

@@ -46,6 +46,9 @@ class Sniffer extends EventEmitter {
     this.attached = false;
     this._sourcesMeta = new Map(); // apiUrl -> { webContentsId, headers }
     this._sourcesFetched = new Set();
+    // Last iframe/embed URL per tab, from ajax source APIs (used to repair
+    // players that set iframe.src to https://undefined/...).
+    this._embeds = new Map();
   }
 
   attach() {
@@ -57,7 +60,7 @@ class Sniffer extends EventEmitter {
       if (this._isMediaUrl(details.url)) {
         this._record(details, details.requestHeaders || {});
       }
-      if (this._isSourcesApi(details.url)) {
+      if (this._isSourcesApi(details.url) || this._isEmbedApi(details.url)) {
         this._sourcesMeta.set(details.url, {
           webContentsId: details.webContentsId,
           headers: details.requestHeaders || {}
@@ -99,7 +102,7 @@ class Sniffer extends EventEmitter {
     // When a player source-list API succeeds, pull stream URLs from the JSON
     // body. JW players often never request the m3u8 themselves under Electron.
     sess.webRequest.onCompleted((details) => {
-      if (!this._isSourcesApi(details.url)) return;
+      if (!this._isSourcesApi(details.url) && !this._isEmbedApi(details.url)) return;
       if (details.statusCode < 200 || details.statusCode >= 300) return;
       if (this._sourcesFetched.has(details.url)) return;
       this._sourcesFetched.add(details.url);
@@ -115,6 +118,17 @@ class Sniffer extends EventEmitter {
 
   _isSourcesApi(url) {
     return /\/getSources(?:\?|$)/i.test(url) || /\/mediainfo(?:\?|$)/i.test(url);
+  }
+
+  // Site ajax that returns the third-party player iframe URL (not the m3u8).
+  // When this fails or the page drops the host, iframe.src becomes https://undefined/...
+  _isEmbedApi(url) {
+    return (
+      /\/ajax\/(?:v2\/)?episode\/sources(?:\?|$)/i.test(url) ||
+      /\/ajax\/embed(?:\/|source|\?|$)/i.test(url) ||
+      /\/ajax\/server(?:\?|$)/i.test(url) ||
+      /\/ajax\/(?:episode\/)?source(?:\?|$)/i.test(url)
+    );
   }
 
   async _pullSources(apiUrl, webContentsId, reqHeaders) {
@@ -141,7 +155,7 @@ class Sniffer extends EventEmitter {
     }
 
     const urls = this._extractUrlsFromSourcesJson(data);
-    if (!urls.length) return;
+    const embeds = this._extractEmbedUrlsFromJson(data);
 
     let referer = headers.Referer || headers.referer || '';
     let origin = headers.Origin || headers.origin || '';
@@ -158,9 +172,45 @@ class Sniffer extends EventEmitter {
     if (referer) mediaHeaders.Referer = referer;
     if (origin) mediaHeaders.Origin = origin;
 
+    if (embeds.length) {
+      this._embeds.set(webContentsId, { url: embeds[0], headers: mediaHeaders, ts: Date.now() });
+      this.emit('embed', { webContentsId, url: embeds[0] });
+    }
+
+    if (!urls.length) return;
+
     for (const url of urls) {
       this._record({ url, webContentsId }, mediaHeaders);
     }
+  }
+
+  _extractEmbedUrlsFromJson(data) {
+    const out = [];
+    const add = (u) => {
+      if (typeof u !== 'string') return;
+      const s = u.trim();
+      if (!/^https?:\/\//i.test(s)) return;
+      if (/:\/\/undefined\b/i.test(s)) return;
+      if (this._isMediaUrl(s) || /\.(m3u8|mpd|mp4)(\?|$)/i.test(s)) return;
+      out.push(s);
+    };
+    if (!data || typeof data !== 'object') return out;
+    add(data.link);
+    add(data.embed);
+    add(data.embed_url);
+    add(data.embedUrl);
+    add(data.source);
+    if (data.result && typeof data.result === 'object') {
+      add(data.result.link);
+      add(data.result.embed);
+      add(data.result.url);
+    }
+    if (data.data && typeof data.data === 'object') {
+      add(data.data.link);
+      add(data.data.embed);
+      add(data.data.url);
+    }
+    return [...new Set(out)];
   }
 
   _extractUrlsFromSourcesJson(data) {
@@ -193,6 +243,7 @@ class Sniffer extends EventEmitter {
           add(item.file);
           add(item.src);
           add(item.url);
+          add(item.link);
           if (item.sources != null) out.push(...this._extractUrlsFromSourcesJson(item.sources));
         }
       }
@@ -204,6 +255,7 @@ class Sniffer extends EventEmitter {
       add(data.file);
       add(data.src);
       add(data.url);
+      add(data.link);
     }
     return [...new Set(out)];
   }
@@ -321,6 +373,10 @@ class Sniffer extends EventEmitter {
     const items = this.list(webContentsId).filter((d) => d.type === 'sub');
     if (!items.length) return null;
     return items.sort((a, b) => b.ts - a.ts)[0];
+  }
+
+  lastEmbed(webContentsId) {
+    return this._embeds.get(webContentsId) || null;
   }
 
   clear(webContentsId) {

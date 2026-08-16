@@ -64,6 +64,13 @@ module.exports = {
   download: {
     // How many episodes to download at the same time.
     concurrency: 5,
+    // How many episode pages may be opened at once. Stream discovery is Chromium-
+    // heavy; 5 overlapping players make embed APIs drop the host (iframe ->
+    // https://undefined/...) and episodes fail with "no DUB server produced a stream".
+    discoverConcurrency: 2,
+    // How many HLS remuxes may hit the CDN at once. 5 ffmpeg clients on the
+    // same host (e.g. roburnt10.store) get HTTP 429 and the episode fails.
+    hlsConcurrency: 2,
     maxRetries: 3,
     retryBaseDelayMs: 2000,
     // Minimum acceptable output size (bytes) before a file is considered real.

@@ -30,7 +30,10 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 // Windows Chromium marks off-screen / covered windows as occluded and freezes
 // their media pipeline. Bulk discovery uses an off-screen window, so without
 // this, stream resolution never fires on Windows while the same code works on Linux.
-app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+app.commandLine.appendSwitch(
+  'disable-features',
+  'CalculateNativeWinOcclusion,ThirdPartyCookiePhaseout,TrackingProtection3pcd'
+);
 
 // A realistic Chrome User-Agent. Many video hosts/players serve a broken page or
 // refuse to play when they see Electron's default UA. We derive the real bundled

@@ -102,6 +102,42 @@ function hlsRelaxArgs() {
   return args;
 }
 
+let cachedHttpReconnectArgs = null;
+function httpReconnectArgs() {
+  if (cachedHttpReconnectArgs) return cachedHttpReconnectArgs;
+  const probed = spawnSync(ffmpegPath(), ['-hide_banner', '-h', 'protocol=https'], {
+    encoding: 'utf8',
+    timeout: 5000,
+    windowsHide: true
+  });
+  const help = `${probed.stdout || ''}${probed.stderr || ''}${probed.error ? probed.error.message : ''}`;
+  const args = [];
+  if (/-reconnect\s/m.test(help)) args.push('-reconnect', '1');
+  if (/reconnect_streamed/i.test(help)) args.push('-reconnect_streamed', '1');
+  if (/reconnect_on_network_error/i.test(help)) args.push('-reconnect_on_network_error', '1');
+  if (/reconnect_on_http_error/i.test(help)) args.push('-reconnect_on_http_error', '429,500,502,503,504');
+  if (/reconnect_delay_max/i.test(help)) args.push('-reconnect_delay_max', '15');
+  if (/reconnect_max_retries/i.test(help)) args.push('-reconnect_max_retries', '8');
+  cachedHttpReconnectArgs = args;
+  return args;
+}
+
+const hlsGate = { active: 0, waiters: [] };
+async function withHlsGate(fn) {
+  const limit = Math.max(1, config.download.hlsConcurrency || 2);
+  while (hlsGate.active >= limit) {
+    await new Promise((r) => hlsGate.waiters.push(r));
+  }
+  hlsGate.active += 1;
+  try {
+    return await fn();
+  } finally {
+    hlsGate.active -= 1;
+    const w = hlsGate.waiters.shift();
+    if (w) w();
+  }
+}
+
 function headerLines(headers, ua) {
   const lines = [];
   for (const [k, v] of Object.entries(headers || {})) {
@@ -135,6 +171,10 @@ function downloadMp4(detection, partPath, { signal, onProgress } = {}) {
         // Already fully downloaded.
         res.resume();
         return resolve({ bytes: startByte });
+      }
+      if (res.statusCode === 429) {
+        res.resume();
+        return reject(new Error(`HTTP 429 Too Many Requests for ${detection.url}`));
       }
       if (res.statusCode >= 400) {
         res.resume();
@@ -192,6 +232,7 @@ function downloadHls(detection, partPath, { signal, onProgress } = {}) {
     const hLines = headerLines(headers, ua);
     if (hLines.length) args.push('-headers', hLines.join('\r\n') + '\r\n');
     args.push('-user_agent', ua);
+    args.push(...httpReconnectArgs());
     // HLS demuxer options must come before -i. Skip them for DASH so a DASH
     // demuxer doesn't reject unknown private options.
     if (detection.type !== 'dash') {
@@ -297,7 +338,7 @@ function safeSize(p) {
 // Dispatches based on detection type.
 function download(detection, partPath, opts) {
   if (detection.type === 'mp4') return downloadMp4(detection, partPath, opts);
-  return downloadHls(detection, partPath, opts); // hls / dash / content-type-detected
+  return withHlsGate(() => downloadHls(detection, partPath, opts));
 }
 
 module.exports = { download, downloadMp4, downloadHls, AbortError, ffmpegPath, ffprobePath };
