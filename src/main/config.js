@@ -68,10 +68,12 @@ module.exports = {
     // heavy; 5 overlapping players make embed APIs drop the host (iframe ->
     // https://undefined/...) and episodes fail with "no DUB server produced a stream".
     discoverConcurrency: 2,
-    // How many HLS remuxes may hit the CDN at once. 5 ffmpeg clients on the
-    // same host (e.g. roburnt10.store) get HTTP 429 and the episode fails.
-    hlsConcurrency: 2,
-    maxRetries: 3,
+    // Remuxes in parallel. If the CDN 429s, tripRateLimit pauses new HLS starts
+    // and the queue retries with backoff (see downloader/queue).
+    hlsConcurrency: 5,
+    // After a 429, block every HLS start (not just the failed episode).
+    rateLimitCooldownMs: 30000,
+    maxRetries: 6,
     retryBaseDelayMs: 2000,
     // Minimum acceptable output size (bytes) before a file is considered real.
     minFileBytes: 64 * 1024,

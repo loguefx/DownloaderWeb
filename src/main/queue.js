@@ -352,10 +352,10 @@ class DownloadManager extends EventEmitter {
         this._emit();
         const rateLimited = /429|too many requests/i.test(err.message || '');
         const wait = rateLimited
-          ? Math.min(60000, 15000 * item.attempts)
+          ? Math.min(90000, (config.download.rateLimitCooldownMs || 30000) * item.attempts)
           : config.download.retryBaseDelayMs * item.attempts;
         if (rateLimited) {
-          this._log(`CDN rate-limited "${item.label}"; waiting ${Math.round(wait / 1000)}s before retry.`);
+          this._log(`CDN rate-limited "${item.label}"; pausing HLS for ${Math.round(wait / 1000)}s before retry.`);
         }
         await delay(wait);
       }

@@ -115,26 +115,55 @@ function httpReconnectArgs() {
   if (/-reconnect\s/m.test(help)) args.push('-reconnect', '1');
   if (/reconnect_streamed/i.test(help)) args.push('-reconnect_streamed', '1');
   if (/reconnect_on_network_error/i.test(help)) args.push('-reconnect_on_network_error', '1');
-  if (/reconnect_on_http_error/i.test(help)) args.push('-reconnect_on_http_error', '429,500,502,503,504');
+  // Do NOT reconnect on 429: immediate retries deepen the rate limit. Queue +
+  // cooldown below wait it out instead.
+  if (/reconnect_on_http_error/i.test(help)) args.push('-reconnect_on_http_error', '500,502,503,504');
   if (/reconnect_delay_max/i.test(help)) args.push('-reconnect_delay_max', '15');
-  if (/reconnect_max_retries/i.test(help)) args.push('-reconnect_max_retries', '8');
+  if (/reconnect_max_retries/i.test(help)) args.push('-reconnect_max_retries', '4');
   cachedHttpReconnectArgs = args;
   return args;
 }
 
-const hlsGate = { active: 0, waiters: [] };
+function isRateLimited(err) {
+  return /429|too many requests/i.test(String((err && err.message) || err || ''));
+}
+
+const hlsGate = { active: 0, waiters: [], cooldownUntil: 0, cooldownTimer: null };
+
+function wakeHlsWaiters() {
+  const w = hlsGate.waiters;
+  hlsGate.waiters = [];
+  w.forEach((fn) => fn());
+}
+
+function tripRateLimit() {
+  const ms = Math.max(5000, config.download.rateLimitCooldownMs || 30000);
+  hlsGate.cooldownUntil = Date.now() + ms;
+  if (hlsGate.cooldownTimer) clearTimeout(hlsGate.cooldownTimer);
+  hlsGate.cooldownTimer = setTimeout(() => {
+    hlsGate.cooldownTimer = null;
+    wakeHlsWaiters();
+  }, ms);
+}
+
 async function withHlsGate(fn) {
-  const limit = Math.max(1, config.download.hlsConcurrency || 2);
-  while (hlsGate.active >= limit) {
-    await new Promise((r) => hlsGate.waiters.push(r));
+  const limit = Math.max(1, config.download.hlsConcurrency || 1);
+  while (hlsGate.active >= limit || Date.now() < hlsGate.cooldownUntil) {
+    const wait = Math.max(50, hlsGate.cooldownUntil - Date.now());
+    await new Promise((r) => {
+      hlsGate.waiters.push(r);
+      if (Date.now() < hlsGate.cooldownUntil) setTimeout(r, Math.min(wait, 5000));
+    });
   }
   hlsGate.active += 1;
   try {
     return await fn();
+  } catch (err) {
+    if (isRateLimited(err)) tripRateLimit();
+    throw err;
   } finally {
     hlsGate.active -= 1;
-    const w = hlsGate.waiters.shift();
-    if (w) w();
+    wakeHlsWaiters();
   }
 }
 
