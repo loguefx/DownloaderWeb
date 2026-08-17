@@ -413,13 +413,15 @@ function renderQueue(items) {
     let rows = '';
     for (const it of visible) {
       const pct = it.progress != null ? Math.round(it.progress * 100) : null;
-      const indeterminate = (it.status === 'downloading' || it.status === 'resolving') && pct == null;
+      const displayStatus = it.status === 'queued' && it.error ? 'retrying' : it.status;
+      const indeterminate =
+        (it.status === 'downloading' || it.status === 'resolving' || displayStatus === 'retrying') && pct == null;
       const epName = it.episode != null ? `Episode ${it.episode}` : escapeHtml(it.label || 'Download');
       rows += `
         <div class="ep">
           <div class="ep-row">
             <span class="ep-name">${epName}</span>
-            <span class="status ${it.status}">${it.status}${pct != null ? ' ' + pct + '%' : ''}</span>
+            <span class="status ${displayStatus}">${displayStatus}${pct != null ? ' ' + pct + '%' : ''}</span>
           </div>
           ${it.error ? `<div class="meta">${escapeHtml(it.error)}</div>` : ''}
           <div class="progress ${indeterminate ? 'indeterminate' : ''}"><i style="width:${pct != null ? pct : 0}%"></i></div>

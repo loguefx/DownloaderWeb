@@ -264,23 +264,23 @@ class DownloadManager extends EventEmitter {
         }
 
         if (status === 'failed') {
-          // A single episode failing must NOT cancel the rest of the queue.
-          // Discovery failures are often transient under load (a page that was
-          // slow/blocked), so retry a few times, then give up on JUST this one.
+          // Timeouts / empty players are NOT "dub missing". DUB buttons were on
+          // the page; the stream just didn't arrive this try. Keep retrying until
+          // it resolves or the watcher path parks it as unavailable.
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;
           item.error = reason;
-          if (item.attempts < config.download.maxRetries) {
-            this._log(`Discovery failed for "${item.label}" (attempt ${item.attempts}): ${reason}; retrying.`);
-            item.status = 'queued';
-            this._emit();
-            await delay(config.download.retryBaseDelayMs * item.attempts);
-            continue;
-          }
-          item.status = 'failed';
+          item.status = 'queued';
           this._emit();
-          this._log(`Giving up on "${item.label}": ${reason} (other downloads continue).`);
-          return { fatal: false };
+          const wait = Math.min(
+            config.download.retryMaxDelayMs || 60000,
+            config.download.retryBaseDelayMs * Math.min(item.attempts, 20)
+          );
+          this._log(
+            `No stream yet for "${item.label}" (attempt ${item.attempts}): ${reason}; retrying in ${Math.round(wait / 1000)}s.`
+          );
+          await delay(wait);
+          continue;
         }
 
         const detection = (outcome && outcome.detection) || outcome;
@@ -342,20 +342,19 @@ class DownloadManager extends EventEmitter {
         item.attempts += 1;
         item.error = err.message;
         this._log(`Error on "${item.label}" (attempt ${item.attempts}): ${err.message}`);
-        if (item.attempts >= config.download.maxRetries) {
-          item.status = 'failed';
-          this._emit();
-          this._log(`Giving up on "${item.label}" after ${item.attempts} attempts (other downloads continue).`);
-          return { fatal: false };
-        }
         item.status = 'queued';
         this._emit();
         const rateLimited = /429|too many requests/i.test(err.message || '');
         const wait = rateLimited
-          ? Math.min(90000, (config.download.rateLimitCooldownMs || 30000) * item.attempts)
-          : config.download.retryBaseDelayMs * item.attempts;
+          ? Math.min(90000, (config.download.rateLimitCooldownMs || 30000) * Math.min(item.attempts, 3))
+          : Math.min(
+              config.download.retryMaxDelayMs || 60000,
+              config.download.retryBaseDelayMs * Math.min(item.attempts, 20)
+            );
         if (rateLimited) {
           this._log(`CDN rate-limited "${item.label}"; pausing HLS for ${Math.round(wait / 1000)}s before retry.`);
+        } else {
+          this._log(`Will keep retrying "${item.label}" in ${Math.round(wait / 1000)}s (dub was found; not marking failed).`);
         }
         await delay(wait);
       }

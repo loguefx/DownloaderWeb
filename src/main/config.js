@@ -75,6 +75,9 @@ module.exports = {
     rateLimitCooldownMs: 30000,
     maxRetries: 6,
     retryBaseDelayMs: 2000,
+    // Cap for endless retries of timeouts / 429s (never mark Failed just because
+    // a DUB server was slow under load).
+    retryMaxDelayMs: 60000,
     // Minimum acceptable output size (bytes) before a file is considered real.
     minFileBytes: 64 * 1024,
     userAgent:
