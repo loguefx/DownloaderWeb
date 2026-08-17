@@ -1,8 +1,50 @@
 'use strict';
 
-const { session } = require('electron');
+const { session, webContents } = require('electron');
 const { EventEmitter } = require('events');
 const config = require('./config');
+
+// Which "tab" a request belongs to. Requests from nested frames can carry a
+// guest webContents id, so fold those into the frame's owning window.
+//
+// A <webview> is deliberately NOT folded: the visible browser panel is a webview
+// and keys its detections off the webview's own id, so mapping it to the host
+// window would hide every stream the user plays by hand.
+function ownerTabId(id) {
+  if (id == null) return id;
+  try {
+    const wc = webContents.fromId(id);
+    if (!wc || wc.isDestroyed()) return id;
+    const type = typeof wc.getType === 'function' ? wc.getType() : '';
+    if (type === 'webview' || type === 'window' || type === 'browserView') return id;
+    if (typeof wc.getOwnerBrowserWindow === 'function') {
+      const win = wc.getOwnerBrowserWindow();
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        return win.webContents.id;
+      }
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return id;
+}
+
+// ajax/sources may return "//host/embed/..." or a site-relative path.
+function resolveMaybeUrl(raw, base) {
+  if (typeof raw !== 'string') return '';
+  const s = raw.trim();
+  if (!s || s.length > 4000) return '';
+  if (/:\/\/undefined\b/i.test(s) || /^undefined[\s/?#]/i.test(s)) return '';
+  if (s.startsWith('<')) return '';
+  try {
+    if (/^https?:\/\//i.test(s)) return s;
+    if (/^\/\//.test(s)) return 'https:' + s;
+    if (base && (s.startsWith('/') || /^[.]{1,2}\//.test(s))) return new URL(s, base).toString();
+  } catch (e) {
+    /* ignore */
+  }
+  return '';
+}
 
 // Resolution embedded in a stream URL (e.g. ".../720/index.m3u8").
 function resOf(url) {
@@ -49,20 +91,43 @@ class Sniffer extends EventEmitter {
     // Last iframe/embed URL per tab, from ajax source APIs (used to repair
     // players that set iframe.src to https://undefined/...).
     this._embeds = new Map();
+    // Host-less requests per tab, so discovery can report who issued them.
+    this._badHosts = new Map();
   }
 
   attach() {
     if (this.attached) return;
     const sess = session.fromPartition(config.sessionPartition);
 
+    // Requests to "https://undefined/..." can never succeed (ERR_NAME_NOT_RESOLVED)
+    // and they spam the console. Cancel them, but remember the initiator so
+    // discovery can log whether it was the player iframe or a third-party script.
+    sess.webRequest.onBeforeRequest((details, cb) => {
+      if (!/^https?:\/\/undefined(?::\d+)?(?:[/?#]|$)/i.test(details.url || '')) return cb({});
+      const tabId = ownerTabId(details.webContentsId);
+      if (tabId != null) {
+        if (!this._badHosts.has(tabId)) this._badHosts.set(tabId, []);
+        const list = this._badHosts.get(tabId);
+        if (list.length < 20) {
+          list.push({
+            resourceType: details.resourceType || 'other',
+            referrer: details.referrer || '',
+            ts: Date.now()
+          });
+        }
+      }
+      cb({ cancel: true });
+    });
+
     // Capture media requests with their headers as they are sent.
     sess.webRequest.onSendHeaders((details) => {
+      const tabId = ownerTabId(details.webContentsId);
       if (this._isMediaUrl(details.url)) {
-        this._record(details, details.requestHeaders || {});
+        this._record({ url: details.url, webContentsId: tabId }, details.requestHeaders || {});
       }
       if (this._isSourcesApi(details.url) || this._isEmbedApi(details.url)) {
         this._sourcesMeta.set(details.url, {
-          webContentsId: details.webContentsId,
+          webContentsId: tabId,
           headers: details.requestHeaders || {}
         });
       }
@@ -77,12 +142,13 @@ class Sniffer extends EventEmitter {
         const byType = ct && this._isMediaContentType(ct) && !this._isIgnoredHost(details.url);
         const byUrl = this._isMediaUrl(details.url);
 
+        const tabId = ownerTabId(details.webContentsId);
         if ((byUrl || byType) && status >= 200 && status < 300) {
-          const existing = this.byTab.get(details.webContentsId);
+          const existing = this.byTab.get(tabId);
           const prev = existing && existing.get(details.url);
-          this._record(details, (prev && prev.headers) || {});
+          this._record({ url: details.url, webContentsId: tabId }, (prev && prev.headers) || {});
         } else if (byUrl && status >= 400) {
-          this._forget(details.webContentsId, details.url);
+          this._forget(tabId, details.url);
         }
 
         if (details.resourceType === 'subFrame') {
@@ -104,13 +170,13 @@ class Sniffer extends EventEmitter {
     sess.webRequest.onCompleted((details) => {
       if (!this._isSourcesApi(details.url) && !this._isEmbedApi(details.url)) return;
       if (details.statusCode < 200 || details.statusCode >= 300) return;
-      if (this._sourcesFetched.has(details.url)) return;
-      this._sourcesFetched.add(details.url);
-      setTimeout(() => this._sourcesFetched.delete(details.url), 120000);
+      const tabId = ownerTabId(details.webContentsId);
+      const fetchKey = `${tabId}|${details.url}`;
+      if (this._sourcesFetched.has(fetchKey)) return;
+      this._sourcesFetched.add(fetchKey);
+      setTimeout(() => this._sourcesFetched.delete(fetchKey), 120000);
       const meta = this._sourcesMeta.get(details.url) || {};
-      this._pullSources(details.url, details.webContentsId || meta.webContentsId, meta.headers || {}).catch(
-        () => {}
-      );
+      this._pullSources(details.url, tabId || meta.webContentsId, meta.headers || {}).catch(() => {});
     });
 
     this.attached = true;
@@ -121,9 +187,12 @@ class Sniffer extends EventEmitter {
   }
 
   // Site ajax that returns the third-party player iframe URL (not the m3u8).
-  // When this fails or the page drops the host, iframe.src becomes https://undefined/...
+  // Aniwave uses /ajax/sources?id=<data-link-id> and then sets iframe.src to
+  // result.url. Older HiAnime mirrors use /ajax/embed or /ajax/episode/sources.
+  // When this is missed, iframe.src becomes https://undefined/...
   _isEmbedApi(url) {
     return (
+      /\/ajax\/sources(?:\?|$)/i.test(url) ||
       /\/ajax\/(?:v2\/)?episode\/sources(?:\?|$)/i.test(url) ||
       /\/ajax\/embed(?:\/|source|\?|$)/i.test(url) ||
       /\/ajax\/server(?:\?|$)/i.test(url) ||
@@ -132,6 +201,7 @@ class Sniffer extends EventEmitter {
   }
 
   async _pullSources(apiUrl, webContentsId, reqHeaders) {
+    webContentsId = ownerTabId(webContentsId);
     if (webContentsId == null) return;
     const sess = session.fromPartition(config.sessionPartition);
     const headers = {};
@@ -154,17 +224,19 @@ class Sniffer extends EventEmitter {
       return;
     }
 
-    const urls = this._extractUrlsFromSourcesJson(data);
-    const embeds = this._extractEmbedUrlsFromJson(data);
-
     let referer = headers.Referer || headers.referer || '';
     let origin = headers.Origin || headers.origin || '';
     try {
+      if (!origin && apiUrl) origin = new URL(apiUrl).origin;
       if (!origin && referer) origin = new URL(referer).origin;
       if (!referer && origin) referer = origin + '/';
     } catch (e) {
       /* ignore */
     }
+    const base = referer || origin || apiUrl;
+
+    const urls = this._extractUrlsFromSourcesJson(data);
+    const embeds = this._extractEmbedUrlsFromJson(data, base);
 
     const mediaHeaders = {
       'User-Agent': headers['User-Agent'] || headers['user-agent'] || config.download.userAgent
@@ -173,8 +245,13 @@ class Sniffer extends EventEmitter {
     if (origin) mediaHeaders.Origin = origin;
 
     if (embeds.length) {
-      this._embeds.set(webContentsId, { url: embeds[0], headers: mediaHeaders, ts: Date.now() });
-      this.emit('embed', { webContentsId, url: embeds[0] });
+      this._embeds.set(webContentsId, {
+        url: embeds[0],
+        headers: mediaHeaders,
+        ts: Date.now(),
+        apiUrl
+      });
+      this.emit('embed', { webContentsId, url: embeds[0], apiUrl });
     }
 
     if (!urls.length) return;
@@ -184,12 +261,11 @@ class Sniffer extends EventEmitter {
     }
   }
 
-  _extractEmbedUrlsFromJson(data) {
+  _extractEmbedUrlsFromJson(data, base) {
     const out = [];
     const add = (u) => {
-      if (typeof u !== 'string') return;
-      const s = u.trim();
-      if (!/^https?:\/\//i.test(s)) return;
+      const s = resolveMaybeUrl(u, base);
+      if (!s) return;
       if (/:\/\/undefined\b/i.test(s)) return;
       if (this._isMediaUrl(s) || /\.(m3u8|mpd|mp4)(\?|$)/i.test(s)) return;
       out.push(s);
@@ -200,6 +276,7 @@ class Sniffer extends EventEmitter {
     add(data.embed_url);
     add(data.embedUrl);
     add(data.source);
+    if (typeof data.result === 'string') add(data.result);
     if (data.result && typeof data.result === 'object') {
       add(data.result.link);
       add(data.result.embed);
@@ -301,7 +378,7 @@ class Sniffer extends EventEmitter {
   }
 
   _record(details, requestHeaders) {
-    const id = details.webContentsId;
+    const id = ownerTabId(details.webContentsId);
     if (id == null) return;
     if (!this.byTab.has(id)) this.byTab.set(id, new Map());
     const tabMap = this.byTab.get(id);
@@ -379,8 +456,21 @@ class Sniffer extends EventEmitter {
     return this._embeds.get(webContentsId) || null;
   }
 
+  // Requests we cancelled because the page built a URL with no host.
+  badHosts(webContentsId) {
+    return this._badHosts.get(webContentsId) || [];
+  }
+
   clear(webContentsId) {
     this.byTab.delete(webContentsId);
+    this._embeds.delete(webContentsId);
+    this._badHosts.delete(webContentsId);
+    for (const [apiUrl, meta] of [...this._sourcesMeta]) {
+      if (meta.webContentsId !== webContentsId) continue;
+      this._sourcesMeta.delete(apiUrl);
+      this._sourcesFetched.delete(apiUrl);
+      this._sourcesFetched.delete(`${webContentsId}|${apiUrl}`);
+    }
   }
 }
 

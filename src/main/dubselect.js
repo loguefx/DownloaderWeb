@@ -228,20 +228,25 @@ function clickScript(selector) {
     el.scrollIntoView({ block: 'center' });
     const r = el.getBoundingClientRect();
     el.click();
-    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    const host = el.closest('[data-link-id]') || el;
+    return {
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+      linkId: (host.getAttribute && host.getAttribute('data-link-id')) || ''
+    };
   })()`;
 }
 
 async function clickSource(wc, selector) {
   const pt = await wc.executeJavaScript(clickScript(selector), true).catch(() => null);
-  if (!pt) return false;
+  if (!pt) return null;
   try {
     wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
   } catch (e) {
     // JS click already ran
   }
-  return true;
+  return pt;
 }
 
 async function iframeSrcs(wc) {
@@ -261,11 +266,12 @@ async function setIframeSrc(wc, url) {
   return wc
     .executeJavaScript(
       `(() => {
-        const frames = Array.from(document.querySelectorAll('iframe'));
-        const el = frames.find((f) => {
+        const frames = Array.from(document.querySelectorAll('#player iframe, .player iframe, #w-player iframe, iframe'));
+        const broken = frames.find((f) => {
           const s = f.src || f.getAttribute('src') || '';
           return !s || /https?:\\/\\/undefined\\b/i.test(s);
-        }) || frames[0];
+        });
+        const el = broken || frames[0];
         if (!el) return false;
         el.src = ${JSON.stringify(url)};
         return true;
@@ -275,31 +281,60 @@ async function setIframeSrc(wc, url) {
     .catch(() => false);
 }
 
-// After a server click, wait briefly for the iframe URL. If the site dropped
-// the embed host (https://undefined/...), stitch in the ajax embed link.
-async function repairBrokenEmbed(wc, id, onLog) {
-  let srcs = [];
-  for (let i = 0; i < 8; i++) {
-    await delay(250);
-    srcs = await iframeSrcs(wc);
-    if (srcs.some(isBrokenEmbed)) break;
-    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return srcs;
+function embedMatchesClick(embed, afterTs, linkId) {
+  if (!embed || !embed.url) return false;
+  if (linkId) {
+    const api = String(embed.apiUrl || '');
+    const m = api.match(/[?&]id=([^&]+)/i);
+    if (!m) return false;
+    try {
+      return decodeURIComponent(m[1]) === String(linkId);
+    } catch (e) {
+      return m[1] === String(linkId);
+    }
   }
-  const broken = srcs.filter(isBrokenEmbed);
-  if (!broken.length) return srcs;
-  let embed = sniffer.lastEmbed(id);
-  for (let i = 0; i < 8 && !(embed && embed.url); i++) {
-    await delay(250);
-    embed = sniffer.lastEmbed(id);
+  return !afterTs || (embed.ts && embed.ts >= afterTs - 80);
+}
+
+async function waitForEmbed(id, afterTs, linkId, timeoutMs = 2500) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const embed = sniffer.lastEmbed(id);
+    if (embedMatchesClick(embed, afterTs, linkId)) return embed;
+    await delay(150);
   }
-  if (!embed || !embed.url) {
-    onLog('Player iframe has no host (https://undefined/...) and no embed API URL to repair it.');
+  const embed = sniffer.lastEmbed(id);
+  return embedMatchesClick(embed, afterTs, linkId) ? embed : null;
+}
+
+// After a server click, load the ajax/sources iframe URL ourselves. Aniwave
+// sets iframe.src from result.url; under Electron that often becomes
+// https://undefined/... if we miss the API or reuse the autoplay SUB embed.
+async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
+  const embed = await waitForEmbed(id, afterTs, linkId);
+  let srcs = await iframeSrcs(wc);
+  if (embed && embed.url) {
+    const host = embed.url.split('?')[0];
+    const already = srcs.some((s) => s && host && s.indexOf(host) !== -1);
+    const broken = srcs.some(isBrokenEmbed) || !srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s));
+    if (!already || broken) {
+      onLog(`Loading player embed ${embed.url}`);
+      await setIframeSrc(wc, embed.url);
+      await delay(600);
+      srcs = await iframeSrcs(wc);
+    }
     return srcs;
   }
-  onLog(`Repairing broken player iframe with embed ${embed.url}`);
-  await setIframeSrc(wc, embed.url);
-  await delay(500);
-  return iframeSrcs(wc);
+  for (let i = 0; i < 6; i++) {
+    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return srcs;
+    if (srcs.some(isBrokenEmbed)) break;
+    await delay(250);
+    srcs = await iframeSrcs(wc);
+  }
+  if (srcs.some(isBrokenEmbed)) {
+    onLog('Player iframe has no host (https://undefined/...) and no embed API URL to repair it.');
+  }
+  return srcs;
 }
 
 // Synthesizes a real mouse click at the centre of the player area. Third-party
@@ -486,19 +521,27 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
       '.'
   );
 
+  const toggleSel = wantSub ? '[data-wvd-toggle="sub"]' : '[data-wvd-toggle="dub"]';
+  if ((wantSub && scan.hasSub) || (!wantSub && scan.hasDub)) {
+    onLog(`Selecting ${MODE} row...`);
+    await clickSource(wc, toggleSel);
+    await delay(400);
+  }
+
   let sawStream = false;
   let primaryGotStream = false;
   for (const src of tryList) {
     const isPrimary = src.from === MODE;
     sniffer.clear(id); // only count streams produced by THIS click
+    const clickTs = Date.now();
     onLog(`Trying ${src.from} server "${src.label || src.index}"...`);
     const clicked = await clickSource(wc, `[data-wvd-source="${src.attr}-${src.index}"]`);
     if (!clicked) continue;
 
     // Many providers are third-party iframes that won't start from a programmatic
     // click - send a real mouse click into the player to trigger playback.
-    await delay(700);
-    const frames = await repairBrokenEmbed(wc, id, onLog);
+    await delay(400);
+    const frames = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
     if (frames.some(isBrokenEmbed)) {
       onLog(`"${src.label || src.index}" player iframe still has no host; trying next.`);
       continue;
@@ -509,7 +552,14 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     if (!arrived) {
       const srcs = await iframeSrcs(wc);
       const note = srcs.length ? ` iframe=${srcs.map((s) => s.slice(0, 80)).join(' | ')}` : ' (no iframe)';
-      onLog(`"${src.label || src.index}" gave no stream${note}; trying next.`);
+      const bad = sniffer.badHosts(id);
+      const badNote = bad.length
+        ? ` blocked-hostless=[${bad
+            .slice(0, 3)
+            .map((b) => `${b.resourceType}${b.referrer ? ' from ' + b.referrer.slice(0, 60) : ''}`)
+            .join('; ')}]`
+        : '';
+      onLog(`"${src.label || src.index}" gave no stream${note}${badNote}; trying next.`);
       continue;
     }
     const s = sniffer.best(id);
