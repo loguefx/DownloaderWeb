@@ -93,6 +93,9 @@ class Sniffer extends EventEmitter {
     this._embeds = new Map();
     // Host-less requests per tab, so discovery can report who issued them.
     this._badHosts = new Map();
+    // Streams the CDN says don't exist (404/410), per tab. A dub whose playlist
+    // 404s is listed on the site but not published yet.
+    this._dropped = new Map();
   }
 
   attach() {
@@ -146,9 +149,24 @@ class Sniffer extends EventEmitter {
         if ((byUrl || byType) && status >= 200 && status < 300) {
           const existing = this.byTab.get(tabId);
           const prev = existing && existing.get(details.url);
-          this._record({ url: details.url, webContentsId: tabId }, (prev && prev.headers) || {});
+          this._record(
+            { url: details.url, webContentsId: tabId, contentType: ct },
+            (prev && prev.headers) || {}
+          );
         } else if (byUrl && status >= 400) {
-          this._forget(tabId, details.url);
+          // 404/410 means the media really is gone, so drop it. Anything else
+          // (401/403/429/5xx) usually means the CDN wants the player's headers
+          // or is rate-limiting the browser. The downloader sends those headers
+          // and retries with a cooldown, so keep the detection - discarding it
+          // made a live episode report "no DUB server produced a stream".
+          const gone = status === 404 || status === 410;
+          if (gone) {
+            this._forget(tabId, details.url);
+            if (!this._dropped.has(tabId)) this._dropped.set(tabId, []);
+            const seen = this._dropped.get(tabId);
+            if (seen.length < 20) seen.push({ url: details.url, status });
+          }
+          this.emit('media-error', { webContentsId: tabId, url: details.url, status, dropped: gone });
         }
 
         if (details.resourceType === 'subFrame') {
@@ -369,12 +387,24 @@ class Sniffer extends EventEmitter {
     return config.media.ignoreHosts.some((re) => re.test(url));
   }
 
-  _type(url) {
+  _type(url, contentType) {
     if (this._isSubtitleUrl(url)) return 'sub';
-    if (/\.m3u8(\?|$)/i.test(url)) return 'hls';
-    if (/\.mpd(\?|$)/i.test(url)) return 'dash';
-    if (/\.mp4(\?|$)/i.test(url)) return 'mp4';
-    return 'hls'; // content-type detected playlists are usually HLS
+    const ct = contentType || '';
+    if (/\.m3u8/i.test(url) || /mpegurl/i.test(ct)) return 'hls';
+    if (/\.mpd(\?|$)/i.test(url) || /dash\+xml/i.test(ct)) return 'dash';
+    // Extensionless token URLs (cloudatacdn, dood, filemoon) are almost always
+    // progressive MP4. Labelling them HLS forced ffmpeg's HLS demuxer onto a
+    // file that never sent a playlist, which then died with Windows error -138
+    // (ETIMEDOUT).
+    if (
+      /\.mp4(\?|$)/i.test(url) ||
+      /video\/mp4/i.test(ct) ||
+      /^video\//i.test(ct) ||
+      (/cloudatacdn\.com/i.test(url) && !/\.m3u8/i.test(url))
+    ) {
+      return 'mp4';
+    }
+    return 'hls';
   }
 
   _record(details, requestHeaders) {
@@ -383,23 +413,36 @@ class Sniffer extends EventEmitter {
     if (!this.byTab.has(id)) this.byTab.set(id, new Map());
     const tabMap = this.byTab.get(id);
     const picked = this._pickHeaders(requestHeaders);
+    const kind = this._type(details.url, details.contentType);
     if (tabMap.has(details.url)) {
       const prev = tabMap.get(details.url);
       if (picked && Object.keys(picked).length && (!prev.headers || !Object.keys(prev.headers).length)) {
         prev.headers = picked;
       }
+      if (details.contentType && prev.type !== kind) prev.type = kind;
       return;
     }
 
     const detection = {
       url: details.url,
-      type: this._type(details.url),
+      type: kind,
       headers: picked,
       webContentsId: id,
       ts: Date.now()
     };
     tabMap.set(details.url, detection);
     this.emit('detected', detection);
+  }
+
+  // Files a detection captured in one tab under another one. Discovery resolves
+  // some players in a throwaway window; the stream still belongs to the episode
+  // page's tab, which is what the rest of the pipeline reads.
+  adopt(webContentsId, detection) {
+    if (webContentsId == null || !detection || !detection.url) return null;
+    if (!this.byTab.has(webContentsId)) this.byTab.set(webContentsId, new Map());
+    const moved = { ...detection, webContentsId };
+    this.byTab.get(webContentsId).set(moved.url, moved);
+    return moved;
   }
 
   _pickHeaders(requestHeaders) {
@@ -461,10 +504,16 @@ class Sniffer extends EventEmitter {
     return this._badHosts.get(webContentsId) || [];
   }
 
+  // Streams that were detected and then 404'd, so they can't be downloaded.
+  droppedMedia(webContentsId) {
+    return this._dropped.get(webContentsId) || [];
+  }
+
   clear(webContentsId) {
     this.byTab.delete(webContentsId);
     this._embeds.delete(webContentsId);
     this._badHosts.delete(webContentsId);
+    this._dropped.delete(webContentsId);
     for (const [apiUrl, meta] of [...this._sourcesMeta]) {
       if (meta.webContentsId !== webContentsId) continue;
       this._sourcesMeta.delete(apiUrl);

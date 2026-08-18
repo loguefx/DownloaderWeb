@@ -412,7 +412,10 @@ function renderQueue(items) {
 
     let rows = '';
     for (const it of visible) {
-      const pct = it.progress != null ? Math.round(it.progress * 100) : null;
+      const pct =
+        (it.status === 'downloading' || it.status === 'verifying') && it.progress != null
+          ? Math.round(it.progress * 100)
+          : null;
       const displayStatus = it.status === 'queued' && it.error ? 'retrying' : it.status;
       const indeterminate =
         (it.status === 'downloading' || it.status === 'resolving' || displayStatus === 'retrying') && pct == null;

@@ -38,8 +38,8 @@ module.exports = {
   async beforeResolve(wc, { mode, onLog }) {
     const want = mode === 'sub' ? 'sub' : 'dub';
     for (let i = 0; i < 12; i++) {
-      const info = await wc
-        .executeJavaScript(
+      const info = await Promise.race([
+        wc.executeJavaScript(
           `(() => {
             try { document.cookie = 'prefered_server_type=${want};path=/;max-age=86400'; } catch (e) {}
             const row = document.querySelector('.servers .type[data-type="${want}"], #w-servers .type[data-type="${want}"]');
@@ -47,8 +47,9 @@ module.exports = {
             return { hasRow: !!row, servers: lis.length };
           })()`,
           true
-        )
-        .catch(() => null);
+        ),
+        delay(2000).then(() => null)
+      ]).catch(() => null);
       if (info && info.servers > 0) {
         onLog(`Aniwave ${want.toUpperCase()} servers ready (${info.servers} button(s), row=${info.hasRow ? 'yes' : 'no'}).`);
         return;

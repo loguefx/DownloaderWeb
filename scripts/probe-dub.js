@@ -70,11 +70,36 @@ const log = (msg) => {
   }
 };
 
+// Discovery destroys its own window; without this the app would quit before a
+// PROBE_DOWNLOAD run finishes.
+app.on('window-all-closed', () => {});
+
 app.whenReady().then(async () => {
   sites.init(app.getPath('userData'));
   sniffer.attach();
   sniffer.on('embed', (e) => log(`EMBED api=${e.apiUrl || '?'} -> ${e.url}`));
   sniffer.on('detected', (d) => log(`SNIFF ${d.type} ${d.url.slice(0, 140)}`));
+  sniffer.on('media-error', (e) =>
+    log(`MEDIA HTTP ${e.status}${e.dropped ? ' DROPPED' : ''} ${e.url.slice(0, 140)}`)
+  );
+  // PROBE_SHOT=<dir>: snapshot the discovery window every few seconds, so the
+  // player state of a server that "gives no stream" can be inspected.
+  if (process.env.PROBE_SHOT) {
+    const shotDir = process.env.PROBE_SHOT;
+    fs.mkdirSync(shotDir, { recursive: true });
+    app.on('browser-window-created', (_e, win) => {
+      const tick = setInterval(async () => {
+        if (win.isDestroyed()) return clearInterval(tick);
+        try {
+          const img = await win.webContents.capturePage();
+          const at = ((Date.now() - t0) / 1000).toFixed(0).padStart(3, '0');
+          fs.writeFileSync(path.join(shotDir, `t${at}.png`), img.toPNG());
+        } catch (e) {
+          /* ignore */
+        }
+      }, 4000);
+    });
+  }
 
   log(`Probing ${mode.toUpperCase()} for ${url}`);
   log(`partition=${config.sessionPartition}`);
@@ -82,6 +107,30 @@ app.whenReady().then(async () => {
     const out = await bulk.makeDiscover(url, log, mode)();
     log(`RESULT status=${out && out.status} reason=${(out && out.reason) || ''}`);
     if (out && out.detection) log(`RESULT url=${out.detection.url}`);
+
+    // PROBE_DOWNLOAD=<file>: run the real download + verify on what we resolved.
+    if (process.env.PROBE_DOWNLOAD && out && out.detection) {
+      const target = process.env.PROBE_DOWNLOAD;
+      log(`RESULT headers=${JSON.stringify(out.detection.headers || {})}`);
+      const downloader = require(path.join(SRC, 'downloader'));
+      const { verifyFile } = require(path.join(SRC, 'verify'));
+      try {
+        let last = 0;
+        await downloader.download(out.detection, target, {
+          onProgress: (p) => {
+            const pct = Math.round((p.percent || 0) * 100);
+            if (pct >= last + 10) {
+              last = pct;
+              log(`DOWNLOAD ${pct}%`);
+            }
+          }
+        });
+        const v = await verifyFile(target);
+        log(`VERIFY ok=${v.ok} reason=${v.reason || ''}`);
+      } catch (e) {
+        log(`DOWNLOAD FAILED ${e && e.message}`);
+      }
+    }
   } catch (e) {
     log(`THREW ${e && e.message}`);
   }

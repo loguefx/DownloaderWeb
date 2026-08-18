@@ -5,8 +5,22 @@ const http = require('http');
 const config = require('./config');
 const sniffer = require('./sniffer');
 const sites = require('./sites');
+const { createDiscoverWindow } = require('./discoverwindow');
+const hlscheck = require('./hlscheck');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function evalJs(wc, code, timeoutMs = 4000) {
+  if (!wc || wc.isDestroyed()) return null;
+  try {
+    return await Promise.race([
+      wc.executeJavaScript(code, true),
+      delay(timeoutMs).then(() => null)
+    ]);
+  } catch (e) {
+    return null;
+  }
+}
 
 // Builds the DUB variant of a detected (sub) stream URL by inserting the site's
 // audio marker into the slug segment that precedes the episode number, e.g.
@@ -238,7 +252,7 @@ function clickScript(selector) {
 }
 
 async function clickSource(wc, selector) {
-  const pt = await wc.executeJavaScript(clickScript(selector), true).catch(() => null);
+  const pt = await evalJs(wc, clickScript(selector), 4000);
   if (!pt) return null;
   try {
     wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
@@ -250,12 +264,11 @@ async function clickSource(wc, selector) {
 }
 
 async function iframeSrcs(wc) {
-  return wc
-    .executeJavaScript(
-      `Array.from(document.querySelectorAll('iframe')).map((f) => f.src || f.getAttribute('src') || '')`,
-      true
-    )
-    .catch(() => []);
+  return (await evalJs(
+    wc,
+    `Array.from(document.querySelectorAll('iframe')).map((f) => f.src || f.getAttribute('src') || '')`,
+    4000
+  )) || [];
 }
 
 function isBrokenEmbed(src) {
@@ -263,8 +276,9 @@ function isBrokenEmbed(src) {
 }
 
 async function setIframeSrc(wc, url) {
-  return wc
-    .executeJavaScript(
+  return (
+    (await evalJs(
+      wc,
       `(() => {
         const frames = Array.from(document.querySelectorAll('#player iframe, .player iframe, #w-player iframe, iframe'));
         const broken = frames.find((f) => {
@@ -276,9 +290,9 @@ async function setIframeSrc(wc, url) {
         el.src = ${JSON.stringify(url)};
         return true;
       })()`,
-      true
-    )
-    .catch(() => false);
+      4000
+    )) || false
+  );
 }
 
 function embedMatchesClick(embed, afterTs, linkId) {
@@ -323,10 +337,10 @@ async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
       await delay(600);
       srcs = await iframeSrcs(wc);
     }
-    return srcs;
+    return { frames: srcs, embedUrl: embed.url };
   }
   for (let i = 0; i < 6; i++) {
-    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return srcs;
+    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return { frames: srcs, embedUrl: null };
     if (srcs.some(isBrokenEmbed)) break;
     await delay(250);
     srcs = await iframeSrcs(wc);
@@ -334,7 +348,7 @@ async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
   if (srcs.some(isBrokenEmbed)) {
     onLog('Player iframe has no host (https://undefined/...) and no embed API URL to repair it.');
   }
-  return srcs;
+  return { frames: srcs, embedUrl: null };
 }
 
 // Synthesizes a real mouse click at the centre of the player area. Third-party
@@ -344,29 +358,107 @@ async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
 async function clickPlayerArea(wc) {
   let pt = null;
   try {
-    pt = await wc.executeJavaScript(
-      `(() => {
-        const els = Array.from(document.querySelectorAll('video, iframe'));
-        let best = null, area = 0;
-        for (const el of els) {
-          const r = el.getBoundingClientRect();
-          const a = r.width * r.height;
-          if (a > area && r.width > 200 && r.height > 150) { area = a; best = r; }
-        }
-        return best ? { x: Math.round(best.left + best.width / 2), y: Math.round(best.top + best.height / 2) } : null;
-      })()`,
-      true
-    );
+    pt = await Promise.race([
+      wc.executeJavaScript(
+        `(() => {
+          const els = Array.from(document.querySelectorAll('video, iframe'));
+          let best = null, area = 0;
+          for (const el of els) {
+            const r = el.getBoundingClientRect();
+            const a = r.width * r.height;
+            if (a > area && r.width > 200 && r.height > 150) { area = a; best = el; }
+          }
+          if (!best) return { x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) };
+          best.scrollIntoView({ block: 'center', inline: 'center' });
+          const r = best.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        })()`,
+        true
+      ),
+      delay(2000).then(() => null)
+    ]);
   } catch (e) {
     pt = null;
   }
-  if (!pt) return;
+  if (!pt || wc.isDestroyed()) return;
   try {
+    // Hover first: these players gate playback on trusted pointer input.
+    wc.sendInputEvent({ type: 'mouseMove', x: pt.x, y: pt.y });
     wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
   } catch (e) {
     // ignore
   }
+}
+
+// Loads a provider's embed as its own top-level page and clicks it there.
+//
+// Providers like BYFMS gate their playlist behind an anti-bot check that only
+// runs on a real click. Electron's sendInputEvent goes to the top frame's widget
+// and never reaches an out-of-process iframe, so while the embed is nested in the
+// site's page that click can't land and the server looks dead. In its own window
+// the same click passes attestation and the player fetches its playlist.
+async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId) {
+  let win = null;
+  try {
+    win = createDiscoverWindow(ownerId);
+  } catch (e) {
+    return null;
+  }
+  const wc = win.webContents;
+  const id = wc.id;
+  try {
+    sniffer.clear(id);
+    // These providers redirect a couple of times (myvidplay -> playmogo) and
+    // sometimes never fire "loaded" at all, so a slow load is not a failure:
+    // start clicking/waiting anyway, because the player may already be running.
+    const loaded = await Promise.race([
+      wc.loadURL(embedUrl, { httpReferrer: referrer }).then(
+        () => true,
+        () => false
+      ),
+      delay(15000).then(() => null)
+    ]);
+    if (wc.isDestroyed()) return null;
+    if (loaded === null) onLog('Player page is slow to load; clicking it anyway.');
+    const stopNudging = nudgePlayer(wc, id, waitMs);
+    const arrived = await waitForMedia(id, waitMs);
+    stopNudging();
+    if (!arrived) {
+      const gone = sniffer.droppedMedia(id);
+      if (gone.length) onLog(`Player page stream is not on the CDN (HTTP ${gone[0].status}).`);
+      return null;
+    }
+    return sniffer.best(id) || null;
+  } catch (e) {
+    onLog(`Player page failed to load: ${e && e.message}`);
+    return null;
+  } finally {
+    try {
+      sniffer.clear(id);
+      if (win && !win.isDestroyed()) win.destroy();
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+// BYFMS and DGHG draw a "click play to verify you're human" overlay a second or
+// two after their player boots, so a single early click lands on nothing and the
+// server looks dead. Keep nudging until a stream appears or the window closes.
+function nudgePlayer(wc, webContentsId, windowMs) {
+  let stopped = false;
+  (async () => {
+    const deadline = Date.now() + windowMs;
+    while (!stopped && Date.now() < deadline) {
+      if (wc.isDestroyed() || sniffer.best(webContentsId)) return;
+      await clickPlayerArea(wc);
+      await delay(1800);
+    }
+  })();
+  return () => {
+    stopped = true;
+  };
 }
 
 // Resolves a stream for the page in `wc`, for the requested mode.
@@ -456,7 +548,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
 
   // 0) The page auto-plays a default server on load. If that already produced the
   //    audio we want (verified live), we're done - no clicking needed.
-  await waitForMedia(id, 5000);
+  await waitForMedia(id, 2000);
   if (wantSub) {
     const d = resolveSub(sniffer.bestForMode(id, 'sub', hints, false));
     if (d) {
@@ -481,7 +573,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     );
   };
 
-  let scan = await wc.executeJavaScript(scanScript(dub), true).catch(() => null);
+  let scan = await evalJs(wc, scanScript(dub), 5000);
   if (!scan) return { status: 'failed', reason: 'Could not scan the page (did it load?)' };
 
   // Diagnostics: show exactly how the page's servers were split into rows. If the
@@ -494,7 +586,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   if (!(scan.dubSources || []).length && !(scan.subSources || []).length) {
     onLog('No server buttons yet; waiting for the page to finish rendering...');
     await delay(Math.max(1500, dub.pageSettleMs));
-    const again = await wc.executeJavaScript(scanScript(dub), true).catch(() => null);
+    const again = await evalJs(wc, scanScript(dub), 5000);
     if (again) {
       scan = again;
       logScan(scan);
@@ -514,6 +606,15 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     return { status: 'failed', reason: 'No video sources found on the page' };
   }
 
+  // A site that labels its rows (it rendered a SUB toggle) but shows no DUB row
+  // simply hasn't published the dub. Trying the SUB servers anyway can only
+  // produce streams we must reject, and it costs the whole discovery budget per
+  // attempt - park it for the watcher instead.
+  if (!wantSub && !primary.length && scan.hasSub) {
+    onLog('The page has no DUB row at all (only SUB servers); adding to the waiting list.');
+    return { status: 'unavailable', reason: 'DUB not released yet' };
+  }
+
   onLog(
     `Found ${primary.length} ${MODE} + ${fallback.length} ${OTHER} server(s); ` +
       `trying ${primary.length ? MODE : OTHER} left-to-right` +
@@ -530,7 +631,14 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
 
   let sawStream = false;
   let primaryGotStream = false;
+  // Streams the CDN answered with 404/410 on the requested-audio row. The site
+  // lists the server, but the file isn't published - that's "not out yet", not a
+  // transient timeout, so it belongs on the waiting list instead of retrying now.
+  let primaryGone = 0;
   for (const src of tryList) {
+    if (wc.isDestroyed()) {
+      return { status: 'failed', reason: 'Discovery window closed' };
+    }
     const isPrimary = src.from === MODE;
     sniffer.clear(id); // only count streams produced by THIS click
     const clickTs = Date.now();
@@ -541,17 +649,69 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     // Many providers are third-party iframes that won't start from a programmatic
     // click - send a real mouse click into the player to trigger playback.
     await delay(400);
-    const frames = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
-    if (frames.some(isBrokenEmbed)) {
+    const { frames, embedUrl } = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
+    const hostless = frames.some(isBrokenEmbed);
+    if (hostless && !embedUrl) {
       onLog(`"${src.label || src.index}" player iframe still has no host; trying next.`);
       continue;
     }
-    await clickPlayerArea(wc);
 
-    const arrived = await waitForMedia(id, dub.sourceWaitMs);
+    let arrived = null;
+    // Clicks into a nested third-party iframe never land (BYFMS/DGHG). Skip the
+    // in-page wait and open those players as a top-level page immediately.
+    const nested = !!(embedUrl && !/aniwaves\.|echovideo\./i.test(embedUrl));
+    if (!hostless && !nested) {
+      const stopNudging = nudgePlayer(wc, id, dub.sourceWaitMs);
+      arrived = await waitForMedia(id, dub.sourceWaitMs);
+      stopNudging();
+    }
+    let gone = sniffer.droppedMedia(id);
+
+    // Nothing from the embedded player: retry it as a standalone page, where a
+    // click can actually reach providers that demand one.
+    if (!arrived && embedUrl && !gone.length) {
+      onLog(`"${src.label || src.index}" gave nothing in-page; opening its player directly...`);
+      // Roomier budget than the in-page try: this path pays for a page load plus
+      // the provider's anti-bot round trips before the playlist is fetched.
+      const direct = await resolveEmbedStandalone(
+        embedUrl,
+        url,
+        Math.max(dub.sourceWaitMs, 20000),
+        onLog,
+        id
+      );
+      if (direct) {
+        sniffer.adopt(id, direct);
+        arrived = direct;
+        gone = [];
+      }
+    }
+    if (gone.length && isPrimary) primaryGone += 1;
+    if (arrived && (arrived.type === 'hls' || /\.m3u8/i.test(arrived.url || ''))) {
+      const peek = await hlscheck.bodyReachable(arrived.url, arrived.headers);
+      if (!peek.ok) {
+        let host = '';
+        try {
+          host = new URL(arrived.url).host;
+        } catch (e) {
+          // ignore
+        }
+        onLog(
+          `"${src.label || src.index}" playlist only has the tail of the episode - ${host || 'the CDN'} answers ` +
+            `HTTP ${peek.status || '?'} for the main segment (a different VPN exit often gets a working edge); trying next.`
+        );
+        if (isPrimary) primaryGone += 1;
+        arrived = null;
+      }
+    }
     if (!arrived) {
       const srcs = await iframeSrcs(wc);
       const note = srcs.length ? ` iframe=${srcs.map((s) => s.slice(0, 80)).join(' | ')}` : ' (no iframe)';
+      if (gone.length) {
+        onLog(
+          `"${src.label || src.index}" stream is not on the CDN (HTTP ${gone[0].status}): ${gone[0].url.slice(0, 120)}`
+        );
+      }
       const bad = sniffer.badHosts(id);
       const badNote = bad.length
         ? ` blocked-hostless=[${bad
@@ -585,6 +745,20 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   // a SUB fallback still produces a stream. The old `sawStream` check treated
   // that as "dub not released" and skipped retries — the intermittent first-ep
   // failure. Only park on the waiting list when we have real evidence.
+  // The site listed the server and the player asked for the playlist, but the CDN
+  // returned 404/410: the file isn't published yet. Retrying in a minute cannot
+  // help, so park it for the daily watcher.
+  // Only park it when EVERY server on the requested row proved the file is gone.
+  // A server that merely timed out (slow player page, blocked embed) is not
+  // evidence that the dub is unreleased - that used to send episodes whose dub
+  // does exist straight to the waiting list.
+  if (primary.length > 0 && !primaryGotStream && primaryGone >= primary.length) {
+    onLog(
+      `Every ${MODE} server's stream 404s on the CDN - ${MODE} is listed but not published yet; adding to the waiting list.`
+    );
+    return { status: 'unavailable', reason: `${MODE} not released yet` };
+  }
+
   if (primary.length > 0 && !primaryGotStream && !dubUnplayable) {
     onLog(
       `All ${MODE} servers timed out or produced no stream (likely transient under load); will retry.`
@@ -633,18 +807,38 @@ function waitForMedia(webContentsId, timeoutMs, graceMs = 1800) {
       clearTimeout(timer);
       clearTimeout(graceTimer);
       sniffer.removeListener('detected', onDetected);
+      sniffer.removeListener('media-error', onGone);
       resolve(sniffer.best(webContentsId));
     };
+    // Grace expired: only stop if we still hold a live stream. A playlist that
+    // 404s is dropped again, and players usually fail over to another CDN edge,
+    // so settling here reported "no stream" a second into a 14s window.
+    const onGrace = () => {
+      graceTimer = null;
+      if (sniffer.best(webContentsId)) settle();
+    };
     const arm = () => {
-      if (!graceTimer) graceTimer = setTimeout(settle, graceMs);
+      if (!graceTimer) graceTimer = setTimeout(onGrace, graceMs);
     };
     const onDetected = (d) => {
       if (done) return;
       if (d.webContentsId === webContentsId && ['hls', 'mp4', 'dash'].includes(d.type)) arm();
     };
+    // A 404/410 means this playlist is gone. Give the player a short window to
+    // fail over to another edge, then stop instead of sitting out the full wait.
+    const onGone = (e) => {
+      if (done || e.webContentsId !== webContentsId || !e.dropped) return;
+      if (!sniffer.best(webContentsId)) {
+        clearTimeout(graceTimer);
+        graceTimer = setTimeout(() => {
+          if (!sniffer.best(webContentsId)) settle();
+        }, 2500);
+      }
+    };
     if (sniffer.best(webContentsId)) arm();
     const timer = setTimeout(settle, timeoutMs);
     sniffer.on('detected', onDetected);
+    sniffer.on('media-error', onGone);
   });
 }
 

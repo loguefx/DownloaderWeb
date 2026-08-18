@@ -7,6 +7,7 @@ const { BrowserWindow, session } = require('electron');
 const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
+const { createDiscoverWindow, destroyOwned } = require('./discoverwindow');
 const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
@@ -42,7 +43,9 @@ function loadWithTimeout(win, url, timeoutMs) {
 // page, selects DUB, and tries each source. Returns the dubselect outcome
 // ({ status: 'resolved'|'unavailable'|'failed', ... }). Runs fresh on each retry.
 // Hard-capped so a hung page/player can never leave the queue stuck on "resolving".
-const DISCOVER_TIMEOUT_MS = 90000;
+// Room for every server to be tried in-page and then as a standalone player page
+// (~30s per server on a site with three of them) before we call it hung.
+const DISCOVER_TIMEOUT_MS = 110000;
 
 const discoverGate = {
   active: 0,
@@ -64,94 +67,48 @@ async function withDiscoverGate(fn) {
   }
 }
 
-function mainBrowserWindow() {
-  return (
-    BrowserWindow.getAllWindows().find((w) => {
-      if (w.isDestroyed()) return false;
-      const b = w.getBounds();
-      return b.width >= 800 && b.height >= 500;
-    }) || null
-  );
-}
-
-// Off-screen but shown: fully hidden windows often never start JW Player
-// playback, so getSources alone (via the sniffer) is what saves us — still
-// keep the window "visible" to Chromium so embeds behave normally.
-//
-// Windows is stricter than Linux: opacity 0 / far off-screen windows are
-// occluded and their media pipeline freezes, so discovery never resolves.
-// Paint a nearly-invisible window behind the main UI instead.
-function createDiscoverWindow() {
-  const isWin = process.platform === 'win32';
-  const main = mainBrowserWindow();
-  const b = main && !main.isDestroyed() ? main.getBounds() : { x: 0, y: 0 };
-  const win = new BrowserWindow({
-    show: true,
-    x: isWin ? b.x : -20000,
-    y: isWin ? b.y : 0,
-    width: 1280,
-    height: 720,
-    opacity: isWin ? 0.01 : 0,
-    skipTaskbar: true,
-    focusable: isWin,
-    paintWhenInitiallyHidden: true,
-    webPreferences: {
-      partition: config.sessionPartition,
-      backgroundThrottling: false,
-      sandbox: false
-    }
-  });
-  try {
-    win.webContents.setBackgroundThrottling(false);
-  } catch (e) {
-    // ignore
-  }
-  if (isWin && main && !main.isDestroyed()) {
-    try {
-      main.moveTop();
-    } catch (e) {
-      // ignore
-    }
-  }
-  return win;
-}
-
 function makeDiscover(url, onLog = () => {}, mode = 'dub') {
   return async () =>
     withDiscoverGate(async () => {
-    const win = createDiscoverWindow();
-    let timer = null;
-    const onFail = (_e, _code, desc, failedUrl) => {
-      if (/:\/\/undefined\b/i.test(failedUrl || '')) {
-        onLog(`Player embed failed to load (missing host): ${desc}`);
-      }
-    };
-    try {
-      win.webContents.on('did-fail-load', onFail);
-      onLog(`Loading ${url}`);
-      await loadWithTimeout(win, url, 30000);
-      const outcome = await Promise.race([
-        dubselect.selectDubAndResolve(win.webContents, url, onLog, mode),
-        new Promise((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error('Discovery timed out')),
-            DISCOVER_TIMEOUT_MS
-          );
-        })
-      ]);
-      return outcome;
-    } catch (e) {
-      onLog(`Discovery error for ${url}: ${e.message || e}`);
-      return { status: 'failed', reason: e.message || 'Discovery failed' };
-    } finally {
-      if (timer) clearTimeout(timer);
+      const win = createDiscoverWindow();
+      const ownerId = win.webContents.id;
+      let timer = null;
+      const log = (msg) => {
+        try {
+          console.log(`[discover] ${msg}`);
+        } catch (e) {
+          // ignore
+        }
+        onLog(msg);
+      };
+      const onFail = (_e, _code, desc, failedUrl) => {
+        if (/:\/\/undefined\b/i.test(failedUrl || '')) {
+          log(`Player embed failed to load (missing host): ${desc}`);
+        }
+      };
       try {
-        win.webContents.removeListener('did-fail-load', onFail);
+        win.webContents.on('did-fail-load', onFail);
+        log(`Loading ${url}`);
+        await loadWithTimeout(win, url, 30000);
+        const outcome = await Promise.race([
+          dubselect.selectDubAndResolve(win.webContents, url, log, mode),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Discovery timed out')), DISCOVER_TIMEOUT_MS);
+          })
+        ]);
+        return outcome;
       } catch (e) {
-        // ignore
+        log(`Discovery error for ${url}: ${e.message || e}`);
+        return { status: 'failed', reason: e.message || 'Discovery failed' };
+      } finally {
+        if (timer) clearTimeout(timer);
+        try {
+          win.webContents.removeListener('did-fail-load', onFail);
+        } catch (e) {
+          // ignore
+        }
+        destroyOwned(ownerId);
       }
-      if (!win.isDestroyed()) win.destroy();
-    }
     });
 }
 

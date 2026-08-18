@@ -242,6 +242,7 @@ class DownloadManager extends EventEmitter {
 
       try {
         item.status = 'resolving';
+        item.progress = null;
         item.error = null;
         this._emit();
 
@@ -429,6 +430,7 @@ class DownloadManager extends EventEmitter {
         extra = {};
       }
       if (extra.skip) continue;
+      delete rec.status;
       this.add(
         Object.assign(
           {

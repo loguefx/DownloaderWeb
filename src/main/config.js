@@ -67,7 +67,7 @@ module.exports = {
     // How many episode pages may be opened at once. Stream discovery is Chromium-
     // heavy; 5 overlapping players make embed APIs drop the host (iframe ->
     // https://undefined/...) and episodes fail with "no DUB server produced a stream".
-    discoverConcurrency: 2,
+    discoverConcurrency: 1,
     // Remuxes in parallel. If the CDN 429s, tripRateLimit pauses new HLS starts
     // and the queue retries with backoff (see downloader/queue).
     hlsConcurrency: 5,
