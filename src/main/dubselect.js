@@ -10,7 +10,46 @@ const hlscheck = require('./hlscheck');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function evalJs(wc, code, timeoutMs = 4000) {
+// Every bounded wait below is named, because the time discovery is allowed is
+// derived from them (see serverBudgetMs / discoveryStallMs) instead of being a
+// hardcoded number. A cap smaller than the sum of these killed runs partway
+// through the server list, and the queue then retried the same doomed sequence
+// forever - so an episode could never resolve no matter how many attempts.
+const EVAL_MS = 4000; // executeJavaScript round trip
+const SCAN_MS = 5000; // page scan for the SUB/DUB server rows
+const RESCAN_MIN_MS = 1500; // floor for the "page still hydrating" re-scan
+const CLICK_SETTLE_MS = 400; // pause after a click before reading the DOM
+const AUTOPLAY_WAIT_MS = 2000; // window for the page's own autoplay stream
+const PROBE_MS = 8000; // urlIsPlayable hard cap
+const EMBED_WAIT_MS = 2500; // window for the ajax/sources embed URL
+const CLICK_PROBE_MS = 2000; // locating the player area to click
+const STANDALONE_LOAD_MS = 15000; // loading a provider's embed as its own page
+const STANDALONE_MIN_WAIT_MS = 20000; // floor for the standalone media wait
+const MEDIA_GRACE_MS = 1800; // sibling-stream grace after the first hit
+// Clicks, embed repair, playlist reachability probing and failure diagnostics
+// around one server attempt. Each piece is capped on its own; this is the
+// combined allowance rather than a sum of theoretical worst cases.
+const SERVER_OVERHEAD_MS = 20000;
+
+// Worst case for one iteration of the server loop: the in-page wait, then the
+// standalone player-page retry, plus the overhead allowance.
+function serverBudgetMs(dub) {
+  const standalone = STANDALONE_LOAD_MS + Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS);
+  return dub.sourceWaitMs + standalone + SERVER_OVERHEAD_MS;
+}
+
+// How long a healthy discovery can go WITHOUT reporting progress. Callers use
+// this as a hung-page watchdog instead of a total time limit: the total depends
+// on how many servers a page lists, and any fixed total small enough to be a
+// useful watchdog is also small enough to kill runs that were still working.
+// One full server attempt is the longest stretch that can pass with nothing to
+// report, so allow that twice over for headroom.
+function discoveryStallMs(url) {
+  const dub = sites.dubConfig(sites.resolve(url || ''));
+  return 2 * serverBudgetMs(dub);
+}
+
+async function evalJs(wc, code, timeoutMs = EVAL_MS) {
   if (!wc || wc.isDestroyed()) return null;
   try {
     return await Promise.race([
@@ -48,7 +87,14 @@ function urlIsPlayable(url, headers, redirectsLeft = 3) {
       clearTimeout(hardTimer);
       resolve(v);
     };
-    const hardTimer = setTimeout(() => fin(false), 8000);
+    const hardTimer = setTimeout(() => {
+      try {
+        if (req) req.destroy();
+      } catch (e) {
+        // ignore
+      }
+      fin(false);
+    }, PROBE_MS);
     let mod;
     let parsed;
     try {
@@ -252,7 +298,7 @@ function clickScript(selector) {
 }
 
 async function clickSource(wc, selector) {
-  const pt = await evalJs(wc, clickScript(selector), 4000);
+  const pt = await evalJs(wc, clickScript(selector), EVAL_MS);
   if (!pt) return null;
   try {
     wc.sendInputEvent({ type: 'mouseDown', x: pt.x, y: pt.y, button: 'left', clickCount: 1 });
@@ -267,7 +313,7 @@ async function iframeSrcs(wc) {
   return (await evalJs(
     wc,
     `Array.from(document.querySelectorAll('iframe')).map((f) => f.src || f.getAttribute('src') || '')`,
-    4000
+    EVAL_MS
   )) || [];
 }
 
@@ -290,7 +336,7 @@ async function setIframeSrc(wc, url) {
         el.src = ${JSON.stringify(url)};
         return true;
       })()`,
-      4000
+      EVAL_MS
     )) || false
   );
 }
@@ -310,7 +356,7 @@ function embedMatchesClick(embed, afterTs, linkId) {
   return !afterTs || (embed.ts && embed.ts >= afterTs - 80);
 }
 
-async function waitForEmbed(id, afterTs, linkId, timeoutMs = 2500) {
+async function waitForEmbed(id, afterTs, linkId, timeoutMs = EMBED_WAIT_MS) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const embed = sniffer.lastEmbed(id);
@@ -375,7 +421,7 @@ async function clickPlayerArea(wc) {
         })()`,
         true
       ),
-      delay(2000).then(() => null)
+      delay(CLICK_PROBE_MS).then(() => null)
     ]);
   } catch (e) {
     pt = null;
@@ -398,7 +444,11 @@ async function clickPlayerArea(wc) {
 // and never reaches an out-of-process iframe, so while the embed is nested in the
 // site's page that click can't land and the server looks dead. In its own window
 // the same click passes attestation and the player fetches its playlist.
-async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId) {
+async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId, signal = null) {
+  // Never open a new player after the run was cancelled: the caller has already
+  // torn down this run's windows, so a window created now would outlive it and
+  // keep decoding video alongside the next episode's discovery.
+  if (signal && signal.aborted) return null;
   let win = null;
   try {
     win = createDiscoverWindow(ownerId);
@@ -417,12 +467,13 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
         () => true,
         () => false
       ),
-      delay(15000).then(() => null)
+      delay(STANDALONE_LOAD_MS).then(() => null)
     ]);
     if (wc.isDestroyed()) return null;
     if (loaded === null) onLog('Player page is slow to load; clicking it anyway.');
-    const stopNudging = nudgePlayer(wc, id, waitMs);
-    const arrived = await waitForMedia(id, waitMs);
+    else onLog('Player page loaded; waiting for its stream...');
+    const stopNudging = nudgePlayer(wc, id, waitMs, signal);
+    const arrived = await waitForMedia(id, waitMs, MEDIA_GRACE_MS, signal);
     stopNudging();
     if (!arrived) {
       const gone = sniffer.droppedMedia(id);
@@ -446,11 +497,12 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
 // BYFMS and DGHG draw a "click play to verify you're human" overlay a second or
 // two after their player boots, so a single early click lands on nothing and the
 // server looks dead. Keep nudging until a stream appears or the window closes.
-function nudgePlayer(wc, webContentsId, windowMs) {
+function nudgePlayer(wc, webContentsId, windowMs, signal = null) {
   let stopped = false;
   (async () => {
     const deadline = Date.now() + windowMs;
     while (!stopped && Date.now() < deadline) {
+      if (signal && signal.aborted) return;
       if (wc.isDestroyed() || sniffer.best(webContentsId)) return;
       await clickPlayerArea(wc);
       await delay(1800);
@@ -466,13 +518,16 @@ function nudgePlayer(wc, webContentsId, windowMs) {
 //   mode 'sub': selects SUB, tries the SUB-row sources, and captures a subtitle
 //               track so it can be embedded into the .mp4.
 // Returns { status: 'resolved'|'unavailable'|'failed', detection?, reason? }.
-async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
+async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts = {}) {
   const id = wc.id;
+  const signal = opts.signal || null;
+  const cancelled = () => !!(signal && signal.aborted);
   const profile = sites.resolve(url || '');
   const dub = sites.dubConfig(profile);
   if (profile.id !== 'generic') onLog(`Using site profile: ${profile.name}`);
 
   await delay(dub.pageSettleMs);
+  if (cancelled()) return { status: 'failed', reason: 'Discovery cancelled' };
 
   // Optional per-site prep (e.g. FilmeHD clicks the in-page episode button).
   if (typeof profile.beforeResolve === 'function') {
@@ -548,7 +603,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
 
   // 0) The page auto-plays a default server on load. If that already produced the
   //    audio we want (verified live), we're done - no clicking needed.
-  await waitForMedia(id, 2000);
+  await waitForMedia(id, AUTOPLAY_WAIT_MS, MEDIA_GRACE_MS, signal);
   if (wantSub) {
     const d = resolveSub(sniffer.bestForMode(id, 'sub', hints, false));
     if (d) {
@@ -573,7 +628,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     );
   };
 
-  let scan = await evalJs(wc, scanScript(dub), 5000);
+  let scan = await evalJs(wc, scanScript(dub), SCAN_MS);
   if (!scan) return { status: 'failed', reason: 'Could not scan the page (did it load?)' };
 
   // Diagnostics: show exactly how the page's servers were split into rows. If the
@@ -585,8 +640,8 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   // misread an empty row as "dub not released".
   if (!(scan.dubSources || []).length && !(scan.subSources || []).length) {
     onLog('No server buttons yet; waiting for the page to finish rendering...');
-    await delay(Math.max(1500, dub.pageSettleMs));
-    const again = await evalJs(wc, scanScript(dub), 5000);
+    await delay(Math.max(RESCAN_MIN_MS, dub.pageSettleMs));
+    const again = await evalJs(wc, scanScript(dub), SCAN_MS);
     if (again) {
       scan = again;
       logScan(scan);
@@ -626,8 +681,16 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   if ((wantSub && scan.hasSub) || (!wantSub && scan.hasDub)) {
     onLog(`Selecting ${MODE} row...`);
     await clickSource(wc, toggleSel);
-    await delay(400);
+    await delay(CLICK_SETTLE_MS);
   }
+
+  // Sized from the number of servers we are actually about to try, and measured
+  // from HERE: a slow page load or a site's beforeResolve() poll must never eat
+  // into the time the servers themselves need. Undersizing this budget is what
+  // made runs die partway down the list, so the server that would have worked
+  // was never reached and every retry failed the same way.
+  const serverBudget = serverBudgetMs(dub);
+  const runDeadline = Date.now() + tryList.length * serverBudget;
 
   let sawStream = false;
   let primaryGotStream = false;
@@ -635,9 +698,20 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
   // lists the server, but the file isn't published - that's "not out yet", not a
   // transient timeout, so it belongs on the waiting list instead of retrying now.
   let primaryGone = 0;
-  for (const src of tryList) {
+  for (const [attempt, src] of tryList.entries()) {
     if (wc.isDestroyed()) {
       return { status: 'failed', reason: 'Discovery window closed' };
+    }
+    if (cancelled()) {
+      return { status: 'failed', reason: 'Discovery cancelled' };
+    }
+    if (Date.now() >= runDeadline) {
+      const untried = tryList.length - attempt;
+      onLog(
+        `Out of time after ${attempt} of ${tryList.length} server(s); ${untried} not tried. ` +
+          'Servers are running slower than their budget allows.'
+      );
+      break;
     }
     const isPrimary = src.from === MODE;
     sniffer.clear(id); // only count streams produced by THIS click
@@ -648,7 +722,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
 
     // Many providers are third-party iframes that won't start from a programmatic
     // click - send a real mouse click into the player to trigger playback.
-    await delay(400);
+    await delay(CLICK_SETTLE_MS);
     const { frames, embedUrl } = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
     const hostless = frames.some(isBrokenEmbed);
     if (hostless && !embedUrl) {
@@ -661,8 +735,9 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     // in-page wait and open those players as a top-level page immediately.
     const nested = !!(embedUrl && !/aniwaves\.|echovideo\./i.test(embedUrl));
     if (!hostless && !nested) {
-      const stopNudging = nudgePlayer(wc, id, dub.sourceWaitMs);
-      arrived = await waitForMedia(id, dub.sourceWaitMs);
+      onLog(`Waiting up to ${Math.round(dub.sourceWaitMs / 1000)}s for "${src.label || src.index}" in-page...`);
+      const stopNudging = nudgePlayer(wc, id, dub.sourceWaitMs, signal);
+      arrived = await waitForMedia(id, dub.sourceWaitMs, MEDIA_GRACE_MS, signal);
       stopNudging();
     }
     let gone = sniffer.droppedMedia(id);
@@ -676,9 +751,10 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
       const direct = await resolveEmbedStandalone(
         embedUrl,
         url,
-        Math.max(dub.sourceWaitMs, 20000),
+        Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS),
         onLog,
-        id
+        id,
+        signal
       );
       if (direct) {
         sniffer.adopt(id, direct);
@@ -688,7 +764,8 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub') {
     }
     if (gone.length && isPrimary) primaryGone += 1;
     if (arrived && (arrived.type === 'hls' || /\.m3u8/i.test(arrived.url || ''))) {
-      const peek = await hlscheck.bodyReachable(arrived.url, arrived.headers);
+      onLog(`Checking whether "${src.label || src.index}" playlist is complete...`);
+      const peek = await hlscheck.bodyReachable(arrived.url, arrived.headers, signal);
       if (!peek.ok) {
         let host = '';
         try {
@@ -797,7 +874,7 @@ function finalize(detection, id, wantSub, onLog) {
 
 // Waits for media, then a short grace period to capture sibling streams
 // (master + variants), returning the single best one. Null on timeout.
-function waitForMedia(webContentsId, timeoutMs, graceMs = 1800) {
+function waitForMedia(webContentsId, timeoutMs, graceMs = MEDIA_GRACE_MS, signal = null) {
   return new Promise((resolve) => {
     let done = false;
     let graceTimer = null;
@@ -808,6 +885,7 @@ function waitForMedia(webContentsId, timeoutMs, graceMs = 1800) {
       clearTimeout(graceTimer);
       sniffer.removeListener('detected', onDetected);
       sniffer.removeListener('media-error', onGone);
+      if (signal) signal.removeEventListener('abort', settle);
       resolve(sniffer.best(webContentsId));
     };
     // Grace expired: only stop if we still hold a live stream. A playlist that
@@ -839,7 +917,12 @@ function waitForMedia(webContentsId, timeoutMs, graceMs = 1800) {
     const timer = setTimeout(settle, timeoutMs);
     sniffer.on('detected', onDetected);
     sniffer.on('media-error', onGone);
+    // Registered last: settle() clears `timer`, so it must exist by now.
+    if (signal) {
+      if (signal.aborted) settle();
+      else signal.addEventListener('abort', settle, { once: true });
+    }
   });
 }
 
-module.exports = { selectDubAndResolve, waitForMedia };
+module.exports = { selectDubAndResolve, waitForMedia, discoveryStallMs };

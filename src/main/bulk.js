@@ -42,11 +42,6 @@ function loadWithTimeout(win, url, timeoutMs) {
 // Just-in-time discovery for one episode URL: opens a hidden window, loads the
 // page, selects DUB, and tries each source. Returns the dubselect outcome
 // ({ status: 'resolved'|'unavailable'|'failed', ... }). Runs fresh on each retry.
-// Hard-capped so a hung page/player can never leave the queue stuck on "resolving".
-// Room for every server to be tried in-page and then as a standalone player page
-// (~30s per server on a site with three of them) before we call it hung.
-const DISCOVER_TIMEOUT_MS = 110000;
-
 const discoverGate = {
   active: 0,
   waiters: []
@@ -72,13 +67,28 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
     withDiscoverGate(async () => {
       const win = createDiscoverWindow();
       const ownerId = win.webContents.id;
-      let timer = null;
+      const controller = new AbortController();
+      // Backstop so a hung page/player can never leave the queue stuck on
+      // "resolving". It watches for a STALL (no reported progress) rather than
+      // capping total time: dubselect budgets itself per server, and how long it
+      // legitimately needs depends on how many servers the page lists. The fixed
+      // total this replaced was smaller than that budget, so it killed runs
+      // partway down the server list - and because every retry replayed the same
+      // sequence, the episode timed out forever with later servers never tried.
+      const stallMs = dubselect.discoveryStallMs(url);
+      let stallTimer = null;
+      let onStall = () => {};
+      const armStall = () => {
+        if (stallTimer) clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => onStall(), stallMs);
+      };
       const log = (msg) => {
         try {
           console.log(`[discover] ${msg}`);
         } catch (e) {
           // ignore
         }
+        armStall(); // any progress report resets the watchdog
         onLog(msg);
       };
       const onFail = (_e, _code, desc, failedUrl) => {
@@ -91,9 +101,11 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
         log(`Loading ${url}`);
         await loadWithTimeout(win, url, 30000);
         const outcome = await Promise.race([
-          dubselect.selectDubAndResolve(win.webContents, url, log, mode),
+          dubselect.selectDubAndResolve(win.webContents, url, log, mode, { signal: controller.signal }),
           new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error('Discovery timed out')), DISCOVER_TIMEOUT_MS);
+            onStall = () =>
+              reject(new Error(`Discovery stalled for ${Math.round(stallMs / 1000)}s with no progress`));
+            armStall();
           })
         ]);
         return outcome;
@@ -101,7 +113,12 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
         log(`Discovery error for ${url}: ${e.message || e}`);
         return { status: 'failed', reason: e.message || 'Discovery failed' };
       } finally {
-        if (timer) clearTimeout(timer);
+        // Abort before tearing the windows down. Promise.race abandons the loser
+        // but cannot stop it, so without this a timed-out resolve kept clicking
+        // and could open a player window that outlived this run - overlapping the
+        // next episode's discovery, which is exactly what breaks player embeds.
+        controller.abort();
+        if (stallTimer) clearTimeout(stallTimer);
         try {
           win.webContents.removeListener('did-fail-load', onFail);
         } catch (e) {
