@@ -292,7 +292,8 @@ function clickScript(selector) {
     return {
       x: Math.round(r.left + r.width / 2),
       y: Math.round(r.top + r.height / 2),
-      linkId: (host.getAttribute && host.getAttribute('data-link-id')) || ''
+      linkId: (host.getAttribute && host.getAttribute('data-link-id')) || '',
+      playerUrl: (el.getAttribute && el.getAttribute('data-player-url')) || ''
     };
   })()`;
 }
@@ -319,6 +320,21 @@ async function iframeSrcs(wc) {
 
 function isBrokenEmbed(src) {
   return /https?:\/\/undefined\b/i.test(src || '');
+}
+
+// A real player embed lives on another host. Same-origin iframe src (SFlix
+// parks #main-player on the episode URL until Play is clicked) is a placeholder
+// and must not count as "the player loaded".
+function isOffsiteEmbed(src, originHost) {
+  if (!src || !/^https?:\/\//i.test(src) || isBrokenEmbed(src)) return false;
+  try {
+    const host = new URL(src).hostname;
+    if (!host) return false;
+    if (originHost && host === originHost) return false;
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function setIframeSrc(wc, url) {
@@ -371,12 +387,14 @@ async function waitForEmbed(id, afterTs, linkId, timeoutMs = EMBED_WAIT_MS) {
 // sets iframe.src from result.url; under Electron that often becomes
 // https://undefined/... if we miss the API or reuse the autoplay SUB embed.
 async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
+  const originHost = await evalJs(wc, `location.hostname`, 2000);
+  const offsite = (list) => (list || []).find((s) => isOffsiteEmbed(s, originHost)) || null;
   const embed = await waitForEmbed(id, afterTs, linkId);
   let srcs = await iframeSrcs(wc);
   if (embed && embed.url) {
     const host = embed.url.split('?')[0];
     const already = srcs.some((s) => s && host && s.indexOf(host) !== -1);
-    const broken = srcs.some(isBrokenEmbed) || !srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s));
+    const broken = srcs.some(isBrokenEmbed) || !offsite(srcs);
     if (!already || broken) {
       onLog(`Loading player embed ${embed.url}`);
       await setIframeSrc(wc, embed.url);
@@ -386,11 +404,14 @@ async function applyFreshEmbed(wc, id, afterTs, linkId, onLog) {
     return { frames: srcs, embedUrl: embed.url };
   }
   for (let i = 0; i < 6; i++) {
-    if (srcs.some((s) => /^https?:\/\//i.test(s) && !isBrokenEmbed(s))) return { frames: srcs, embedUrl: null };
+    const live = offsite(srcs);
+    if (live) return { frames: srcs, embedUrl: live };
     if (srcs.some(isBrokenEmbed)) break;
     await delay(250);
     srcs = await iframeSrcs(wc);
   }
+  const live = offsite(srcs);
+  if (live) return { frames: srcs, embedUrl: live };
   if (srcs.some(isBrokenEmbed)) {
     onLog('Player iframe has no host (https://undefined/...) and no embed API URL to repair it.');
   }
@@ -450,6 +471,7 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
   // keep decoding video alongside the next episode's discovery.
   if (signal && signal.aborted) return null;
   let win = null;
+  let keep = false;
   try {
     win = createDiscoverWindow(ownerId);
   } catch (e) {
@@ -459,6 +481,12 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
   const id = wc.id;
   try {
     sniffer.clear(id);
+    try {
+      const hooked = await hlscheck.installPlayerFetchHook(wc);
+      if (hooked) onLog('Installed player fetch hook before the embed scripts ran.');
+    } catch (e) {
+      // ignore
+    }
     // These providers redirect a couple of times (myvidplay -> playmogo) and
     // sometimes never fire "loaded" at all, so a slow load is not a failure:
     // start clicking/waiting anyway, because the player may already be running.
@@ -472,24 +500,84 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
     if (wc.isDestroyed()) return null;
     if (loaded === null) onLog('Player page is slow to load; clicking it anyway.');
     else onLog('Player page loaded; waiting for its stream...');
+    const blocked = await evalJs(
+      wc,
+      `(() => {
+        const t = ((document.title || '') + ' ' + ((document.body && document.body.innerText) || '')).slice(0, 240);
+        return /just a moment|cf-turnstile|attention required/i.test(t) ||
+          !!document.querySelector('#challenge-running, .cf-turnstile, iframe[src*="challenges.cloudflare"]');
+      })()`,
+      2000
+    );
+    if (blocked) {
+      onLog('Player page is a Cloudflare challenge; skipping this embed.');
+      return null;
+    }
     const stopNudging = nudgePlayer(wc, id, waitMs, signal);
     const arrived = await waitForMedia(id, waitMs, MEDIA_GRACE_MS, signal);
     stopNudging();
     if (!arrived) {
       const gone = sniffer.droppedMedia(id);
       if (gone.length) onLog(`Player page stream is not on the CDN (HTTP ${gone[0].status}).`);
+      try {
+        const perf = await wc.executeJavaScript(
+          `(() => {
+            const res = performance.getEntriesByType('resource').map((e) => e.name).slice(-24);
+            const ifr = Array.from(document.querySelectorAll('iframe')).map((f) => f.src || '').slice(0, 8);
+            const v = document.querySelector('video');
+            return {
+              href: location.href,
+              title: document.title || '',
+              ifr,
+              video: v ? { src: v.currentSrc || v.src || '', dur: v.duration || 0, ready: v.readyState } : null,
+              res: res.map((n) => String(n).slice(0, 140))
+            };
+          })()`,
+          true
+        );
+        const blocked = /just a moment|attention required/i.test((perf && perf.title) || '');
+        onLog(
+          `Player page had no sniffed stream` +
+            (blocked ? ' (Cloudflare challenge)' : '') +
+            `; title=${JSON.stringify((perf && perf.title) || '').slice(0, 80)}` +
+            (perf && perf.video ? `; video ready=${perf.video.ready}` : '')
+        );
+      } catch (e) {
+        // ignore
+      }
       return null;
     }
-    return sniffer.best(id) || null;
+    const best = sniffer.best(id) || arrived;
+    best.playerWebContentsId = id;
+    best.embedUrl = best.embedUrl || embedUrl;
+    if (hlscheck.isPlayerBoundCdn(best.url, embedUrl)) {
+      keep = true;
+      best.releasePlayer = () => {
+        try {
+          if (win && !win.isDestroyed()) win.destroy();
+        } catch (e) {
+          // ignore
+        }
+      };
+    }
+    return best;
   } catch (e) {
     onLog(`Player page failed to load: ${e && e.message}`);
     return null;
   } finally {
     try {
       sniffer.clear(id);
-      if (win && !win.isDestroyed()) win.destroy();
     } catch (e) {
       // ignore
+    }
+    // Token CDNs only serve segments while this player page is alive. Leave it
+    // open; makeDiscover / the queue destroy it after the download finishes.
+    if (!keep && win && !win.isDestroyed()) {
+      try {
+        win.destroy();
+      } catch (e) {
+        // ignore
+      }
     }
   }
 }
@@ -570,7 +658,16 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
       return null;
     }
     onLog('Confirmed DUB variant exists.');
-    return { url: dubUrl, type: any.type || 'hls', headers: any.headers, webContentsId: id, ts: Date.now() };
+    return {
+      url: dubUrl,
+      type: any.type || 'hls',
+      headers: any.headers,
+      webContentsId: id,
+      ts: Date.now(),
+      embedUrl: any.embedUrl,
+      sourceLabel: any.sourceLabel,
+      playerWebContentsId: any.playerWebContentsId
+    };
   };
 
   // Decides the DUB detection to use from a stream a server produced:
@@ -655,7 +752,29 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // When the requested-audio row has servers, only try those. Falling through
   // every SUB server after DUB timeouts made bulk runs look "stuck resolving"
   // for minutes under concurrency (6 × sourceWaitMs per episode).
-  const tryList = primary.length ? primary : fallback;
+  let tryList = primary.length ? primary : fallback;
+
+  const cap = parseInt(dub.maxSources, 10);
+  if (cap > 0 && tryList.length > cap) {
+    onLog(`Site profile uses the first ${cap} server(s); not trying ${tryList.length - cap} extra tab(s).`);
+    tryList = tryList.slice(0, cap);
+  }
+  const skipSources = (opts.skipSources || [])
+    .map((s) => String(s || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (skipSources.length) {
+    const before = tryList.length;
+    tryList = tryList.filter((s) => !skipSources.includes(String(s.label || '').toLowerCase()));
+    if (tryList.length < before) {
+      onLog(`Skipping failed server(s) [${skipSources.join(', ')}]; ${tryList.length} left to try.`);
+    }
+  }
+
+  if (skipSources.length && !tryList.length) {
+    onLog('Every preferred server already failed once; trying them again.');
+    tryList = primary.length ? primary : fallback;
+    if (cap > 0 && tryList.length > cap) tryList = tryList.slice(0, cap);
+  }
 
   if (!tryList.length) {
     return { status: 'failed', reason: 'No video sources found on the page' };
@@ -720,10 +839,30 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     const clicked = await clickSource(wc, `[data-wvd-source="${src.attr}-${src.index}"]`);
     if (!clicked) continue;
 
-    // Many providers are third-party iframes that won't start from a programmatic
-    // click - send a real mouse click into the player to trigger playback.
-    await delay(CLICK_SETTLE_MS);
-    const { frames, embedUrl } = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
+    // SFlix (and similar) store the real player on data-player-url. A JS click
+    // often leaves #main-player on Server 1, so Server 2/3 were opened as vidapi
+    // and looked dead. Prefer the tab's own URL over whatever iframe is showing.
+    const tabPlayer = clicked.playerUrl || '';
+    const skipHosts = dub.skipEmbedHosts || [];
+    if (tabPlayer && skipHosts.some((re) => re && re.test(tabPlayer))) {
+      onLog(`Skipping "${src.label || src.index}" player ${tabPlayer}; this embed cannot be downloaded.`);
+      continue;
+    }
+    let frames = [];
+    let embedUrl = tabPlayer;
+    if (tabPlayer) {
+      onLog(`Loading "${src.label || src.index}" player ${tabPlayer}`);
+      await setIframeSrc(wc, tabPlayer);
+      await delay(CLICK_SETTLE_MS);
+      frames = (await iframeSrcs(wc)) || [];
+    } else {
+      // Many providers are third-party iframes that won't start from a programmatic
+      // click - send a real mouse click into the player to trigger playback.
+      await delay(CLICK_SETTLE_MS);
+      const fresh = await applyFreshEmbed(wc, id, clickTs, clicked.linkId, onLog);
+      frames = fresh.frames || [];
+      embedUrl = fresh.embedUrl;
+    }
     const hostless = frames.some(isBrokenEmbed);
     if (hostless && !embedUrl) {
       onLog(`"${src.label || src.index}" player iframe still has no host; trying next.`);
@@ -751,12 +890,15 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
       const direct = await resolveEmbedStandalone(
         embedUrl,
         url,
-        Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS),
+        /embedmaster|embdmstrplayer/i.test(embedUrl)
+          ? Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS, 40000)
+          : Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS),
         onLog,
         id,
         signal
       );
       if (direct) {
+        if (embedUrl) direct.embedUrl = embedUrl;
         sniffer.adopt(id, direct);
         arrived = direct;
         gone = [];
@@ -774,11 +916,21 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
           // ignore
         }
         onLog(
-          `"${src.label || src.index}" playlist only has the tail of the episode - ${host || 'the CDN'} answers ` +
-            `HTTP ${peek.status || '?'} for the main segment (a different VPN exit often gets a working edge); trying next.`
+          peek.reason === 'not-playlist'
+            ? `"${src.label || src.index}" playlist URL returned a webpage (HTTP ${peek.status || '?'}); trying next.`
+            : `"${src.label || src.index}" playlist only has the tail of the episode - ${host || 'the CDN'} answers ` +
+              `HTTP ${peek.status || '?'} for the main segment (a different VPN exit often gets a working edge); trying next.`
         );
         if (isPrimary) primaryGone += 1;
         arrived = null;
+      } else {
+        try {
+          const loaded = await hlscheck.loadMediaPlaylist(arrived.url, arrived.headers || {}, signal);
+          arrived.playlistText = loaded.text;
+          arrived.playlistBase = loaded.base;
+        } catch (e) {
+          onLog(`Could not snapshot "${src.label || src.index}" playlist while the player is open: ${e.message || e}`);
+        }
       }
     }
     if (!arrived) {
@@ -799,17 +951,44 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
       onLog(`"${src.label || src.index}" gave no stream${note}${badNote}; trying next.`);
       continue;
     }
+    if (embedUrl && !arrived.embedUrl) arrived.embedUrl = embedUrl;
     const s = sniffer.best(id);
-    if (s) {
-      sawStream = true;
-      if (isPrimary) primaryGotStream = true;
-    }
+    if (s && embedUrl && !s.embedUrl) s.embedUrl = embedUrl;
     const det = wantSub
       ? resolveSub(sniffer.bestForMode(id, 'sub', hints, false))
       : await resolveDub(s, src.from);
     if (det) {
+      if (embedUrl && !det.embedUrl) det.embedUrl = embedUrl;
+      det.sourceLabel = src.label || String(src.index);
+      if (arrived.playlistText) {
+        det.playlistText = arrived.playlistText;
+        det.playlistBase = arrived.playlistBase;
+      }
+      if (arrived.playerWebContentsId) det.playerWebContentsId = arrived.playerWebContentsId;
+      const downloadable = await hlscheck.streamIsDownloadable(det, { signal, onLog });
+      if (!downloadable) {
+        onLog(
+          `"${src.label || src.index}" playlist is not downloadable from this app; trying next.`
+        );
+        if (arrived && arrived.url) sniffer.forget(id, arrived.url);
+        if (det.url) sniffer.forget(id, det.url);
+        if (typeof arrived.releasePlayer === 'function') {
+          try {
+            arrived.releasePlayer();
+          } catch (e) {
+            // ignore
+          }
+        }
+        continue;
+      }
+      sawStream = true;
+      if (isPrimary) primaryGotStream = true;
       onLog(`Using ${MODE} stream from "${src.label || src.index}": ${det.url}`);
       return finalize(det, id, wantSub, onLog);
+    }
+    if (s) {
+      sawStream = true;
+      if (isPrimary) primaryGotStream = true;
     }
     onLog(`"${src.label || src.index}" produced ${s ? s.url : 'no usable stream'} (not a playable ${MODE}); trying next.`);
   }
@@ -857,6 +1036,10 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
 
 // Attaches subtitle info for Sub mode so the downloader can embed it.
 function finalize(detection, id, wantSub, onLog) {
+  if (detection && !detection.embedUrl) {
+    const embed = sniffer.lastEmbed(id);
+    if (embed && embed.url) detection.embedUrl = embed.url;
+  }
   onLog(`Resolved stream: ${detection.url}`);
   if (wantSub) {
     detection.embedSubs = true;

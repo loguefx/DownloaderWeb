@@ -12,12 +12,20 @@ module.exports = {
   // URL/content patterns the sniffer treats as downloadable media.
   media: {
     // Matched against the request URL (case-insensitive).
-    urlPatterns: [/\.m3u8(\?|$)/i, /\.mpd(\?|$)/i, /\.mp4(\?|$)/i],
-    // Matched against the response Content-Type header.
+    urlPatterns: [
+      /\.m3u8/i,
+      /\.mpd(\?|$)/i,
+      /\.mp4(\?|$)/i,
+      /\/hls\//i,
+      /\/playlist(?:\.m3u8)?(?:\?|$)/i,
+      /\/master(?:\.m3u8)?(?:\?|$)/i
+    ],
     contentTypePatterns: [
       /application\/vnd\.apple\.mpegurl/i,
       /application\/x-mpegurl/i,
       /application\/dash\+xml/i,
+      /video\/mp2t/i,
+      /video\/MP2T/i,
       /video\/mp4/i
     ],
     // Subtitle files (used by Sub mode to embed subtitles into the .mp4).

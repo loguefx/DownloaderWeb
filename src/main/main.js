@@ -102,8 +102,26 @@ function wireIpc() {
     return true;
   });
 
-  // Single (manual) download of an already-detected stream.
-  ipcMain.handle('download-single', (_e, { detection, meta, outputRoot }) => {
+  // Single (manual) download of an already-detected stream. SFlix sniffed
+  // playlists usually cannot be fetched, so those go through discovery instead
+  // (same path as Aniwave episode downloads).
+  ipcMain.handle('download-single', (_e, { detection, meta, outputRoot, pageUrl, mode }) => {
+    const onLog = (msg) => send('queue:log', { ts: Date.now(), msg });
+    const watchUrl = String(pageUrl || '').trim();
+    const profile = watchUrl ? sites.resolve(watchUrl) : null;
+    if (profile && profile.id === 'sflix' && watchUrl) {
+      return bulk.queueOne(
+        {
+          url: watchUrl,
+          series: (meta && (meta.series || meta.name)) || 'Video',
+          season: meta && meta.season,
+          episode: meta && meta.episode,
+          mode: mode || 'dub',
+          outputRoot
+        },
+        onLog
+      );
+    }
     const label =
       (meta && (meta.series || meta.name)) +
       (meta && meta.episode ? ` - Episode ${meta.episode}` : '');
@@ -125,6 +143,11 @@ function wireIpc() {
     return true;
   });
 
+  ipcMain.handle('download-episode', (_e, payload) => {
+    const onLog = (msg) => send('queue:log', { ts: Date.now(), msg });
+    return bulk.queueOne(payload || {}, onLog);
+  });
+
   ipcMain.handle('bulk-start', (_e, { entries, outputRoot }) => {
     const onLog = (msg) => send('queue:log', { ts: Date.now(), msg });
     return bulk.startBatch(entries, outputRoot, onLog);
@@ -132,7 +155,22 @@ function wireIpc() {
 
   ipcMain.handle('queue-pause', () => manager.pause());
   ipcMain.handle('queue-resume', () => manager.resume());
-  ipcMain.handle('queue-stop', () => manager.stopAll('Stopped by user'));
+  ipcMain.handle('queue-stop', () => {
+    try {
+      require('./discoverwindow').destroyAll();
+    } catch (e) {
+      // ignore
+    }
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (w === mainWindow || w.isDestroyed()) continue;
+      try {
+        w.destroy();
+      } catch (e) {
+        // ignore
+      }
+    }
+    return manager.stopAll('Stopped by user');
+  });
   ipcMain.handle('queue-remove', (_e, ids) => {
     manager.removeByIds(ids);
     return true;
@@ -190,8 +228,7 @@ app.whenReady().then(() => {
   manager.restore((rec) => {
     const meta = { series: rec.series, season: rec.season, episode: rec.episode };
     try {
-      const expected = organizer.expectedPath(rec.outputRoot, meta, '.mp4');
-      if (expected && fs.existsSync(expected)) return { skip: true };
+      if (organizer.existingEpisodeFile(rec.outputRoot, meta, '.mp4')) return { skip: true };
     } catch (e) {
       // fall through and re-queue
     }
@@ -205,8 +242,10 @@ app.whenReady().then(() => {
       baseUrl: rec.baseUrl,
       mode: rec.mode
     };
+    const skipSources = [];
     return {
-      discover: bulk.makeDiscover(rec.url, onLog, rec.mode),
+      discover: bulk.makeDiscover(rec.url, onLog, rec.mode, () => ({ skipSources })),
+      skipSources,
       onUnavailable: () => pending.add(spec)
     };
   });

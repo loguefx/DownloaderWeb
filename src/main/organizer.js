@@ -27,7 +27,17 @@ function parseSeasonFromUrl(url) {
   if (s) return parseInt(s[1], 10);
   const ro = String(url).match(/sezonul[-_\s]*(\d+)/i);
   if (ro) return parseInt(ro[1], 10);
+  const sxe = String(url).match(/[sS](\d{1,2})[eE]\d{1,3}/);
+  if (sxe) return parseInt(sxe[1], 10);
   return null;
+}
+
+function seriesKey(name) {
+  return sanitize(name)
+    .toLowerCase()
+    .replace(/\s+season\s*\d+\s*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Builds the base filename (no extension): "<Series> Season N - Episode NN".
@@ -64,6 +74,55 @@ function expectedPath(outputRoot, meta, ext = '.mp4') {
   return path.join(seriesDir(outputRoot, meta), buildBaseName(meta) + ext);
 }
 
+// True when this episode is already on disk. Exact path first (Aniwave-style
+// "<Series> Season N - Episode NN.mp4"), then collision suffixes, then any
+// file in a same-series folder that names the same season + episode. SFlix
+// titles often bake "Season 3" / the episode slug into the series name, so
+// a later batch with a cleaner name would otherwise re-queue finished files.
+function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
+  if (!outputRoot) return null;
+  const exact = expectedPath(outputRoot, meta, ext);
+  if (fs.existsSync(exact)) return exact;
+  const ep = parseInt(meta && meta.episode, 10);
+  if (!(ep > 0)) return null;
+  const seasonRaw = meta && meta.season;
+  const season =
+    seasonRaw != null && String(seasonRaw).trim() !== '' && !isNaN(parseInt(seasonRaw, 10))
+      ? parseInt(seasonRaw, 10)
+      : null;
+  const extRe = String(ext || '.mp4').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const seasonBit = season != null ? `season\\s*${season}\\s*-\\s*` : '';
+  const epRe = new RegExp(`${seasonBit}episode\\s*0*${ep}(?:\\s*\\(\\d+\\))?${extRe}$`, 'i');
+  const dirs = [];
+  const addDir = (dir) => {
+    if (dir && !dirs.includes(dir)) dirs.push(dir);
+  };
+  addDir(seriesDir(outputRoot, meta));
+  const want = seriesKey(meta && meta.series);
+  if (want) {
+    try {
+      for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
+        if (!ent.isDirectory()) continue;
+        if (seriesKey(ent.name) === want) addDir(path.join(outputRoot, ent.name));
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  for (const dir of dirs) {
+    let files = [];
+    try {
+      files = fs.readdirSync(dir);
+    } catch (e) {
+      continue;
+    }
+    for (const f of files) {
+      if (epRe.test(f)) return path.join(dir, f);
+    }
+  }
+  return null;
+}
+
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -76,5 +135,6 @@ module.exports = {
   seriesDir,
   buildOutputPath,
   expectedPath,
+  existingEpisodeFile,
   ensureDir
 };

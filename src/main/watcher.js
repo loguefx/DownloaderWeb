@@ -81,12 +81,13 @@ class Watcher {
       }
 
       // Already downloaded out-of-band? Clear it.
-      const expected = organizer.expectedPath(
-        spec.outputRoot,
-        { series: spec.series, season: spec.season, episode: spec.episode },
-        '.mp4'
-      );
-      if (fs.existsSync(expected)) {
+      if (
+        organizer.existingEpisodeFile(
+          spec.outputRoot,
+          { series: spec.series, season: spec.season, episode: spec.episode },
+          '.mp4'
+        )
+      ) {
         pending.remove(spec.key);
         continue;
       }

@@ -288,6 +288,8 @@ select:focus { border-color: var(--accent); }
 .entry .entry-head span { color: var(--text-dim); font-size: 12px; }
 .mini-label { font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 4px; }
 
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+.modal-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.browser-toolbar .ghost-btn,
+.browser-toolbar .primary-btn { white-space: nowrap; }
 
 .hidden { display: none !important; }

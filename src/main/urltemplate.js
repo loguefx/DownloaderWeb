@@ -57,6 +57,37 @@ function toTemplate(sampleUrl) {
     return { template: t, season };
   }
 
+  // SFlix (sflix.soap2day.day) must run before the generic `episode-N` marker.
+  // Two episode-URL shapes exist on the same site:
+  //   /episodes/{slug}-season-1-episode-12/
+  //   /episodes/{slug}-s01e01-{title-slug}/
+  // Series pages have no episode number at all; hash-tokenize them like FilmeHD
+  // so bulk can still probe the series page and then use the real Watch hrefs.
+  if (/soap2day\.day|sflixz\.day/i.test(t)) {
+    if (/\/episodes\//i.test(t) && /season[-_]\d+/i.test(t) && /episode[-_]\d+/i.test(t)) {
+      t = t.replace(/season[-_]\d+/i, 'season-{season}').replace(/episode[-_]\d+/i, 'episode-{episode}');
+      return { template: t, season };
+    }
+    const sxe = t.match(/[sS](\d{1,2})[eE](\d{1,3})/);
+    if (/\/episodes\//i.test(t) && sxe) {
+      season = parseInt(sxe[1], 10);
+      // Drop the leftover episode title so e02 is not built with e01's slug.
+      t = t.replace(/[sS]\d{1,2}[eE]\d{1,3}(?:-[^/?#]*)?/, 's{season2}e{episode2}');
+      return { template: t, season };
+    }
+    const series = t.match(/^(https?:\/\/[^/]+)\/series\/([^/?#]+)/i);
+    if (series) {
+      const origin = series[1];
+      const slug = series[2].replace(/\/$/, '');
+      return { template: `${origin}/series/${slug}/#ep-{episode}`, season };
+    }
+    if (!/\/(movies|series|episodes|genre|country|top-imdb|years|release-year)\b/i.test(t)) {
+      t = t.replace(/\/?(#.*)?$/, '/') + '#ep-{episode}';
+      if (season == null) season = 1;
+      return { template: t, season };
+    }
+  }
+
   // Episode token: prefer an explicit ep/episode marker at the end.
   const epMarker = /(ep(?:isode)?|e)[-_]?(\d+)(\/?)((?:[?#].*)?)$/i;
   if (epMarker.test(t)) {
@@ -102,4 +133,16 @@ function buildEpisodeUrl(entry, episode) {
   });
 }
 
-module.exports = { fill, toTemplate, buildEpisodeUrl, hasEpisodeToken };
+// Episode number from a Watch URL (Aniwave /ep-N, SFlix sXXeYY or episode-N).
+function parseEpisodeFromUrl(url) {
+  const s = String(url || '');
+  const sxe = s.match(/[sS]\d{1,2}[eE](\d{1,3})/);
+  if (sxe) return parseInt(sxe[1], 10);
+  const se = s.match(/episode[-_](\d+)/i);
+  if (se) return parseInt(se[1], 10);
+  const ep = s.match(/\/ep-(\d+)/i);
+  if (ep) return parseInt(ep[1], 10);
+  return null;
+}
+
+module.exports = { fill, toTemplate, buildEpisodeUrl, hasEpisodeToken, parseEpisodeFromUrl };

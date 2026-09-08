@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const https = require('https');
 const http = require('http');
 const { BrowserWindow, session } = require('electron');
@@ -12,6 +13,7 @@ const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
 const sites = require('./sites');
+const hlscheck = require('./hlscheck');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const range = (a, b) => {
@@ -62,7 +64,7 @@ async function withDiscoverGate(fn) {
   }
 }
 
-function makeDiscover(url, onLog = () => {}, mode = 'dub') {
+function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({})) {
   return async () =>
     withDiscoverGate(async () => {
       const win = createDiscoverWindow();
@@ -96,27 +98,49 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
           log(`Player embed failed to load (missing host): ${desc}`);
         }
       };
+      let holdWindows = false;
       try {
         win.webContents.on('did-fail-load', onFail);
         log(`Loading ${url}`);
         await loadWithTimeout(win, url, 30000);
+        const extra = typeof getOpts === 'function' ? getOpts() || {} : {};
         const outcome = await Promise.race([
-          dubselect.selectDubAndResolve(win.webContents, url, log, mode, { signal: controller.signal }),
+          dubselect.selectDubAndResolve(win.webContents, url, log, mode, {
+            signal: controller.signal,
+            skipSources: extra.skipSources || []
+          }),
           new Promise((_, reject) => {
             onStall = () =>
               reject(new Error(`Discovery stalled for ${Math.round(stallMs / 1000)}s with no progress`));
             armStall();
           })
         ]);
+        // Token CDNs (vidfast/peakstorm/embedmaster) only serve segments while
+        // the player page is still open. Destroying it here made download fail
+        // in ~1s with an empty playlist / net::ERR_FAILED.
+        if (outcome && outcome.status === 'resolved' && outcome.detection) {
+          const det = outcome.detection;
+          const embed = det.embedUrl || '';
+          const keep = hlscheck.isPlayerBoundCdn(det.url, embed);
+          if (keep) {
+            holdWindows = true;
+            log('Keeping the player open until this episode finishes downloading.');
+            det.releaseDiscover = () => {
+              try {
+                destroyOwned(ownerId);
+              } catch (e) {
+                // ignore
+              }
+            };
+          }
+        }
         return outcome;
       } catch (e) {
         log(`Discovery error for ${url}: ${e.message || e}`);
         return { status: 'failed', reason: e.message || 'Discovery failed' };
       } finally {
-        // Abort before tearing the windows down. Promise.race abandons the loser
-        // but cannot stop it, so without this a timed-out resolve kept clicking
-        // and could open a player window that outlived this run - overlapping the
-        // next episode's discovery, which is exactly what breaks player embeds.
+        // Abort leftover in-page waits. Do not destroy token-CDN player windows
+        // on success: download still needs them.
         controller.abort();
         if (stallTimer) clearTimeout(stallTimer);
         try {
@@ -124,7 +148,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub') {
         } catch (e) {
           // ignore
         }
-        destroyOwned(ownerId);
+        if (!holdWindows) destroyOwned(ownerId);
       }
     });
 }
@@ -275,9 +299,12 @@ function episodeScanScript() {
 // by JS, so we retry a few times). Prefers the actual episode-link list; falls
 // back to the aired-episode count from the info box. Site profiles may supply
 // a custom episodeScan script (e.g. FilmeHD in-page episode buttons).
-async function detectEpisodes(url, onLog = () => {}) {
+async function detectEpisodes(url, onLog = () => {}, opts = {}) {
   const profile = sites.resolve(url);
-  const scanJs = (profile && profile.episodeScan) || episodeScanScript();
+  const scanJs =
+    typeof profile.episodeScan === 'function'
+      ? profile.episodeScan({ season: opts.season, url })
+      : (profile && profile.episodeScan) || episodeScanScript();
 
   // Fast path: read the server-rendered HTML directly (no heavy video window).
   // Skip when the site profile needs a live DOM scan (in-page episode buttons).
@@ -298,29 +325,52 @@ async function detectEpisodes(url, onLog = () => {}) {
           list = fast.list;
           onLog(`Detected ${list.length} episode(s) from the page.`);
         }
-        return { list, max: list.length ? list[list.length - 1] : 0, aired: fast.aired, total: fast.total };
+    return { list, max: list.length ? list[list.length - 1] : 0, aired: fast.aired, total: fast.total, urls: {} };
       }
     } catch (e) {
       // fall through to the window-based scan
     }
   }
 
-  const win = new BrowserWindow({
-    show: false,
-    width: 1280,
-    height: 720,
-    webPreferences: { partition: config.sessionPartition, backgroundThrottling: false, sandbox: true }
-  });
+  // Live-DOM scans (SFlix season tabs, FilmeHD in-page buttons) need the same
+  // session and JS privileges as discovery. A sandboxed hidden window often
+  // never hydrates the episode list, then bulk invents fake Watch URLs.
+  const useDiscover = !!(profile && profile.episodeScan);
+  const ownerId = `detect-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const win = useDiscover
+    ? createDiscoverWindow(ownerId)
+    : new BrowserWindow({
+        show: false,
+        width: 1280,
+        height: 720,
+        webPreferences: { partition: config.sessionPartition, backgroundThrottling: false, sandbox: true }
+      });
   try {
     await loadWithTimeout(win, url, 30000);
     let res = { list: [], max: 0, aired: 0, total: 0 };
-    for (let i = 0; i < 8; i++) {
+    const tries = useDiscover ? 12 : 8;
+    const waitMs = useDiscover ? 2000 : 1500;
+    let followedCatalog = false;
+    for (let i = 0; i < tries; i++) {
       res = await win.webContents
         .executeJavaScript(scanJs, true)
         .catch(() => ({ list: [], max: 0, aired: 0, total: 0 }));
-      // Good enough once we have a real list (>1) or an aired count.
-      if ((res.list && res.list.length > 1) || res.aired > 0) break;
-      await delay(1500);
+      if (
+        !followedCatalog &&
+        res.catalog &&
+        res.catalog !== url &&
+        !(res.list && res.list.length > 1)
+      ) {
+        onLog(`Opening series page ${res.catalog}`);
+        followedCatalog = true;
+        await loadWithTimeout(win, res.catalog, 30000);
+        continue;
+      }
+      // A single current Watch URL is not a season list. Keep waiting / follow
+      // the series page so bulk does not queue only episode 1.
+      if (res.list && res.list.length > 1) break;
+      if (res.aired > 1) break;
+      await delay(waitMs);
     }
 
     let list;
@@ -333,14 +383,26 @@ async function detectEpisodes(url, onLog = () => {}) {
       onLog(`Detected ${res.aired} aired episode(s)${note} from the page info.`);
     } else if (res.list && res.list.length === 1) {
       list = res.list;
-      onLog(`Detected 1 episode from the page.`);
+      onLog(
+        useDiscover
+          ? `Detected only the current episode (${list[0]}) — the season list did not load.`
+          : 'Detected 1 episode from the page.'
+      );
     } else {
       list = [];
       onLog('Could not detect episode count from the page.');
     }
-    return { list, max: list.length ? list[list.length - 1] : 0, aired: res.aired, total: res.total };
+    return {
+      list,
+      max: list.length ? list[list.length - 1] : 0,
+      aired: res.aired,
+      total: res.total,
+      urls: res.urls || {},
+      season: res.season
+    };
   } finally {
-    if (!win.isDestroyed()) win.destroy();
+    if (useDiscover) destroyOwned(ownerId);
+    else if (!win.isDestroyed()) win.destroy();
   }
 }
 
@@ -380,7 +442,8 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
     const { series } = entry;
     const mode = entry.mode === 'sub' ? 'sub' : 'dub';
     const start = parseInt(entry.startEp, 10) || 1;
-    const { template, season } = entryTemplate(entry);
+    const { template, season: seasonFromEntry } = entryTemplate(entry);
+    let season = seasonFromEntry;
 
     if (!template) {
       onLog(`Skipping "${series}": no usable URL/template.`);
@@ -390,19 +453,55 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
 
     // Determine which episodes to queue.
     let episodes;
+    let episodeUrls = {};
     const endRaw = String(entry.endEp == null ? '' : entry.endEp).trim().toLowerCase();
     const endNum = parseInt(endRaw, 10);
-    if (endRaw && endRaw !== 'auto' && !isNaN(endNum)) {
+    const profile = sites.resolve(entry.baseUrl || template);
+    const needDetect =
+      !endRaw ||
+      endRaw === 'auto' ||
+      isNaN(endNum) ||
+      !urltemplate.hasEpisodeToken(template) ||
+      !!(profile && profile.episodeScan);
+    if (endRaw && endRaw !== 'auto' && !isNaN(endNum) && !needDetect) {
       episodes = range(start, endNum);
     } else {
       onLog(`Auto-detecting episode count for "${series}"...`);
-      const probeUrl =
-        urltemplate.buildEpisodeUrl({ template, baseUrl: entry.baseUrl, season, series }, start) || entry.baseUrl;
-      const det = await detectEpisodes(probeUrl, onLog);
+      let probeUrl = entry.catalogUrl || entry.baseUrl || template;
+      if (!entry.catalogUrl && typeof profile.catalogUrl === 'function') {
+        probeUrl = profile.catalogUrl(entry.baseUrl || template) || probeUrl;
+      } else if (!entry.catalogUrl) {
+        probeUrl =
+          urltemplate.buildEpisodeUrl({ template, baseUrl: entry.baseUrl, season, series }, start) ||
+          entry.baseUrl;
+      }
+      if (probeUrl && probeUrl !== entry.baseUrl) {
+        onLog(`Scanning episode list at ${probeUrl}`);
+      }
+      const det = await detectEpisodes(probeUrl, onLog, { season });
+      episodeUrls = det.urls || {};
+      if (season == null && det.season) season = det.season;
+      if (det.season) {
+        onLog(`Scanning season ${det.season} for "${series}".`);
+      }
       if (det.list && det.list.length) {
         episodes = det.list.filter((e) => e >= start);
+        if (endRaw && endRaw !== 'auto' && !isNaN(endNum)) {
+          episodes = episodes.filter((e) => e <= endNum);
+        }
       } else if (det.max > 0) {
-        episodes = range(start, det.max);
+        episodes = range(start, endNum && !isNaN(endNum) ? endNum : det.max);
+      } else if (profile && profile.inventEpisodeUrls === false) {
+        const current = entry.baseUrl && /\/episodes\//i.test(entry.baseUrl) ? entry.baseUrl : null;
+        if (current) {
+          const n = urltemplate.parseEpisodeFromUrl(current) || start;
+          episodes = [n];
+          episodeUrls[n] = current;
+          onLog(`Could not detect the episode list for "${series}"; queuing only episode ${n} from the current page.`);
+        } else {
+          episodes = [];
+          onLog(`Could not detect the episode list for "${series}"; not inventing Watch URLs.`);
+        }
       } else {
         onLog(`Could not detect episode count for "${series}"; defaulting to ${start}-12.`);
         episodes = range(start, 12);
@@ -410,23 +509,31 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
     }
 
     for (const ep of episodes) {
-      const url = urltemplate.buildEpisodeUrl({ template, baseUrl: entry.baseUrl, season, series }, ep);
+      let url = episodeUrls[ep] || episodeUrls[String(ep)];
+      if (!url && !(profile && profile.inventEpisodeUrls === false)) {
+        url = urltemplate.buildEpisodeUrl({ template, baseUrl: entry.baseUrl, season, series }, ep);
+      }
       if (!url) {
-        onLog(`Skipping "${series}": template has no {episode}/ep-N to substitute.`);
+        onLog(
+          profile && profile.inventEpisodeUrls === false
+            ? `Skipping "${series}" episode ${ep}: no Watch URL from the episode list.`
+            : `Skipping "${series}": template has no {episode}/ep-N to substitute.`
+        );
+        if (profile && profile.inventEpisodeUrls === false) continue;
         break;
       }
 
       const meta = { series, season, episode: ep };
-      const expected = organizer.expectedPath(outputRoot, meta, '.mp4');
-      if (fs.existsSync(expected)) {
+      const already = organizer.existingEpisodeFile(outputRoot, meta, '.mp4');
+      if (already) {
         skipped += 1;
-        onLog(`Already exists, skipping: ${organizer.buildBaseName(meta)}.mp4`);
+        onLog(`Already exists, skipping: ${path.basename(already)}`);
         continue;
       }
 
       const label = organizer.buildBaseName(meta) + (mode === 'sub' ? ' [SUB]' : '');
       const spec = { label, series, season, episode: ep, outputRoot, template, baseUrl: entry.baseUrl, mode };
-      const added = manager.add({
+      const rec = {
         label,
         series,
         season,
@@ -439,9 +546,11 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         template,
         baseUrl: entry.baseUrl,
         key: pending.constructor.key(spec),
-        discover: makeDiscover(url, onLog, mode),
+        skipSources: [],
         onUnavailable: () => pending.add(spec)
-      });
+      };
+      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources }));
+      const added = manager.add(rec);
       if (added) queued += 1;
     }
   }
@@ -450,4 +559,51 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
   return { queued, skipped };
 }
 
-module.exports = { startBatch, makeDiscover, entryTemplate, detectEpisodes };
+// One episode, same discovery path as Aniwave bulk items. Used for "Download
+// this episode" on SFlix (sniffed playlists there are usually not fetchable).
+function queueOne(entry, onLog = () => {}) {
+  const url = String((entry && entry.url) || '').trim();
+  const series = (entry && entry.series) || 'Video';
+  const season = entry && entry.season != null && entry.season !== '' ? entry.season : null;
+  const episode = entry && entry.episode;
+  const mode = entry && entry.mode === 'sub' ? 'sub' : 'dub';
+  const outputRoot = entry && entry.outputRoot;
+  if (!url) {
+    onLog(`Skipping "${series}": no episode URL.`);
+    return { queued: 0, skipped: 0 };
+  }
+  if (outputRoot) organizer.ensureDir(outputRoot);
+  const meta = { series, season, episode };
+  const already = outputRoot ? organizer.existingEpisodeFile(outputRoot, meta, '.mp4') : null;
+  if (already) {
+    onLog(`Already exists, skipping: ${path.basename(already)}`);
+    return { queued: 0, skipped: 1 };
+  }
+  const label = organizer.buildBaseName(meta) + (mode === 'sub' ? ' [SUB]' : '');
+  const spec = { label, series, season, episode, outputRoot, baseUrl: url, mode };
+  const rec = {
+    label,
+    series,
+    season,
+    episode,
+    mode,
+    group: (entry && entry.group) || `single-${Date.now().toString(36)}`,
+    outputRoot,
+    stopRunOnFail: false,
+    url,
+    baseUrl: url,
+    key: pending.constructor.key(spec),
+    skipSources: [],
+    onUnavailable: () => pending.add(spec)
+  };
+  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources }));
+  const added = manager.add(rec);
+  if (added) {
+    onLog(`Queued episode: ${label}`);
+    return { queued: 1, skipped: 0 };
+  }
+  onLog(`Episode already in the queue: ${label}`);
+  return { queued: 0, skipped: 0 };
+}
+
+module.exports = { startBatch, queueOne, makeDiscover, entryTemplate, detectEpisodes };

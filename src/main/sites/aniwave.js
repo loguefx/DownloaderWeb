@@ -43,15 +43,21 @@ module.exports = {
           `(() => {
             try { document.cookie = 'prefered_server_type=${want};path=/;max-age=86400'; } catch (e) {}
             const row = document.querySelector('.servers .type[data-type="${want}"], #w-servers .type[data-type="${want}"]');
-            const lis = document.querySelectorAll('#w-servers li[data-link-id], .servers .type li');
-            return { hasRow: !!row, servers: lis.length };
+            const otherType = '${want}' === 'dub' ? 'sub' : 'dub';
+            const other = document.querySelector('.servers .type[data-type="' + otherType + '"], #w-servers .type[data-type="' + otherType + '"]');
+            const lis = row ? row.querySelectorAll('li[data-link-id], li') : [];
+            return { hasRow: !!row, servers: lis.length, otherRow: !!other, otherType };
           })()`,
           true
         ),
         delay(2000).then(() => null)
       ]).catch(() => null);
-      if (info && info.servers > 0) {
-        onLog(`Aniwave ${want.toUpperCase()} servers ready (${info.servers} button(s), row=${info.hasRow ? 'yes' : 'no'}).`);
+      if (info && info.hasRow && info.servers > 0) {
+        onLog(`Aniwave ${want.toUpperCase()} servers ready (${info.servers} button(s)).`);
+        return;
+      }
+      if (info && !info.hasRow && info.otherRow && i >= 5) {
+        onLog(`Aniwave has no ${want.toUpperCase()} row (only ${String(info.otherType || 'other').toUpperCase()} servers).`);
         return;
       }
       await delay(400);

@@ -13,16 +13,24 @@ const config = require('./config');
 function ownerTabId(id) {
   if (id == null) return id;
   try {
-    const wc = webContents.fromId(id);
+    let wc = webContents.fromId(id);
     if (!wc || wc.isDestroyed()) return id;
-    const type = typeof wc.getType === 'function' ? wc.getType() : '';
-    if (type === 'webview' || type === 'window' || type === 'browserView') return id;
-    if (typeof wc.getOwnerBrowserWindow === 'function') {
-      const win = wc.getOwnerBrowserWindow();
-      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
-        return win.webContents.id;
+    const seen = new Set();
+    while (wc && !wc.isDestroyed() && !seen.has(wc.id)) {
+      seen.add(wc.id);
+      const type = typeof wc.getType === 'function' ? wc.getType() : '';
+      // Stop at the visible <webview> or a discovery window. Nested player
+      // iframes (SFlix Server 1–3) have their own webContents; folding those
+      // all the way to the host window hid every stream from Detected Videos.
+      if (type === 'webview' || type === 'window' || type === 'browserView') return wc.id;
+      const host = wc.hostWebContents;
+      if (host && !host.isDestroyed() && host.id !== wc.id) {
+        wc = host;
+        continue;
       }
+      break;
     }
+    if (wc && !wc.isDestroyed()) return wc.id;
   } catch (e) {
     /* ignore */
   }
@@ -390,7 +398,7 @@ class Sniffer extends EventEmitter {
   _type(url, contentType) {
     if (this._isSubtitleUrl(url)) return 'sub';
     const ct = contentType || '';
-    if (/\.m3u8/i.test(url) || /mpegurl/i.test(ct)) return 'hls';
+    if (/\.m3u8/i.test(url) || /mpegurl/i.test(ct) || /mp2t|mpegts/i.test(ct)) return 'hls';
     if (/\.mpd(\?|$)/i.test(url) || /dash\+xml/i.test(ct)) return 'dash';
     // Extensionless token URLs (cloudatacdn, dood, filemoon) are almost always
     // progressive MP4. Labelling them HLS forced ffmpeg's HLS demuxer onto a
@@ -437,6 +445,12 @@ class Sniffer extends EventEmitter {
   // Files a detection captured in one tab under another one. Discovery resolves
   // some players in a throwaway window; the stream still belongs to the episode
   // page's tab, which is what the rest of the pipeline reads.
+  forget(webContentsId, url) {
+    const tabMap = this.byTab.get(webContentsId);
+    if (!tabMap || !url) return;
+    tabMap.delete(url);
+  }
+
   adopt(webContentsId, detection) {
     if (webContentsId == null || !detection || !detection.url) return null;
     if (!this.byTab.has(webContentsId)) this.byTab.set(webContentsId, new Map());

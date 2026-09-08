@@ -4,6 +4,7 @@
 // own module so bulk.js and dubselect.js can both create one without requiring
 // each other.
 
+const path = require('path');
 const { BrowserWindow } = require('electron');
 const config = require('./config');
 
@@ -43,7 +44,9 @@ function createDiscoverWindow(ownerId = null) {
     webPreferences: {
       partition: config.sessionPartition,
       backgroundThrottling: false,
-      sandbox: false
+      sandbox: false,
+      contextIsolation: false,
+      preload: path.join(__dirname, 'player-hook-preload.js')
     }
   });
   const owner = ownerId || win.webContents.id;
@@ -71,6 +74,19 @@ function createDiscoverWindow(ownerId = null) {
   return win;
 }
 
+// Closes every discovery / player popup. Used when a run is stopped so a
+// leftover always-on-top window cannot sit on the app with no working close
+// button (those windows are created focusable:false).
+function destroyAll() {
+  for (const w of [...live]) {
+    try {
+      if (w && !w.isDestroyed()) w.destroy();
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
 // Tears down the windows belonging to one discovery run only.
 function destroyOwned(ownerId) {
   const set = owned.get(ownerId);
@@ -85,4 +101,4 @@ function destroyOwned(ownerId) {
   owned.delete(ownerId);
 }
 
-module.exports = { createDiscoverWindow, mainBrowserWindow, destroyOwned };
+module.exports = { createDiscoverWindow, mainBrowserWindow, destroyOwned, destroyAll };

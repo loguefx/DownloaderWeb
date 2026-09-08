@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   snifferClear: (webContentsId) => ipcRenderer.invoke('sniffer-clear', webContentsId),
 
   downloadSingle: (payload) => ipcRenderer.invoke('download-single', payload),
+  downloadEpisode: (payload) => ipcRenderer.invoke('download-episode', payload),
   bulkStart: (payload) => ipcRenderer.invoke('bulk-start', payload),
 
   queuePause: () => ipcRenderer.invoke('queue-pause'),

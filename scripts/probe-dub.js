@@ -117,6 +117,7 @@ app.whenReady().then(async () => {
       try {
         let last = 0;
         await downloader.download(out.detection, target, {
+          onLog: (m) => log(`DOWNLOAD ${m}`),
           onProgress: (p) => {
             const pct = Math.round((p.percent || 0) * 100);
             if (pct >= last + 10) {
@@ -129,6 +130,14 @@ app.whenReady().then(async () => {
         log(`VERIFY ok=${v.ok} reason=${v.reason || ''}`);
       } catch (e) {
         log(`DOWNLOAD FAILED ${e && e.message}`);
+      } finally {
+        if (out.detection && typeof out.detection.releaseDiscover === 'function') {
+          try {
+            out.detection.releaseDiscover();
+          } catch (e2) {
+            // ignore
+          }
+        }
       }
     }
   } catch (e) {

@@ -298,14 +298,41 @@ class DownloadManager extends EventEmitter {
         item.progress = null;
         this._emit();
 
-        await download(detection, partPath, {
-          signal: controller.signal,
-          onProgress: (p) => {
-            item.progress = p.percent;
-            item.bytes = p.received || item.bytes;
-            this._emitProgress(item);
+        const releaseDiscover = () => {
+          if (detection && typeof detection.releaseDiscover === 'function') {
+            try {
+              detection.releaseDiscover();
+            } catch (e) {
+              // ignore
+            }
+            detection.releaseDiscover = null;
           }
-        });
+        };
+
+        try {
+          await download(detection, partPath, {
+            signal: controller.signal,
+            onLog: (m) => this._log(m),
+            onProgress: (p) => {
+              item.progress = p.percent;
+              item.bytes = p.received || item.bytes;
+              this._emitProgress(item);
+            }
+          });
+        } catch (err) {
+          const lab = detection && detection.sourceLabel;
+          if (lab) {
+            item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+            const key = String(lab).toLowerCase();
+            if (!item.skipSources.includes(key)) item.skipSources.push(key);
+            this._log(
+              `"${item.label}" could not download from "${lab}"; next try will use a different server.`
+            );
+          }
+          throw err;
+        } finally {
+          releaseDiscover();
+        }
 
         item.status = 'verifying';
         this._emit();

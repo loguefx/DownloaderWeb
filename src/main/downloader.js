@@ -7,6 +7,7 @@ const { Readable } = require('stream');
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const { session } = require('electron');
 const config = require('./config');
+const hlscheck = require('./hlscheck');
 
 class AbortError extends Error {
   constructor(msg = 'Aborted') {
@@ -187,6 +188,115 @@ function headerLines(headers, ua) {
   return lines;
 }
 
+function headerKey(headers, name) {
+  return Object.keys(headers || {}).find((k) => k.toLowerCase() === name.toLowerCase());
+}
+
+async function cookieHeaderFor(urls) {
+  let ses;
+  try {
+    ses = session.fromPartition(config.sessionPartition);
+    if (!ses || !ses.cookies) return '';
+  } catch (e) {
+    return '';
+  }
+  const parts = [];
+  const seen = new Set();
+  const hosts = [];
+  for (const raw of urls) {
+    if (!raw || typeof raw !== 'string') continue;
+    let href = raw;
+    try {
+      const u = new URL(raw);
+      hosts.push(u.hostname);
+      href = u.href;
+    } catch (e) {
+      continue;
+    }
+    try {
+      const list = await ses.cookies.get({ url: href });
+      for (const c of list) {
+        const k = `${c.name}=${c.value}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        parts.push(k);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (!parts.length) {
+    try {
+      const all = await ses.cookies.get({});
+      for (const c of all) {
+        const domain = String(c.domain || '').replace(/^\./, '');
+        if (!domain || !hosts.some((h) => h === domain || h.endsWith('.' + domain))) continue;
+        const k = `${c.name}=${c.value}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        parts.push(k);
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+  return parts.join('; ');
+}
+
+// Headers Chromium already used when the sniffer saw the playlist. Do not inject
+// extra Cookie values from the jar: session.fetch sends those itself, and a
+// duplicate Cookie header makes some token CDNs return garbage.
+function browserHeaders(detection) {
+  const headers = Object.assign({}, detection.headers || {});
+  if (!headerKey(headers, 'user-agent')) {
+    headers['User-Agent'] = config.download.userAgent;
+  }
+  // Never overwrite a sniffed Referer/Origin. Vidfast redirects .pro -> .vc and
+  // the CDN 502s if we send the pre-redirect host.
+  if (!headerKey(headers, 'referer') && detection.embedUrl) {
+    try {
+      headers['Referer'] = new URL(detection.embedUrl).origin + '/';
+    } catch (e) {
+      // ignore
+    }
+  }
+  const refererKey = headerKey(headers, 'referer');
+  const referer = refererKey ? headers[refererKey] : '';
+  if (!headerKey(headers, 'origin') && referer) {
+    try {
+      headers['Origin'] = new URL(referer).origin;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return headers;
+}
+
+function rmrf(p) {
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+  } catch (e) {
+    // ignore
+  }
+}
+
+function ffmpegFileArg(p) {
+  const norm = String(p).replace(/\\/g, '/');
+  if (/^[a-zA-Z]:\//.test(norm)) return `file:${norm}`;
+  return norm;
+}
+
+async function prepareDownloadHeaders(detection) {
+  const headers = Object.assign({}, browserHeaders(detection));
+  if (!headerKey(headers, 'cookie')) {
+    const refererKey = headerKey(headers, 'referer');
+    const referer = refererKey ? headers[refererKey] : '';
+    const cookie = await cookieHeaderFor([detection.url, detection.embedUrl, referer]);
+    if (cookie) headers['Cookie'] = cookie;
+  }
+  return headers;
+}
+
 function unlinkPart(partPath) {
   try {
     if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
@@ -328,25 +438,227 @@ function downloadMp4Node(detection, partPath, { signal, onProgress } = {}, redir
 // In Sub mode (detection.embedSubs) subtitles are embedded as a soft mov_text
 // track: from a separate sniffed subtitle file when available, otherwise from a
 // subtitle stream inside the HLS master playlist.
-function downloadHls(detection, partPath, { signal, onProgress } = {}) {
-  return new Promise((resolve, reject) => {
-    const headers = Object.assign({}, detection.headers || {});
-    const ua =
-      Object.entries(headers).find(([k]) => k.toLowerCase() === 'user-agent')?.[1] ||
-      config.download.userAgent;
+async function downloadHls(detection, partPath, opts = {}) {
+  const { signal, onProgress, onLog } = opts;
+  const headers = browserHeaders(detection);
+  const ffmpegHeaders = await prepareDownloadHeaders(detection);
+  const ua =
+    Object.entries(headers).find(([k]) => k.toLowerCase() === 'user-agent')?.[1] ||
+    config.download.userAgent;
 
+  const treatAsHls =
+    detection.type !== 'mp4' &&
+    (detection.type === 'hls' || /\.m3u8|\/hls\d*\//i.test(detection.url || ''));
+  if (!treatAsHls || !/\.m3u8/i.test(detection.url || '')) {
+    return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
+  }
+
+  const dir = `${partPath}.hls`;
+  let localPlaylist = null;
+  let allLocal = false;
+  try {
+    const loaded = detection.playlistText
+      ? { text: detection.playlistText, base: detection.playlistBase || detection.url }
+      : await hlscheck.loadMediaPlaylist(detection.url, headers, signal);
+    const firstSeg = hlscheck.firstUri(loaded.text);
+    let disguised = hlscheck.isTokenCdn(detection.url, detection.embedUrl);
+    let pngSeen = false;
+    if (firstSeg && !detection.playerWebContentsId) {
+      try {
+        const buf = await hlscheck.fetchBuffer(firstSeg, headers, {
+          timeoutMs: 20000,
+          signal,
+          playerWebContentsId: detection.playerWebContentsId
+        });
+        pngSeen = hlscheck.isPng(buf);
+        if (pngSeen) disguised = true;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        if (onLog) onLog(`Could not peek the first segment (${e.message || e}); will still pull parts via the browser session.`);
+      }
+    }
+    if (disguised) {
+      allLocal = true;
+      if (onLog) {
+        const viaPlayer = detection.playerWebContentsId != null;
+        onLog(
+          pngSeen
+            ? 'Stream segments are disguised (PNG-wrapped); downloading them through Chromium, then remuxing.'
+            : 'Token CDN stream; downloading segments through Chromium, then remuxing.'
+        );
+        if (viaPlayer) onLog('Using the live player page to fetch segments (same origin as playback).');
+      }
+      fs.mkdirSync(dir, { recursive: true });
+      if (
+        detection.playerWebContentsId != null &&
+        hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl)
+      ) {
+        try {
+          const { webContents } = require('electron');
+          const wc = webContents.fromId(Number(detection.playerWebContentsId));
+          if (wc && !wc.isDestroyed()) {
+            const msePath = await hlscheck.harvestPlayerMse(wc, dir, { signal, onProgress, onLog });
+            return await spawnFfmpegCopy(msePath, partPath, opts);
+          }
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw e;
+          if (onLog) onLog(`Direct player capture skipped (${e.message || e}); intercepting live CDN responses.`);
+        }
+      }
+      localPlaylist = await hlscheck.localizePlaylist(loaded.text, loaded.base, dir, headers, {
+        signal,
+        onProgress,
+        onLog,
+        playerWebContentsId: detection.playerWebContentsId
+      });
+    } else {
+      localPlaylist = `${partPath}.m3u8`;
+      fs.writeFileSync(localPlaylist, loaded.text, 'utf8');
+    }
+    const inputUrl = ffmpegFileArg(localPlaylist);
+    return await spawnFfmpegHls(
+      inputUrl,
+      ffmpegHeaders,
+      ua,
+      detection,
+      partPath,
+      opts,
+      true,
+      allLocal
+    );
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    if (err && (err.kind === 'html' || err.kind === 'json')) throw err;
+    if (allLocal || hlscheck.isTokenCdn(detection.url, detection.embedUrl)) throw err;
+    return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
+  } finally {
+    if (localPlaylist && !allLocal) {
+      try {
+        fs.unlinkSync(localPlaylist);
+      } catch (e) {
+        // ignore
+      }
+    }
+    rmrf(dir);
+  }
+}
+
+function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'info',
+      '-i',
+      inputPath,
+      '-map',
+      '0:v?',
+      '-map',
+      '0:a?',
+      '-c',
+      'copy',
+      '-dn',
+      '-sn',
+      '-movflags',
+      '+faststart',
+      '-f',
+      'mp4',
+      partPath
+    ];
+    const proc = spawn(ffmpegPath(), args, { windowsHide: true });
+    let durationSec = 0;
+    let stderrTail = '';
+    proc.stderr.on('data', (buf) => {
+      const text = buf.toString();
+      stderrTail = (stderrTail + text).slice(-4000);
+      if (!durationSec) {
+        const d = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+        if (d) durationSec = +d[1] * 3600 + +d[2] * 60 + parseFloat(d[3]);
+      }
+      const t = text.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (t && onProgress) {
+        const cur = +t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]);
+        onProgress({
+          received: cur,
+          total: durationSec,
+          percent: durationSec ? Math.min(cur / durationSec, 0.999) : null
+        });
+      }
+    });
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      try {
+        proc.kill('SIGKILL');
+      } catch (e) {
+        // ignore
+      }
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+    proc.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
+    proc.on('close', (code) => {
+      if (aborted) return reject(new AbortError());
+      if (code === 0) return resolve(partPath);
+      if (/\.webm$/i.test(inputPath)) {
+        const recode = spawn(
+          ffmpegPath(),
+          [
+            '-y',
+            '-hide_banner',
+            '-loglevel',
+            'error',
+            '-i',
+            inputPath,
+            '-c:v',
+            'libx264',
+            '-c:a',
+            'aac',
+            '-movflags',
+            '+faststart',
+            '-f',
+            'mp4',
+            partPath
+          ],
+          { windowsHide: true }
+        );
+        recode.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
+        recode.on('close', (c2) => {
+          if (aborted) return reject(new AbortError());
+          if (c2 === 0) return resolve(partPath);
+          reject(new Error((stderrTail || `ffmpeg exited ${code}`).trim().slice(-500)));
+        });
+        return;
+      }
+      reject(new Error((stderrTail || `ffmpeg exited ${code}`).trim().slice(-500)));
+    });
+  });
+}
+
+function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, onProgress } = {}, localPlaylist, allLocal) {
+  return new Promise((resolve, reject) => {
     const args = ['-y', '-hide_banner', '-loglevel', 'info'];
-    const hLines = headerLines(headers, ua);
-    if (hLines.length) args.push('-headers', hLines.join('\r\n') + '\r\n');
-    args.push('-user_agent', ua);
-    args.push(...httpReconnectArgs());
+    if (!allLocal) {
+      const hLines = headerLines(headers, ua);
+      if (hLines.length) args.push('-headers', hLines.join('\r\n') + '\r\n');
+      args.push('-user_agent', ua);
+      args.push(...httpReconnectArgs());
+    }
     const playlist =
-      detection.type === 'hls' || /\.m3u8|\/hls\d*\//i.test(detection.url || '');
+      localPlaylist ||
+      detection.type === 'hls' ||
+      /\.m3u8|\/hls\d*\//i.test(detection.url || '');
     if (playlist) {
       args.push(...hlsRelaxArgs());
-      if (/\.m3u8/i.test(detection.url || '')) args.push('-f', 'hls');
+      if (localPlaylist || allLocal) {
+        args.push('-protocol_whitelist', allLocal ? 'file,crypto,data' : 'file,http,https,tcp,tls,crypto,data');
+      }
+      if (localPlaylist || allLocal || /\.m3u8/i.test(detection.url || '')) args.push('-f', 'hls');
     }
-    args.push('-i', detection.url);
+    args.push('-i', ffmpegFileArg(inputUrl));
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;
     if (hasExternalSub) args.push('-i', detection.subtitleUrl);
@@ -445,6 +757,9 @@ function describeFfmpegExit(code, stderrTail) {
   }
   if (/403|forbidden|401|unauthorized/i.test(tail)) {
     return 'CDN rejected the stream (expired token or missing headers); will retry';
+  }
+  if (/Invalid data found when processing input|Video: png/i.test(tail)) {
+    return 'CDN disguised the video as PNG images; will retry with a fresh stream';
   }
   return `ffmpeg exited with code ${code}: ${tail}`;
 }

@@ -37,6 +37,7 @@
               <input id="address" class="address" type="text" spellcheck="false"
                      placeholder="Enter a URL and press Enter" />
             </form>
+            <button id="btn-episode" class="ghost-btn">Download Episode</button>
             <button id="btn-bulk" class="primary-btn">Bulk Download</button>
             <button id="btn-toggle-detected" class="icon-btn" title="Toggle detected videos">&#9707;</button>
           </div>
@@ -119,8 +120,8 @@
           <h2>Bulk download series</h2>
           <button id="series-close" class="icon-btn">&times;</button>
         </div>
-        <p class="hint">All episodes are detected and downloaded automatically (DUB,
-          best quality). Use <b>Schedule</b> to also auto-grab new episodes each week.</p>
+        <p class="hint">Download the episode on this page, or every episode in the
+          season. Use <b>Schedule</b> to also auto-grab new episodes each week.</p>
         <div class="field">
           <label>Series name (auto-generated &mdash; edit if needed)</label>
           <input id="series-name" type="text" placeholder="Series name" />
@@ -131,12 +132,16 @@
             <input id="series-season" type="text" placeholder="auto" />
           </div>
           <div>
-            <label>Audio</label>
-            <select id="series-mode">
-              <option value="dub">Dub (default)</option>
-              <option value="sub">Sub (embed subtitles)</option>
-            </select>
+            <label>Episode (this page)</label>
+            <input id="series-episode" type="text" placeholder="e.g. 1" />
           </div>
+        </div>
+        <div class="field">
+          <label>Audio</label>
+          <select id="series-mode">
+            <option value="dub">Dub (default)</option>
+            <option value="sub">Sub (embed subtitles)</option>
+          </select>
         </div>
         <div class="field">
           <label>Download folder</label>
@@ -148,6 +153,7 @@
         <div class="modal-actions">
           <button id="series-cancel" class="ghost-btn">Cancel</button>
           <button id="series-schedule" class="ghost-btn">Schedule weekly</button>
+          <button id="series-one" class="ghost-btn">Download this episode</button>
           <button id="series-go" class="primary-btn">Download all episodes</button>
         </div>
       </div>
@@ -173,6 +179,13 @@
             <label>Episode (optional)</label>
             <input id="name-episode" type="text" placeholder="e.g. 1" />
           </div>
+        </div>
+        <div class="field">
+          <label>Audio</label>
+          <select id="name-mode">
+            <option value="dub">Dub (default)</option>
+            <option value="sub">Sub (embed subtitles)</option>
+          </select>
         </div>
         <div class="field">
           <label>Download folder</label>
