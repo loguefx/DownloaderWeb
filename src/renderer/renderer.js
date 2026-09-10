@@ -1,7 +1,112 @@
 'use strict';
 
 const $ = (sel) => document.querySelector(sel);
-const view = $('#view');
+const IS_LINUX = api.platform === 'linux';
+document.documentElement.classList.add('platform-' + (api.platform || 'unknown'));
+document.body.classList.add('platform-' + (api.platform || 'unknown'));
+
+function createLinuxView() {
+  const listeners = {
+    'dom-ready': [],
+    crashed: [],
+    'did-navigate': [],
+    'did-navigate-in-page': []
+  };
+  let wcId = null;
+  let url = 'https://www.google.com';
+  let title = '';
+  let canBack = false;
+  let canFwd = false;
+  const lb = api.linuxBrowser;
+  const dead = document.getElementById('view');
+  if (dead) {
+    dead.removeAttribute('src');
+    dead.remove();
+  }
+
+  function reportBounds() {
+    const el = document.querySelector('.browser');
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    lb.setBounds({ x: r.x, y: r.y, width: r.width, height: r.height });
+  }
+
+  function syncVisible() {
+    const onBrowser = !!document.querySelector('#page-browser.active');
+    const overlay = document.getElementById('vpn-overlay');
+    const vpnOk = overlay && overlay.classList.contains('hidden');
+    const seriesOpen = !$('#series-modal').classList.contains('hidden');
+    const nameOpen = !$('#name-modal').classList.contains('hidden');
+    lb.setVisible(onBrowser && vpnOk && !seriesOpen && !nameOpen);
+    reportBounds();
+  }
+
+  lb.onEvent((ev) => {
+    if (ev.webContentsId != null) wcId = ev.webContentsId;
+    if (ev.url) url = ev.url;
+    if (ev.title) title = ev.title;
+    if (typeof ev.canGoBack === 'boolean') canBack = ev.canGoBack;
+    if (typeof ev.canGoForward === 'boolean') canFwd = ev.canGoForward;
+    const fns = listeners[ev.type] || [];
+    if (ev.type === 'dom-ready') fns.forEach((fn) => fn());
+    else if (ev.type === 'did-navigate') fns.forEach((fn) => fn({ url: ev.url }));
+    else if (ev.type === 'did-navigate-in-page') {
+      fns.forEach((fn) => fn({ url: ev.url, isMainFrame: ev.isMainFrame }));
+    } else if (ev.type === 'crashed') fns.forEach((fn) => fn());
+  });
+
+  window.addEventListener('resize', reportBounds);
+  const el = document.querySelector('.browser');
+  if (el && typeof ResizeObserver === 'function') new ResizeObserver(reportBounds).observe(el);
+  ['series-modal', 'name-modal', 'vpn-overlay', 'page-browser'].forEach((id) => {
+    const n = document.getElementById(id);
+    if (n) new MutationObserver(syncVisible).observe(n, { attributes: true, attributeFilter: ['class'] });
+  });
+
+  return {
+    addEventListener(name, fn) {
+      if (!listeners[name]) listeners[name] = [];
+      listeners[name].push(fn);
+    },
+    getWebContentsId() {
+      return wcId;
+    },
+    getURL() {
+      return url;
+    },
+    getTitle() {
+      return title;
+    },
+    loadURL(next) {
+      url = next;
+      return lb.loadURL(next);
+    },
+    canGoBack() {
+      return canBack;
+    },
+    canGoForward() {
+      return canFwd;
+    },
+    goBack() {
+      return lb.goBack();
+    },
+    goForward() {
+      return lb.goForward();
+    },
+    reload() {
+      return lb.reload();
+    },
+    executeJavaScript(code) {
+      return lb.exec(code);
+    },
+    setAudioMuted() {},
+    syncLinuxChrome: syncVisible,
+    reportBounds
+  };
+}
+
+const view = IS_LINUX ? createLinuxView() : $('#view');
+if (!IS_LINUX) view.src = view.src || 'https://www.google.com';
 
 let viewWcId = null; // webContents id of the embedded browser
 let detected = new Map(); // url -> detection (for the current tab)
@@ -15,12 +120,27 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   const vpn = await api.vpnStatus();
   setVpnBadge(vpn.connected);
+  renderLog(await api.logSnapshot());
+  if (IS_LINUX) {
+    const id = await api.linuxBrowser.getWebContentsId();
+    const current = await api.linuxBrowser.getURL();
+    if (id != null) {
+      viewWcId = id;
+      refreshDetected();
+    }
+    if (current) $('#address').value = current;
+    if (view.syncLinuxChrome) {
+      requestAnimationFrame(() => view.syncLinuxChrome());
+    }
+  }
 });
 
 // ---------- tab navigation ----------
 function showPage(id) {
   document.querySelectorAll('.page').forEach((p) => p.classList.toggle('active', p.id === 'page-' + id));
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.page === id));
+  if (IS_LINUX && view.syncLinuxChrome) view.syncLinuxChrome();
+  if (id === 'log') api.logSnapshot().then(renderLog);
 }
 document.querySelectorAll('.tab').forEach((t) => {
   t.onclick = () => showPage(t.dataset.page);
@@ -30,6 +150,7 @@ document.querySelectorAll('.tab').forEach((t) => {
 const DETECTED_KEY = 'wvd-detected-hidden';
 function applyDetected(hidden) {
   document.getElementById('app').classList.toggle('detected-hidden', hidden);
+  if (IS_LINUX && view.reportBounds) requestAnimationFrame(() => view.reportBounds());
 }
 $('#btn-toggle-detected').onclick = () => {
   const hidden = !document.getElementById('app').classList.contains('detected-hidden');
@@ -44,7 +165,22 @@ view.addEventListener('dom-ready', async () => {
     viewWcId = view.getWebContentsId();
     refreshDetected();
   }
+  try {
+    view.setAudioMuted(false);
+  } catch (e) {
+    // older Electron
+  }
   $('#address').value = view.getURL();
+});
+
+view.addEventListener('crashed', () => {
+  setTimeout(() => {
+    try {
+      view.reload();
+    } catch (e) {
+      // webview may already be gone
+    }
+  }, 250);
 });
 
 view.addEventListener('did-navigate', (e) => {
@@ -565,7 +701,7 @@ api.queueSnapshot().then(renderQueue);
 
 // True whenever something is queued/downloading - drives the "Queue ..." labels.
 let queueActive = false;
-const ACTIVE_STATUSES = ['queued', 'resolving', 'downloading', 'verifying', 'paused'];
+const ACTIVE_STATUSES = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready'];
 
 function updateBulkLabels() {
   const b1 = $('#btn-bulk-detected');
@@ -615,7 +751,7 @@ function renderQueue(items) {
   for (const grp of groups.values()) {
     const total = grp.items.length;
     const done = grp.items.filter((i) => i.status === 'done').length;
-    const active = grp.items.some((i) => ['downloading', 'resolving', 'verifying'].includes(i.status));
+    const active = grp.items.some((i) => ['downloading', 'resolving', 'verifying', 'ready'].includes(i.status));
     const title = grp.series + (grp.season ? ` \u00b7 S${grp.season}` : '') + (grp.mode === 'sub' ? ' \u00b7 SUB' : '');
 
     // Only show episodes still in progress; hide completed/cancelled ones. When a
@@ -631,7 +767,11 @@ function renderQueue(items) {
           : null;
       const displayStatus = it.status === 'queued' && it.error ? 'retrying' : it.status;
       const indeterminate =
-        (it.status === 'downloading' || it.status === 'resolving' || displayStatus === 'retrying') && pct == null;
+        (it.status === 'downloading' ||
+          it.status === 'resolving' ||
+          it.status === 'ready' ||
+          displayStatus === 'retrying') &&
+        pct == null;
       const epName = it.episode != null ? `Episode ${it.episode}` : escapeHtml(it.label || 'Download');
       rows += `
         <div class="ep">
@@ -686,19 +826,40 @@ function applyVpnGate() {
   const overlay = $('#vpn-overlay');
   if (!overlay) return;
   overlay.classList.toggle('hidden', vpnOnline);
+  if (IS_LINUX && view.syncLinuxChrome) view.syncLinuxChrome();
 }
 
 // ---------- logs & banner ----------
-api.onQueueLog(({ ts, msg }) => {
+function appendLogLine({ ts, msg }) {
   const log = $('#log');
+  if (!log) return;
+  const empty = log.querySelector('.empty-log');
+  if (empty) empty.remove();
   const line = document.createElement('div');
   line.className = 'line';
   const text = String(msg || '').length > 400 ? String(msg).slice(0, 400) + '…' : String(msg || '');
   line.innerHTML = `<span class="t">${new Date(ts).toLocaleTimeString()}</span>${escapeHtml(text)}`;
   log.appendChild(line);
   log.scrollTop = log.scrollHeight;
-  while (log.childNodes.length > 200) log.removeChild(log.firstChild);
-});
+  while (log.querySelectorAll('.line').length > 500) {
+    const first = log.querySelector('.line');
+    if (first) log.removeChild(first);
+  }
+}
+
+function renderLog(lines) {
+  const log = $('#log');
+  if (!log) return;
+  log.innerHTML = '';
+  if (!lines || !lines.length) {
+    log.innerHTML =
+      '<div class="line empty-log">No activity yet. Queue a download or run bulk discovery to see messages here.</div>';
+    return;
+  }
+  for (const item of lines) appendLogLine(item);
+}
+
+api.onQueueLog(appendLogLine);
 
 api.onQueueStopped(({ reason, item }) => {
   showBanner(`Stopped: ${reason}${item ? ' (at "' + item + '")' : ''}`, false);
@@ -744,7 +905,7 @@ function renderSchedule(items) {
 
 // ---------- activity log controls ----------
 $('#btn-clear-log').onclick = () => {
-  $('#log').innerHTML = '';
+  api.logClear().then(() => renderLog([]));
 };
 
 // ---------- helpers ----------

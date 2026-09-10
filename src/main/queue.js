@@ -9,6 +9,8 @@ const vpn = require('./vpn');
 const organizer = require('./organizer');
 const { download } = require('./downloader');
 const { verifyFile } = require('./verify');
+const hlscheck = require('./hlscheck');
+const sites = require('./sites');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
@@ -23,8 +25,9 @@ class DownloadManager extends EventEmitter {
     this.items = [];
     this._paused = false;
     this._vpnDown = false;
-    this._active = new Set(); // items currently being processed (up to concurrency)
+    this._active = new Set(); // items currently being processed (per-site concurrency + prefetch)
     this._pauseWaiters = [];
+    this._downloadWaiters = [];
 
     vpn.on('status', ({ connected }) => this._onVpnStatus(connected));
   }
@@ -55,7 +58,7 @@ class DownloadManager extends EventEmitter {
   // ---- public API ----
 
   add(item) {
-    const ACTIVE = ['queued', 'resolving', 'downloading', 'verifying', 'paused'];
+    const ACTIVE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready'];
     // Dedupe by key (used by the watcher): skip if an equivalent item is already
     // active; replace any stale (waiting/failed/done) one so it can retry.
     if (item.key) {
@@ -117,7 +120,7 @@ class DownloadManager extends EventEmitter {
     // Stop overrides a prior Pause so workers aren't left parked at the gate.
     this._paused = false;
     this.items.forEach((it) => {
-      if (['queued', 'paused', 'downloading', 'resolving', 'verifying'].includes(it.status)) {
+      if (['queued', 'paused', 'downloading', 'resolving', 'verifying', 'ready'].includes(it.status)) {
         it.status = this._active.has(it) ? it.status : 'cancelled';
       }
     });
@@ -180,17 +183,93 @@ class DownloadManager extends EventEmitter {
 
   // ---- internals ----
 
-  // Fills the worker pool: starts processing queued items until `concurrency`
-  // downloads are running at once. Called whenever the queue changes or a slot
-  // frees up.
+  // Per-site download limits. SFlix uses the global 5-wide queue (NontonGo MP4).
+  // Player-bound token CDNs still serialize via _playerBoundHeld.
+  _itemLimits(item) {
+    const url = String((item && (item.url || item.baseUrl)) || '');
+    const profile = url ? sites.resolve(url) : null;
+    const site = (profile && profile.download) || {};
+    const concurrency = Math.max(
+      1,
+      site.concurrency != null ? site.concurrency : config.download.concurrency || 1
+    );
+    const prefetch = Math.max(
+      0,
+      site.prefetchDiscover != null ? site.prefetchDiscover : config.download.prefetchDiscover || 0
+    );
+    return {
+      siteId: (profile && profile.id) || 'generic',
+      concurrency,
+      prefetch,
+      maxWorkers: concurrency + prefetch
+    };
+  }
+
+  _siteActiveCount(siteId) {
+    let n = 0;
+    for (const it of this._active) {
+      if (this._itemLimits(it).siteId === siteId) n += 1;
+    }
+    return n;
+  }
+
+  _siteDownloadHeld(siteId) {
+    let n = 0;
+    for (const it of this.items) {
+      if (it._holdsDownloadSlot && this._itemLimits(it).siteId === siteId) n += 1;
+    }
+    return n;
+  }
+
+  _playerBoundHeld() {
+    let n = 0;
+    for (const it of this.items) {
+      if (it._holdsDownloadSlot && it._playerBoundDownload) n += 1;
+    }
+    return n;
+  }
+
+  // Fills the worker pool: up to each site's concurrency downloads, plus that
+  // site's prefetch so the queue does not sit idle between files.
   _kick() {
     if (this._stopRequested) return;
-    const limit = Math.max(1, config.download.concurrency || 1);
-    while (this._active.size < limit) {
-      const item = this.items.find((it) => it.status === 'queued' && !this._active.has(it));
-      if (!item) break;
+    for (const item of this.items) {
+      if (item.status !== 'queued' || this._active.has(item)) continue;
+      const lim = this._itemLimits(item);
+      if (this._siteActiveCount(lim.siteId) >= lim.maxWorkers) continue;
       this._startWorker(item);
     }
+  }
+
+  async _waitDownloadSlot(item) {
+    if (item._holdsDownloadSlot) return true;
+    const lim = this._itemLimits(item);
+    while (!this._stopRequested && this.items.includes(item)) {
+      if (!this._paused && !this._vpnDown && this._siteDownloadHeld(lim.siteId) < lim.concurrency) {
+        item._holdsDownloadSlot = true;
+        return true;
+      }
+      if (item.status !== 'ready') {
+        item.status = 'ready';
+        this._log(`"${item.label}" is ready; download starts when a ${lim.siteId} slot frees.`);
+        this._emit();
+      }
+      await new Promise((resolve) => this._downloadWaiters.push(resolve));
+    }
+    return false;
+  }
+
+  _releaseDownloadSlots() {
+    const w = this._downloadWaiters;
+    this._downloadWaiters = [];
+    w.forEach((fn) => fn());
+  }
+
+  _releaseDownloadSlot(item) {
+    if (item && item._holdsDownloadSlot) {
+      item._holdsDownloadSlot = false;
+    }
+    this._releaseDownloadSlots();
   }
 
   _startWorker(item) {
@@ -202,6 +281,7 @@ class DownloadManager extends EventEmitter {
       .catch((e) => this._log('Runner error: ' + e.message))
       .finally(() => {
         this._active.delete(item);
+        this._releaseDownloadSlot(item);
         this._kick();
       });
   }
@@ -219,6 +299,7 @@ class DownloadManager extends EventEmitter {
     const w = this._pauseWaiters;
     this._pauseWaiters = [];
     w.forEach((fn) => fn());
+    this._releaseDownloadSlots();
   }
 
   async _process(item) {
@@ -246,10 +327,43 @@ class DownloadManager extends EventEmitter {
         item.error = null;
         this._emit();
 
+        const finalPath = organizer.buildOutputPath(
+          item.outputRoot,
+          { series: item.series, season: item.season, episode: item.episode },
+          '.mp4'
+        );
+        item.finalPath = finalPath;
+        organizer.cleanupCaptureJunk(path.dirname(finalPath));
+        const partPath = finalPath + '.part';
+        const existing = fs.existsSync(finalPath) ? finalPath : fs.existsSync(partPath) ? partPath : '';
+        if (existing) {
+          const already = await verifyFile(existing);
+          if (already.ok) {
+            if (existing === partPath) fs.renameSync(partPath, finalPath);
+            item.status = 'done';
+            item.progress = 1;
+            item.bytes = already.bytes || item.bytes;
+            this._emit();
+            this._log(
+              `Completed: ${path.basename(finalPath)} (kept a finished file from a previous attempt)`
+            );
+            if (typeof item.onDone === 'function') {
+              try {
+                item.onDone(item);
+              } catch (e) {
+                // ignore
+              }
+            }
+            this._pruneGroupIfComplete(item.group);
+            return { fatal: false };
+          }
+        }
+
         const outcome = await item.discover();
         const status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 
         if (status === 'unavailable') {
+          this._releaseDownloadSlot(item);
           item.status = 'waiting';
           item.error = (outcome && outcome.reason) || 'Dub not released yet';
           this._emit();
@@ -266,11 +380,28 @@ class DownloadManager extends EventEmitter {
 
         if (status === 'failed') {
           // Timeouts / empty players are NOT "dub missing". DUB buttons were on
-          // the page; the stream just didn't arrive this try. Keep retrying until
-          // it resolves or the watcher path parks it as unavailable.
+          // the page; the stream just didn't arrive this try.
+          this._releaseDownloadSlot(item);
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;
           item.error = reason;
+          const max = Math.max(1, config.download.maxRetries || 6);
+          if (item.attempts >= max) {
+            // Endless retries on one dead episode (S2E03 at 190+ tries) held the
+            // only Linux worker and blocked every later season behind it.
+            const idx = this.items.indexOf(item);
+            if (idx >= 0 && idx < this.items.length - 1) {
+              this.items.splice(idx, 1);
+              this.items.push(item);
+            }
+            item.status = 'queued';
+            this._emit();
+            this._log(
+              `Gave up on "${item.label}" after ${item.attempts} tries (${reason}). ` +
+                'Moving it to the back of the queue so other downloads can start.'
+            );
+            return { fatal: false };
+          }
           item.status = 'queued';
           this._emit();
           const wait = Math.min(
@@ -286,13 +417,24 @@ class DownloadManager extends EventEmitter {
 
         const detection = (outcome && outcome.detection) || outcome;
 
-        const finalPath = organizer.buildOutputPath(
-          item.outputRoot,
-          { series: item.series, season: item.season, episode: item.episode },
-          '.mp4'
+        item._playerBoundDownload = !!(
+          detection && hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl)
         );
-        item.finalPath = finalPath;
-        const partPath = finalPath + '.part';
+        const claimed = await this._waitDownloadSlot(item);
+        if (!claimed) {
+          if (detection && typeof detection.releaseDiscover === 'function') {
+            try {
+              detection.releaseDiscover();
+            } catch (e) {
+              // ignore
+            }
+          }
+          if (this._stopRequested && item.status !== 'done') {
+            item.status = 'cancelled';
+            this._emit();
+          }
+          return { fatal: false };
+        }
 
         item.status = 'downloading';
         item.progress = null;
@@ -314,19 +456,30 @@ class DownloadManager extends EventEmitter {
             signal: controller.signal,
             onLog: (m) => this._log(m),
             onProgress: (p) => {
-              item.progress = p.percent;
-              item.bytes = p.received || item.bytes;
+              const next = p && typeof p.percent === 'number' ? p.percent : null;
+              if (next != null) {
+                item.progress = item.progress == null ? next : Math.max(item.progress, next);
+              }
+              item.bytes = (p && p.received) || item.bytes;
               this._emitProgress(item);
             }
           });
         } catch (err) {
           const lab = detection && detection.sourceLabel;
-          if (lab) {
+          const bound = !!(detection && hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl));
+          // Blacklist a failed NontonGo/MP4 server so the next try can fall
+          // through to Vidfast. Do not blacklist a live token-CDN player: that
+          // is the Linux fallback when NontonGo does not yield.
+          if (lab && !bound) {
             item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
             const key = String(lab).toLowerCase();
             if (!item.skipSources.includes(key)) item.skipSources.push(key);
             this._log(
               `"${item.label}" could not download from "${lab}"; next try will use a different server.`
+            );
+          } else if (lab && bound) {
+            this._log(
+              `"${item.label}" capture from "${lab}" failed; retrying the same player on the next attempt.`
             );
           }
           throw err;
@@ -336,7 +489,9 @@ class DownloadManager extends EventEmitter {
 
         item.status = 'verifying';
         this._emit();
-        const v = await verifyFile(partPath);
+        const v = await verifyFile(partPath, {
+          minDuration: detection && detection.playlistDuration
+        });
         if (!v.ok) {
           try {
             fs.unlinkSync(partPath);
@@ -362,11 +517,13 @@ class DownloadManager extends EventEmitter {
         return { fatal: false };
       } catch (err) {
         if (err.name === 'AbortError') {
-          // Paused (VPN/user): keep partial, loop back through the gate.
+          // Paused (VPN/user): keep partial and the download slot so a
+          // prefetched episode cannot start while we are paused.
           item.status = 'paused';
           this._emit();
           continue;
         }
+        this._releaseDownloadSlot(item);
         item.attempts += 1;
         item.error = err.message;
         this._log(`Error on "${item.label}" (attempt ${item.attempts}): ${err.message}`);
@@ -400,6 +557,11 @@ class DownloadManager extends EventEmitter {
   }
 
   _log(msg) {
+    try {
+      console.log(msg);
+    } catch (e) {
+      // ignore
+    }
     this.emit('log', msg);
   }
 
@@ -411,7 +573,7 @@ class DownloadManager extends EventEmitter {
     try {
       // Persist everything still in flight so a restart can resume it. Completed
       // and cancelled items are dropped (done files stay on disk).
-      const RESUMABLE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'waiting', 'failed'];
+      const RESUMABLE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'waiting', 'failed', 'ready'];
       const data = this.items
         .filter((it) => RESUMABLE.includes(it.status) && it.url)
         .map((it) => ({
@@ -427,7 +589,10 @@ class DownloadManager extends EventEmitter {
           baseUrl: it.baseUrl,
           key: it.key,
           stopRunOnFail: it.stopRunOnFail,
-          status: it.status
+          status: it.status,
+          attempts: it.attempts || 0,
+          skipSources: Array.isArray(it.skipSources) ? it.skipSources : [],
+          baseUrl: it.baseUrl || it.url || null
         }));
       fs.writeFileSync(this._manifestPath(), JSON.stringify(data, null, 2));
     } catch (e) {
@@ -449,7 +614,9 @@ class DownloadManager extends EventEmitter {
     if (!Array.isArray(data) || !data.length) return 0;
     let restored = 0;
     for (const rec of data) {
-      if (!rec || !rec.url) continue;
+      if (!rec) continue;
+      if (!rec.url && rec.baseUrl) rec.url = rec.baseUrl;
+      if (!rec.url) continue;
       let extra = {};
       try {
         extra = rebuild(rec) || {};
@@ -470,9 +637,11 @@ class DownloadManager extends EventEmitter {
             outputRoot: rec.outputRoot,
             url: rec.url,
             template: rec.template,
-            baseUrl: rec.baseUrl,
+            baseUrl: rec.baseUrl || rec.url,
             key: rec.key,
-            stopRunOnFail: rec.stopRunOnFail
+            stopRunOnFail: rec.stopRunOnFail,
+            skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],
+            attempts: rec.attempts || 0
           },
           extra
         )

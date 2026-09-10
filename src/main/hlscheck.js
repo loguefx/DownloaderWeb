@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 
 // BYFMS (and similar) will happily serve a master playlist whose first media
 // segment is a 20-minute stub that 502s. ffmpeg then copies the leftover 45s of
@@ -156,6 +157,15 @@ function looksLikePlaylist(text) {
   return /^#EXTM3U/m.test(text || '');
 }
 
+function playlistFromBuffer(buf, url) {
+  if (!buf || !buf.length) return null;
+  const utf8 = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf);
+  if (looksLikePlaylist(utf8)) return { body: utf8, url, status: 200 };
+  const latin1 = Buffer.isBuffer(buf) ? buf.toString('latin1') : utf8;
+  if (looksLikePlaylist(latin1)) return { body: latin1, url, status: 200 };
+  return null;
+}
+
 function looksLikeHtml(text) {
   const t = String(text || '')
     .slice(0, 256)
@@ -170,20 +180,57 @@ function looksLikeJson(text) {
   return t.startsWith('{') || t.startsWith('[');
 }
 
+function parseStreamInf(line) {
+  const bw = parseInt((String(line).match(/\bBANDWIDTH=(\d+)/i) || [])[1] || '0', 10) || 0;
+  const res = String(line).match(/RESOLUTION=(\d+)x(\d+)/i);
+  return {
+    bw,
+    w: res ? parseInt(res[1], 10) : 0,
+    h: res ? parseInt(res[2], 10) : 0,
+    audio: ((String(line).match(/AUDIO="([^"]+)"/i) || [])[1] || '').trim()
+  };
+}
+
+function variantScore(info) {
+  return (info.h || 0) * 1e12 + (info.w || 0) * 1e6 + (info.bw || 0);
+}
+
+function bestAudioGroupId(playlist) {
+  let bestId = '';
+  let bestScore = -1;
+  for (const line of String(playlist || '').split(/\r?\n/)) {
+    if (!/#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line)) continue;
+    const id = ((line.match(/GROUP-ID="([^"]+)"/i) || [])[1] || '').trim();
+    if (!id) continue;
+    const ch = parseInt((line.match(/CHANNELS="([^"]+)"/i) || [])[1] || '0', 10) || 0;
+    const def = /DEFAULT=YES/i.test(line) ? 1 : 0;
+    const name = ((line.match(/NAME="([^"]+)"/i) || [])[1] || '').toLowerCase();
+    const hi = /atmos|truehd|ddp|eac-3|ec-3|5\.1|7\.1/i.test(name) ? 50 : 0;
+    const score = ch * 1000 + hi + def;
+    if (score >= bestScore) {
+      bestScore = score;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
 function bestVariantUri(playlist, base) {
   const lines = String(playlist || '')
     .split(/\r?\n/)
     .map((l) => l.trim());
+  const wantAudio = bestAudioGroupId(playlist);
   let best = null;
-  let bestBw = -1;
+  let bestScore = -1;
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/#EXT-X-STREAM-INF:.*?\bBANDWIDTH=(\d+)/i);
-    if (!m) continue;
+    if (!/#EXT-X-STREAM-INF:/i.test(lines[i])) continue;
     const next = lines.slice(i + 1).find((l) => l && !l.startsWith('#'));
     if (!next) continue;
-    const bw = parseInt(m[1], 10);
-    if (bw >= bestBw) {
-      bestBw = bw;
+    const info = parseStreamInf(lines[i]);
+    let score = variantScore(info);
+    if (wantAudio && info.audio === wantAudio) score += 1e15;
+    if (score >= bestScore) {
+      bestScore = score;
       best = next;
     }
   }
@@ -194,6 +241,41 @@ function bestVariantUri(playlist, base) {
   } catch (e) {
     return null;
   }
+}
+
+function playlistMediaDuration(text) {
+  let dur = 0;
+  for (const m of String(text || '').matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
+  return dur;
+}
+
+function mediaPlaylistScore(url, text) {
+  const n = (String(text).match(/^#EXTINF/gm) || []).length || 1;
+  let dur = 0;
+  for (const m of String(text).matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
+  const avg = dur / n;
+  let score = avg;
+  if (/\/r2\//i.test(url)) score += 1000;
+  if (/peakstorm\.top\/s\//i.test(url)) score -= 200;
+  if (/#EXT-X-STREAM-INF/i.test(text)) score += 5000;
+  const inf = String(text).match(/#EXT-X-STREAM-INF:[^\n]+/i);
+  if (inf) score += variantScore(parseStreamInf(inf[0])) / 1e12;
+  return score;
+}
+
+function describeMediaPlaylist(url, text) {
+  const n = (String(text).match(/^#EXTINF/gm) || []).length;
+  let dur = 0;
+  for (const m of String(text).matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
+  const inf = String(text).match(/#EXT-X-STREAM-INF:[^\n]+/i);
+  const info = inf ? parseStreamInf(inf[0]) : {};
+  const parts = [];
+  if (info.h) parts.push(`${info.w}x${info.h}`);
+  if (info.bw) parts.push(`${Math.round(info.bw / 1000)}kbps`);
+  if (n) parts.push(`${n} part(s)`);
+  if (dur) parts.push(`${Math.round(dur)}s`);
+  if (/\/r2\//i.test(url || '')) parts.push('high-bitrate');
+  return parts.join(', ') || String(url || '').slice(0, 80);
 }
 
 function rewritePlaylistUris(text, base) {
@@ -235,8 +317,113 @@ function notPlaylistError(kind, status) {
 // Full playlist body via Chromium (cookies/TLS) so ffmpeg does not have to
 // open the token URL itself. Token CDNs often give Chromium a real #EXTM3U and
 // ffmpeg a challenge page, which then dies with "Invalid data".
-async function fetchPlaylist(url, headers, signal = null) {
+async function playlistFromPlayerHook(wc, url) {
+  if (!wc || wc.isDestroyed()) return null;
+  const want = String(url || '');
+  for (const frame of collectFrames(wc)) {
+    try {
+      const b64 = await frame.executeJavaScript(
+        `(() => {
+          const parts = window.__wvdParts || {};
+          const want = ${JSON.stringify(want)};
+          if (parts[want]) return parts[want];
+          const keys = Object.keys(parts);
+          const hit = keys.find((k) => {
+            if (k === want) return true;
+            try {
+              return k.split('?')[0] === want.split('?')[0];
+            } catch (e) {
+              return false;
+            }
+          }) || keys.find((k) => /\\.m3u8/i.test(k));
+          return hit ? parts[hit] : '';
+        })()`,
+        true
+      );
+      if (!b64) continue;
+      const got = playlistFromBuffer(Buffer.from(b64, 'base64'), url);
+      if (got) return got;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+  }
+  return null;
+}
+
+function cachedPlaylist(playerWebContentsId, url) {
+  const wc = liveWebContents(playerWebContentsId);
+  if (!wc || !wc._cdpPlaylists || !wc._cdpPlaylists.size) return null;
+  const want = String(url || '');
+  if (want && wc._cdpPlaylists.has(want)) {
+    const text = wc._cdpPlaylists.get(want);
+    if (looksLikePlaylist(text)) return { text, base: want };
+  }
+  if (want) return null;
+  return bestCachedPlaylist(playerWebContentsId);
+}
+
+function bestCachedPlaylist(playerWebContentsId) {
+  const wc = liveWebContents(playerWebContentsId);
+  if (!wc || !wc._cdpPlaylists || !wc._cdpPlaylists.size) return null;
+  let best = null;
+  let bestScore = -Infinity;
+  for (const [u, text] of wc._cdpPlaylists) {
+    if (!looksLikePlaylist(text)) continue;
+    const score = mediaPlaylistScore(u, text);
+    if (score > bestScore) {
+      bestScore = score;
+      best = { text, base: u };
+    }
+  }
+  return best;
+}
+
+async function fetchPlaylist(url, headers, signal = null, playerWebContentsId = null) {
   const h = { ...(headers || {}) };
+  const cached = cachedPlaylist(playerWebContentsId, url);
+  if (cached) return { body: cached.text, url: cached.base, status: 200 };
+  const wc = liveWebContents(playerWebContentsId);
+  const bound = isPlayerBoundCdn(url, '');
+  if (wc) {
+    try {
+      const fromCache = playlistFromBuffer(await readPageResource(wc, url), url);
+      if (fromCache) return fromCache;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+    const hooked = await playlistFromPlayerHook(wc, url);
+    if (hooked) return hooked;
+    // One-shot /s/ tokens die if anything besides the player fetches them.
+    // Do not issue a second GET from the page, Node, or performance URLs.
+    if (bound) throw notPlaylistError('other', 0);
+    try {
+      const buf = await fetchViaWebContents(wc, url, { timeoutMs: 10000, signal });
+      const fromPage = playlistFromBuffer(buf, url);
+      if (fromPage) return fromPage;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+    try {
+      const extra = await wc.executeJavaScript(
+        `performance.getEntriesByType('resource').map((e) => e.name).filter((n) => /m3u8|peakstorm/i.test(n)).slice(-8)`,
+        true
+      );
+      for (const u of extra || []) {
+        if (!u || u === url) continue;
+        try {
+          const fromRes = playlistFromBuffer(await readPageResource(wc, u), u);
+          if (fromRes) return fromRes;
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw e;
+        }
+        const buf = await fetchViaWebContents(wc, u, { timeoutMs: 8000, signal });
+        const fromPage = playlistFromBuffer(buf, u);
+        if (fromPage) return fromPage;
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+  }
   const via = await requestViaSession(url, h, { maxBytes: 2_000_000, timeoutMs: 15000, signal });
   if (via && looksLikePlaylist(via.body)) return via;
   const node = await requestNode(url, h, { maxBytes: 2_000_000, timeoutMs: 15000, signal });
@@ -248,15 +435,18 @@ async function fetchPlaylist(url, headers, signal = null) {
   throw notPlaylistError('other', status);
 }
 
-async function loadMediaPlaylist(url, headers, signal = null) {
-  const master = await fetchPlaylist(url, headers, signal);
+async function loadMediaPlaylist(url, headers, signal = null, playerWebContentsId = null) {
+  const cachedBest = bestCachedPlaylist(playerWebContentsId);
+  const master = cachedBest
+    ? { body: cachedBest.text, url: cachedBest.base, status: 200 }
+    : await fetchPlaylist(url, headers, signal, playerWebContentsId);
   let text = master.body;
   let base = master.url || url;
-  if (!/#EXTINF:/i.test(text)) {
+  if (/#EXT-X-STREAM-INF/i.test(text) || !/#EXTINF:/i.test(text)) {
     const variant = bestVariantUri(text, base);
     if (variant) {
       try {
-        const v = await fetchPlaylist(variant, headers, signal);
+        const v = await fetchPlaylist(variant, headers, signal, playerWebContentsId);
         if (looksLikePlaylist(v.body) && /#EXTINF:/i.test(v.body)) {
           text = v.body;
           base = v.url || variant;
@@ -286,22 +476,42 @@ function isPng(buf) {
   );
 }
 
+function isFmp4At(buf, i) {
+  if (!buf || i + 8 > buf.length) return false;
+  const typ = buf.toString('ascii', i + 4, i + 8);
+  return typ === 'ftyp' || typ === 'moof' || typ === 'mdat' || typ === 'moov' || typ === 'sidx';
+}
+
+function isMediaAt(buf, i) {
+  return (buf && buf[i] === 0x47) || isFmp4At(buf, i);
+}
+
+// Chromium's CDP returns binary as a JS string. Decoding that as UTF-8 inserts
+// U+FFFD and ffmpeg then dies with "Invalid data found when processing input".
+function bufferFromCdpString(data, base64Encoded) {
+  const raw = data || '';
+  if (!raw) return Buffer.alloc(0);
+  if (base64Encoded) return Buffer.from(raw, 'base64');
+  if (raw.indexOf('\uFFFD') !== -1) return Buffer.alloc(0);
+  return Buffer.from(raw, 'latin1');
+}
+
 // Vidfast/peakstorm (and similar) prepend a 1x1 PNG so ffmpeg's HLS demuxer
 // probes "png" and dies with "Invalid data found when processing input".
-// The real MPEG-TS starts at the first 0x47 sync after the PNG chunks.
+// The real media is MPEG-TS (0x47) or fMP4 after the PNG chunks.
 function stripPngWrapper(buf) {
   if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf || []);
   if (!isPng(buf)) return buf;
   let i = 8;
   while (i + 12 <= buf.length) {
-    if (buf[i] === 0x47) break;
+    if (isMediaAt(buf, i)) break;
     const len = buf.readUInt32BE(i);
     if (len > 10 * 1024 * 1024) break;
     const type = buf.toString('ascii', i + 4, i + 8);
     i += 12 + len;
     if (type === 'IEND') break;
   }
-  while (i < buf.length && buf[i] !== 0x47) i += 1;
+  while (i < buf.length && !isMediaAt(buf, i)) i += 1;
   return i > 0 && i < buf.length ? buf.subarray(i) : buf;
 }
 
@@ -317,13 +527,25 @@ function isTokenCdn(url, embedUrl) {
 // player hook already captured at least one part. Leave megacloud/Aniwave
 // alone — those still download through the normal session path.
 function isPlayerBoundCdn(url, embedUrl) {
-  return /peakstorm\.|vidfast\./i.test(`${url || ''} ${embedUrl || ''}`);
+  return /peakstorm\.|vidfast\.|ashencloud\./i.test(`${url || ''} ${embedUrl || ''}`);
 }
 
 function looksLikeSegment(buf) {
   if (!buf || buf.length < 200) return false;
+  if (utf8ReplacementCount(buf, 4096) >= 3) return false;
   if (isPng(buf)) return true;
-  return buf[0] === 0x47;
+  if (buf[0] === 0x47) return true;
+  if (isFmp4At(buf, 0)) return true;
+  return false;
+}
+
+function utf8ReplacementCount(buf, limit) {
+  let n = 0;
+  const end = Math.min(buf.length - 2, limit || buf.length);
+  for (let i = 0; i < end; i++) {
+    if (buf[i] === 0xef && buf[i + 1] === 0xbf && buf[i + 2] === 0xbd) n += 1;
+  }
+  return n;
 }
 
 function cdpSegmentCount(wc) {
@@ -354,7 +576,7 @@ async function readPageResource(wc, url) {
       frameId: wc._cdpFrameId,
       url
     });
-    const buf = Buffer.from(content || '', base64Encoded ? 'base64' : 'utf8');
+    const buf = bufferFromCdpString(content, base64Encoded);
     return buf.length ? buf : null;
   } catch (e) {
     return null;
@@ -369,17 +591,55 @@ async function streamIsDownloadable(det, { signal, onLog } = {}) {
     if (onLog) onLog('Token CDN has no live player page; segments cannot be downloaded.');
     return false;
   }
-  if (cdpSegmentCount(wc) > 0) return true;
+  const hasParts = async () => {
+    if (cdpSegmentCount(wc) > 0) return true;
+    try {
+      const n = await wc.executeJavaScript(
+        '(Object.keys(window.__wvdParts || {}).length) + ((window.__wvdMse || []).length)',
+        true
+      );
+      return Number(n) > 0;
+    } catch (e) {
+      return false;
+    }
+  };
   try {
-    const n = await wc.executeJavaScript('Object.keys(window.__wvdParts || {}).length', true);
-    if (Number(n) > 0) return true;
+    await playPlayerVideo(wc, null);
   } catch (e) {
     // ignore
   }
-  if (onLog) {
-    onLog('Token CDN playlist found, but segments cannot be downloaded from this app; trying next.');
+  const hasPlayable = async () => {
+    if (await hasParts()) return true;
+    const cached = cachedPlaylist(det.playerWebContentsId, det.url);
+    if (cached && /#EXTINF:/i.test(cached.text)) return true;
+    try {
+      const ready = await wc.executeJavaScript(
+        `Math.max(0, ...Array.from(document.querySelectorAll('video')).map((v) => v.readyState || 0))`,
+        true
+      );
+      return Number(ready) >= 2;
+    } catch (e) {
+      return false;
+    }
+  };
+  if (await hasPlayable()) return true;
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline) {
+    if (signal && signal.aborted) return false;
+    await new Promise((r) => setTimeout(r, 400));
+    if (!wc || wc.isDestroyed()) break;
+    try {
+      await playPlayerVideo(wc, null);
+    } catch (e) {
+      // ignore
+    }
+    if (await hasPlayable()) return true;
   }
-  return false;
+  // Playlist + live player is enough: the downloader captures MSE/CDP bytes
+  // while this window stays open. Bailing here skipped every Vidfast source
+  // on Linux before any segment arrived.
+  if (onLog) onLog('Token CDN playlist found; keeping the live player to capture segments during download.');
+  return true;
 }
 
 function netHeaderPairs(headers) {
@@ -441,7 +701,7 @@ async function readCdpStream(dbg, handle) {
   for (;;) {
     const part = await dbg.sendCommand('IO.read', { handle, size: 256 * 1024 });
     const data = part.data || '';
-    if (data) chunks.push(part.base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data, 'utf8'));
+    if (data) chunks.push(bufferFromCdpString(data, part.base64Encoded));
     if (part.eof) break;
   }
   try {
@@ -511,6 +771,32 @@ function liveWebContents(id) {
   return null;
 }
 
+function siblingWebContents(wc) {
+  const out = [];
+  const seen = new Set();
+  const add = (c) => {
+    if (!c || c.isDestroyed() || seen.has(c.id)) return;
+    seen.add(c.id);
+    out.push(c);
+  };
+  add(wc);
+  try {
+    const win = wc.getOwnerBrowserWindow && wc.getOwnerBrowserWindow();
+    if (!win || win.isDestroyed()) return out;
+    const { webContents } = require('electron');
+    for (const other of webContents.getAllWebContents()) {
+      try {
+        if (other.getOwnerBrowserWindow && other.getOwnerBrowserWindow() === win) add(other);
+      } catch (e) {
+        // ignore
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return out;
+}
+
 function collectFrames(wc) {
   const out = [];
   const seen = new Set();
@@ -519,13 +805,6 @@ function collectFrames(wc) {
     seen.add(frame);
     out.push(frame);
   };
-  try {
-    add(wc.mainFrame);
-    const sub = wc.mainFrame && wc.mainFrame.framesInSubtree;
-    if (sub && sub.length) for (const f of sub) add(f);
-  } catch (e) {
-    // ignore
-  }
   const walk = (frame) => {
     add(frame);
     try {
@@ -534,10 +813,19 @@ function collectFrames(wc) {
       // ignore
     }
   };
-  try {
-    walk(wc.mainFrame);
-  } catch (e) {
-    // ignore
+  for (const contents of siblingWebContents(wc)) {
+    try {
+      add(contents.mainFrame);
+      const sub = contents.mainFrame && contents.mainFrame.framesInSubtree;
+      if (sub && sub.length) for (const f of sub) add(f);
+    } catch (e) {
+      // ignore
+    }
+    try {
+      walk(contents.mainFrame);
+    } catch (e) {
+      // ignore
+    }
   }
   return out.length ? out : [wc];
 }
@@ -550,15 +838,15 @@ function frameUrl(frame) {
   }
 }
 
-function fetchScript(url, timeoutMs) {
+function fetchScript(url, timeoutMs, cacheMode) {
+  const cache = cacheMode || 'reload';
   return `(async () => {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), ${Math.max(4000, timeoutMs - 1000)});
     try {
       const res = await fetch(${JSON.stringify(url)}, {
-        credentials: 'omit',
-        mode: 'cors',
-        cache: 'no-store',
+        credentials: 'include',
+        cache: ${JSON.stringify(cache)},
         signal: ac.signal
       });
       const status = res.status || 0;
@@ -578,18 +866,21 @@ function fetchScript(url, timeoutMs) {
   })()`;
 }
 
-async function runFetchScript(target, url, { timeoutMs = 60000, signal } = {}) {
+async function runFetchScript(target, url, opts = {}) {
   if (!target || (typeof target.isDestroyed === 'function' && target.isDestroyed())) {
     const err = new Error('player window is gone');
     err.status = 0;
     throw err;
   }
-  const timeout = Math.max(8000, timeoutMs || 60000);
+  const timeoutMs = opts.timeoutMs || 60000;
+  const signal = opts.signal;
+  const timeout = Math.max(4000, timeoutMs);
   let timer;
+  let onAbort = null;
   const hard = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error('player fetch timed out')), timeout);
     if (signal) {
-      const onAbort = () => {
+      onAbort = () => {
         const err = new Error('Aborted');
         err.name = 'AbortError';
         reject(err);
@@ -599,7 +890,10 @@ async function runFetchScript(target, url, { timeoutMs = 60000, signal } = {}) {
     }
   });
   try {
-    const result = await Promise.race([target.executeJavaScript(fetchScript(url, timeout), true), hard]);
+    const result = await Promise.race([
+      target.executeJavaScript(fetchScript(url, timeout, opts.cacheMode), true),
+      hard
+    ]);
     if (!result || !result.ok) {
       const err = new Error((result && result.error) || `HTTP ${(result && result.status) || 0}`);
       err.status = result && result.status;
@@ -610,6 +904,13 @@ async function runFetchScript(target, url, { timeoutMs = 60000, signal } = {}) {
     return buf;
   } finally {
     clearTimeout(timer);
+    if (signal && onAbort) {
+      try {
+        signal.removeEventListener('abort', onAbort);
+      } catch (e) {
+        // ignore
+      }
+    }
   }
 }
 
@@ -620,7 +921,14 @@ async function runFetchScript(target, url, { timeoutMs = 60000, signal } = {}) {
 async function fetchViaWebContents(wc, url, opts = {}) {
   let last;
   const frames = collectFrames(wc);
+  const preferred = [];
+  const other = [];
   for (const frame of frames) {
+    if (/vidfast|peakstorm|soap2day|sflix/i.test(frameUrl(frame))) preferred.push(frame);
+    else other.push(frame);
+  }
+  const order = preferred.length ? preferred : other;
+  for (const frame of order) {
     try {
       const buf = await runFetchScript(frame, url, opts);
       if (buf && buf.length) return buf;
@@ -633,6 +941,69 @@ async function fetchViaWebContents(wc, url, opts = {}) {
   const err = last || new Error('player fetch failed');
   err.message = `${err.message} [frames=${hosts.join(' || ') || 'none'}]`;
   throw err;
+}
+
+async function fetchViaWorker(wc, url, opts = {}) {
+  if (!wc || wc.isDestroyed() || !wc.debugger) {
+    const err = new Error('player window is gone');
+    err.status = 0;
+    throw err;
+  }
+  const sessions = (wc._cdpWorkerSessions || []).slice();
+  if (!sessions.length) {
+    const err = new Error('no player worker session');
+    err.status = 0;
+    throw err;
+  }
+  const timeout = Math.max(4000, opts.timeoutMs || 10000);
+  const expr = `(() => {
+    const url = ${JSON.stringify(url)};
+    return fetch(url, { credentials: 'include', cache: 'no-store', mode: 'cors' }).then((res) => {
+      if (!res.ok) return { ok: false, status: res.status, error: 'HTTP ' + res.status };
+      return res.arrayBuffer().then((buf) => {
+        const u8 = new Uint8Array(buf);
+        let bin = '';
+        const step = 0x8000;
+        for (let i = 0; i < u8.length; i += step) {
+          bin += String.fromCharCode.apply(null, u8.subarray(i, i + step));
+        }
+        return { ok: true, status: res.status, b64: btoa(bin) };
+      });
+    }).catch((e) => ({ ok: false, status: 0, error: String(e && e.message || e) }));
+  })()`;
+  let last;
+  for (const sid of sessions) {
+    try {
+      const raw = await cdpSendTimed(
+        wc.debugger,
+        'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true },
+        sid,
+        timeout
+      );
+      const value = raw && raw.result && raw.result.value;
+      if (raw && raw.exceptionDetails) {
+        last = new Error((raw.exceptionDetails.text || 'worker evaluate failed').slice(0, 160));
+        continue;
+      }
+      if (!value || !value.ok) {
+        const err = new Error((value && value.error) || `HTTP ${(value && value.status) || 0}`);
+        err.status = value && value.status;
+        last = err;
+        continue;
+      }
+      const buf = Buffer.from(value.b64 || '', 'base64');
+      if (!buf.length) {
+        last = new Error('empty worker body');
+        continue;
+      }
+      return buf;
+    } catch (e) {
+      last = e;
+      if (e && e.name === 'AbortError') throw e;
+    }
+  }
+  throw last || new Error('worker fetch failed');
 }
 
 // session.fetch is Chromium's Fetch API: it enforces CORS and silently drops
@@ -836,7 +1207,7 @@ function ensureMseHookScript() {
             : (data && data.buffer)
               ? new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || data.length || 0)
               : null;
-          if (bytes && bytes.length && window.__wvdMse.length < 4000) {
+          if (bytes && bytes.length && window.__wvdMse.length < 20000) {
             let bin = '';
             const step = 0x4000;
             for (let i = 0; i < bytes.length; i += step) {
@@ -854,17 +1225,37 @@ function ensureMseHookScript() {
 
 function playerHookScript() {
   return `(function() {
+    try {
+      var bc = new BroadcastChannel('__wvdParts');
+      bc.onmessage = function(ev) {
+        var d = ev && ev.data;
+        if (d && d.url && d.b64) {
+          window.__wvdParts = window.__wvdParts || {};
+          if (!window.__wvdParts[d.url]) window.__wvdParts[d.url] = d.b64;
+        }
+      };
+    } catch (e) {}
     if (window.__wvdHooked) return window.__wvdHooked;
     window.__wvdHooked = 'ok';
     window.__wvdParts = window.__wvdParts || {};
     window.__wvdSeen = window.__wvdSeen || [];
+    try {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: function() { return false; } });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: function() { return 'visible'; } });
+    } catch (e) {}
     const keep = (url, buf) => {
       if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push(String(url).slice(0, 120));
-      if (!url || !/peakstorm|\\/r6\\/s\\//i.test(String(url))) return;
+      if (!url || !/peakstorm|ashencloud|vidfast|\\/r6\\/|\\/r2\\//i.test(String(url))) return;
       if (window.__wvdParts[url]) return;
       try {
-        const bytes = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf.buffer || buf);
-        if (!bytes.length) return;
+        const bytes = buf instanceof Uint8Array
+          ? buf
+          : buf instanceof ArrayBuffer
+            ? new Uint8Array(buf)
+            : (buf && buf.buffer)
+              ? new Uint8Array(buf.buffer, buf.byteOffset || 0, buf.byteLength || buf.length || 0)
+              : null;
+        if (!bytes || !bytes.length) return;
         let bin = '';
         const step = 0x4000;
         for (let i = 0; i < bytes.length; i += step) {
@@ -878,7 +1269,7 @@ function playerHookScript() {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push('fetch:' + String(url).slice(0, 110));
       return origFetch(input, init).then((res) => {
-        if (/peakstorm|\\/r6\\/s\\//i.test(url)) {
+        if (/peakstorm|ashencloud|vidfast|\\/r6\\/|\\/r2\\//i.test(url)) {
           res.clone().arrayBuffer().then((buf) => keep(url, buf)).catch(() => {});
         }
         return res;
@@ -930,13 +1321,147 @@ function playerHookScript() {
 }
 
 function isCdnMediaUrl(url) {
-  return /peakstorm|vidfast|\/r6\/|\.m3u8|\/hls\/|\.ts(\?|$)|mp2t|video\/mp4/i.test(String(url || ''));
+  return /peakstorm|vidfast|ashencloud|cybergate|quietraven|\/r6\/|\/r2\/|\.m3u8|\/hls\/|\.ts(\?|$)|mp2t|video\/mp4|\/_stream/i.test(
+    String(url || '')
+  );
 }
 
-function storeCdpPart(wc, url, buf) {
-  if (!wc || !url || !looksLikeSegment(buf)) return;
+function maybeGunzip(buf) {
+  if (!buf || buf.length < 2 || buf[0] !== 0x1f || buf[1] !== 0x8b) return buf;
+  try {
+    return zlib.gunzipSync(buf);
+  } catch (e) {
+    return buf;
+  }
+}
+
+function cdpSend(dbg, method, params, sessionId) {
+  if (sessionId) return dbg.sendCommand(method, params || {}, sessionId);
+  return dbg.sendCommand(method, params || {});
+}
+
+function cdpSendTimed(dbg, method, params, sessionId, ms) {
+  return Promise.race([
+    cdpSend(dbg, method, params, sessionId),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('cdp timeout')), ms))
+  ]);
+}
+
+function cdpReqKey(sessionId, requestId) {
+  return `${sessionId || ''}:${requestId}`;
+}
+
+function storeCdpPart(wc, url, buf0) {
+  if (!wc || !url || !buf0 || !buf0.length) return;
+  const buf = maybeGunzip(buf0);
   if (!wc._cdpParts) wc._cdpParts = new Map();
-  wc._cdpParts.set(url, buf);
+  if (!wc._cdpPlaylists) wc._cdpPlaylists = new Map();
+  const asText = buf.toString('utf8');
+  const playlistUrl = /\.m3u8(\?|$)|peakstorm\.top\/s\//i.test(url);
+  if (playlistUrl || looksLikePlaylist(asText)) {
+    wc._cdpPlaylists.set(url, asText);
+    const head = asText.slice(0, 48).replace(/\s+/g, ' ');
+    console.log(
+      `[cdp] ${looksLikePlaylist(asText) ? 'playlist' : 'm3u8-body'} ${String(url).slice(0, 72)} (${buf.length}b) ${head}`
+    );
+    if (looksLikePlaylist(asText)) return;
+  }
+  if (looksLikeSegment(buf) || (isCdnMediaUrl(url) && buf.length >= 24 * 1024)) wc._cdpParts.set(url, buf);
+}
+
+async function attachTarget(dbg, wc, t) {
+  if (!t || !t.targetId) return;
+  const typ = String(t.type || '');
+  if (!/worker|service/i.test(typ)) return;
+  wc._cdpAttachedIds = wc._cdpAttachedIds || new Set();
+  if (wc._cdpAttachedIds.has(t.targetId)) return;
+  wc._cdpAttachedIds.add(t.targetId);
+  try {
+    const att = await dbg.sendCommand('Target.attachToTarget', { targetId: t.targetId, flatten: true });
+    const sid = att && att.sessionId;
+    if (!sid) return;
+    await enableCdpSession(dbg, sid, false);
+    rememberWorkerSession(wc, sid, t);
+    console.log(`[cdp] attached-to ${t.type} sid=${String(sid).slice(0, 8)} ${String(t.url || '').slice(0, 60)}`);
+  } catch (e) {
+    wc._cdpAttachedIds.delete(t.targetId);
+    console.log(`[cdp] attach fail ${t.type} ${e && e.message}`);
+  }
+}
+
+async function scanWorkerTargets(dbg, wc) {
+  try {
+    const { targetInfos } = await dbg.sendCommand('Target.getTargets');
+    if (!wc._cdpLoggedTargets) {
+      wc._cdpLoggedTargets = true;
+      console.log(
+        `[cdp] targets ${(targetInfos || [])
+          .map((t) => `${t.type}:${String(t.url || '').slice(0, 40)}`)
+          .join(' | ')
+          .slice(0, 400)}`
+      );
+    }
+    for (const t of targetInfos || []) attachTarget(dbg, wc, t).catch(() => {});
+  } catch (e) {
+    if (!wc._cdpLoggedTargets) {
+      wc._cdpLoggedTargets = true;
+      console.log(`[cdp] getTargets ${e && e.message}`);
+    }
+  }
+}
+
+function rememberWorkerSession(wc, sessionId, targetInfo) {
+  if (!wc || !sessionId) return;
+  const t = String((targetInfo && targetInfo.type) || '');
+  const u = String((targetInfo && targetInfo.url) || '');
+  if (!/worker/i.test(t) && !/hls\.worker|transmuxer/i.test(u)) return;
+  wc._cdpWorkerSessions = wc._cdpWorkerSessions || [];
+  if (!wc._cdpWorkerSessions.includes(sessionId)) wc._cdpWorkerSessions.push(sessionId);
+}
+
+async function enableCdpSession(dbg, sessionId, waitingForDebugger) {
+  try {
+    await cdpSend(dbg, 'Runtime.enable', {}, sessionId);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    await cdpSend(
+      dbg,
+      'Network.enable',
+      {
+        maxResourceBufferSize: 50 * 1024 * 1024,
+        maxTotalBufferSize: 150 * 1024 * 1024
+      },
+      sessionId
+    );
+  } catch (e) {
+    // ignore
+  }
+  try {
+    await cdpSend(
+      dbg,
+      'Fetch.enable',
+      {
+        patterns: [
+          { urlPattern: '*peakstorm*', requestStage: 'Response' },
+          { urlPattern: '*ashencloud*', requestStage: 'Response' },
+          { urlPattern: '*/r2/*', requestStage: 'Response' },
+          { urlPattern: '*/r6/*', requestStage: 'Response' }
+        ]
+      },
+      sessionId
+    );
+  } catch (e) {
+    // ignore
+  }
+  if (waitingForDebugger) {
+    try {
+      await cdpSend(dbg, 'Runtime.runIfWaitingForDebugger', {}, sessionId);
+    } catch (e) {
+      // ignore
+    }
+  }
 }
 
 // Intercept the player's own responses before navigation. Extra fetch/XHR
@@ -949,64 +1474,107 @@ async function installPlayerCdpTap(wc) {
   wc._cdpPending = wc._cdpPending || new Map();
   wc._cdpMsgs = 0;
   wc._cdpTap = true;
-  dbg.on('message', async (_event, method, params) => {
+  dbg.on('message', (_event, method, params, msgSessionId) => {
     wc._cdpMsgs = (wc._cdpMsgs || 0) + 1;
+    if (method === 'Target.targetCreated' && params && params.targetInfo) {
+      const t = params.targetInfo;
+      console.log(`[cdp] created ${t.type} ${String(t.url || t.title || '').slice(0, 80)}`);
+      attachTarget(dbg, wc, t).catch(() => {});
+      return;
+    }
     if (method === 'Target.attachedToTarget' && params && params.sessionId) {
-      try {
-        await dbg.sendCommand('Network.enable', {}, params.sessionId);
-      } catch (e) {
-        try {
-          await dbg.sendCommand('Network.enable', { sessionId: params.sessionId });
-        } catch (e2) {
-          // ignore
+      const t = (params.targetInfo && params.targetInfo.type) || '';
+      const u = (params.targetInfo && params.targetInfo.url) || '';
+      console.log(`[cdp] attached ${t} ${String(u).slice(0, 80)} sid=${String(params.sessionId).slice(0, 8)}`);
+      rememberWorkerSession(wc, params.sessionId, params.targetInfo);
+      enableCdpSession(dbg, params.sessionId, true).catch(() => {});
+      return;
+    }
+    const sessionId = msgSessionId || '';
+    if (method === 'Network.requestWillBeSent') {
+      const url = params.request && params.request.url;
+      if (url && params.requestId) {
+        wc._cdpReqUrl = wc._cdpReqUrl || new Map();
+        wc._cdpReqUrl.set(params.requestId, { url, sessionId });
+        if (isCdnMediaUrl(url)) {
+          wc._cdpPending.set(cdpReqKey(sessionId, params.requestId), {
+            url,
+            sessionId,
+            requestId: params.requestId
+          });
         }
       }
       return;
     }
     if (method === 'Network.responseReceived') {
-      const url = params.response && params.response.url;
-      if (url && isCdnMediaUrl(url)) wc._cdpPending.set(params.requestId, url);
+      const url = (params.response && params.response.url) || '';
+      if (url && params.requestId) {
+        wc._cdpReqUrl = wc._cdpReqUrl || new Map();
+        wc._cdpReqUrl.set(params.requestId, { url, sessionId });
+        if (isCdnMediaUrl(url)) {
+          wc._cdpPending.set(cdpReqKey(sessionId, params.requestId), {
+            url,
+            sessionId,
+            requestId: params.requestId
+          });
+        }
+      }
+      return;
+    }
+    if (method === 'Fetch.requestPaused') {
+      const requestId = params.requestId;
+      const url = (params.request && params.request.url) || '';
+      const sid = sessionId;
+      const resume = () => {
+        cdpSend(dbg, 'Fetch.continueRequest', { requestId }, sid).catch(() => {});
+      };
+      const code = params.responseStatusCode || 0;
+      let len = 0;
+      for (const h of params.responseHeaders || []) {
+        if (h && /content-length/i.test(h.name)) len = Number(h.value) || 0;
+      }
+      if (code >= 200 && code < 400 && isCdnMediaUrl(url) && len < 12 * 1024 * 1024) {
+        const bodyMs = len > 512 * 1024 ? 8000 : 3000;
+        cdpSendTimed(dbg, 'Fetch.getResponseBody', { requestId }, sid, bodyMs)
+          .then((body) => {
+            storeCdpPart(wc, url, bufferFromCdpString(body.body, body.base64Encoded));
+          })
+          .catch(() => {})
+          .finally(resume);
+      } else {
+        resume();
+      }
+      return;
+    }
+    if (method === 'Network.loadingFailed') {
+      const rec = (wc._cdpReqUrl && wc._cdpReqUrl.get(params.requestId)) || {};
+      if (/m3u8|peakstorm/i.test(rec.url || '')) {
+        console.log(`[cdp] load fail ${params.errorText || ''} ${String(rec.url).slice(0, 80)}`);
+      }
       return;
     }
     if (method === 'Network.loadingFinished') {
-      const url = wc._cdpPending.get(params.requestId);
-      if (!url) return;
-      wc._cdpPending.delete(params.requestId);
-      try {
-        const body = await dbg.sendCommand('Network.getResponseBody', { requestId: params.requestId });
-        storeCdpPart(
-          wc,
-          url,
-          Buffer.from(body.body || '', body.base64Encoded ? 'base64' : 'utf8')
-        );
-      } catch (e) {
-        // body already evicted
-      }
-      return;
-    }
-    if (method !== 'Fetch.requestPaused') return;
-    const requestId = params.requestId;
-    const url = (params.request && params.request.url) || '';
-    try {
-      const code = params.responseStatusCode || 0;
-      if (code >= 200 && code < 400 && isCdnMediaUrl(url)) {
-        try {
-          const body = await dbg.sendCommand('Fetch.getResponseBody', { requestId });
+      const rec =
+        (wc._cdpPending.get(cdpReqKey(sessionId, params.requestId)) ||
+          (wc._cdpReqUrl && wc._cdpReqUrl.get(params.requestId))) ||
+        null;
+      const url = rec && rec.url;
+      const n = params.encodedDataLength || 0;
+      const interesting = /m3u8|peakstorm|ashencloud|\/r2\/|\/s\//i.test(url || '');
+      if (!interesting) return;
+      console.log(`[cdp] fin n=${n} id=${params.requestId} ${String(url || '(no url)').slice(0, 96)}`);
+      const sid = (rec && rec.sessionId) || sessionId;
+      cdpSendTimed(dbg, 'Network.getResponseBody', { requestId: params.requestId }, sid, n > 512 * 1024 ? 8000 : 2500)
+        .then((body) => {
           storeCdpPart(
             wc,
-            url,
-            Buffer.from(body.body || '', body.base64Encoded ? 'base64' : 'utf8')
+            url || `https://orphan.invalid/${params.requestId}`,
+            bufferFromCdpString(body.body, body.base64Encoded)
           );
-        } catch (e) {
-          // ignore
-        }
-      }
-    } finally {
-      try {
-        await dbg.sendCommand('Fetch.continueRequest', { requestId });
-      } catch (e) {
-        // ignore
-      }
+        })
+        .catch((e) => {
+          console.log(`[cdp] body fail n=${n} ${String(url || params.requestId).slice(0, 80)} ${e && e.message}`);
+        });
     }
   });
   try {
@@ -1018,18 +1586,54 @@ async function installPlayerCdpTap(wc) {
         maxTotalBufferSize: 150 * 1024 * 1024
       });
       try {
-        await dbg.sendCommand('Target.setAutoAttach', {
-          autoAttach: true,
-          waitForDebuggerOnStart: false,
-          flatten: true
+        await dbg.sendCommand('Network.setBypassServiceWorker', { bypass: true });
+      } catch (e) {
+        // ignore
+      }
+      try {
+        await dbg.sendCommand('Fetch.enable', {
+          patterns: [
+            { urlPattern: '*peakstorm*', requestStage: 'Response' },
+            { urlPattern: '*ashencloud*', requestStage: 'Response' },
+            { urlPattern: '*/r2/*', requestStage: 'Response' },
+            { urlPattern: '*/r6/*', requestStage: 'Response' }
+          ]
         });
       } catch (e) {
-        // older Electron
+        // ignore
       }
+      try {
+        await dbg.sendCommand('Target.setAutoAttach', {
+          autoAttach: true,
+          waitForDebuggerOnStart: true,
+          flatten: true,
+          filter: [{ type: 'worker' }, { type: 'shared_worker' }, { type: 'service_worker' }]
+        });
+      } catch (e) {
+        try {
+          await dbg.sendCommand('Target.setAutoAttach', {
+            autoAttach: true,
+            waitForDebuggerOnStart: false,
+            flatten: true
+          });
+        } catch (e2) {
+          // older Electron
+        }
+      }
+      scanWorkerTargets(dbg, wc).catch(() => {});
+      if (wc._cdpScan) clearInterval(wc._cdpScan);
+      wc._cdpScan = setInterval(() => scanWorkerTargets(dbg, wc).catch(() => {}), 800);
+      const stopScan = () => {
+        if (wc._cdpScan) {
+          clearInterval(wc._cdpScan);
+          wc._cdpScan = null;
+        }
+      };
+      wc.once('destroyed', stopScan);
     })();
     await Promise.race([
       ready,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('cdp attach timeout')), 2500))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cdp attach timeout')), 4000))
     ]);
     return true;
   } catch (e) {
@@ -1040,47 +1644,177 @@ async function installPlayerCdpTap(wc) {
 
 async function installPlayerFetchHook(wc) {
   if (!wc || wc.isDestroyed()) return false;
-  installPlayerCdpTap(wc).catch(() => {});
+  try {
+    await Promise.race([
+      wc.session.clearStorageData({ storages: ['serviceworkers'] }),
+      new Promise((resolve) => setTimeout(resolve, 1500))
+    ]);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    await installPlayerCdpTap(wc);
+  } catch (e) {
+    // still inject the in-page hook
+  }
   const source = playerHookScript();
-  const inject = () => {
-    if (!wc || wc.isDestroyed()) return;
-    wc.executeJavaScript(source, true).catch(() => {});
-    wc.executeJavaScript(ensureMseHookScript(), true).catch(() => {});
+  const mse = ensureMseHookScript();
+  const injectOne = (contents) => {
+    if (!contents || contents.isDestroyed()) return;
+    contents.executeJavaScript(source, true).catch(() => {});
+    contents.executeJavaScript(mse, true).catch(() => {});
     try {
-      for (const frame of collectFrames(wc)) {
+      const seen = new Set();
+      const frames = [];
+      const add = (frame) => {
+        if (!frame || seen.has(frame)) return;
+        seen.add(frame);
+        frames.push(frame);
+      };
+      add(contents.mainFrame);
+      const sub = contents.mainFrame && contents.mainFrame.framesInSubtree;
+      if (sub && sub.length) for (const f of sub) add(f);
+      for (const frame of frames) {
         frame.executeJavaScript(source, true).catch(() => {});
+        frame.executeJavaScript(mse, true).catch(() => {});
       }
     } catch (e) {
       // ignore
     }
   };
+  const inject = () => {
+    if (!wc || wc.isDestroyed()) return;
+    for (const contents of siblingWebContents(wc)) injectOne(contents);
+  };
   wc.on('dom-ready', inject);
   wc.on('did-finish-load', inject);
   wc.on('did-frame-finish-load', inject);
+  try {
+    const { app } = require('electron');
+    const onCreated = (_e, contents) => {
+      try {
+        if (!contents || contents.isDestroyed() || wc.isDestroyed()) return;
+        const win = wc.getOwnerBrowserWindow && wc.getOwnerBrowserWindow();
+        const other = contents.getOwnerBrowserWindow && contents.getOwnerBrowserWindow();
+        if (!win || !other || win !== other) return;
+        installPlayerCdpTap(contents).catch(() => {});
+        contents.on('dom-ready', () => injectOne(contents));
+        contents.on('did-finish-load', () => injectOne(contents));
+      } catch (e) {
+        // ignore
+      }
+    };
+    app.on('web-contents-created', onCreated);
+    const detach = () => {
+      try {
+        app.removeListener('web-contents-created', onCreated);
+      } catch (e) {
+        // ignore
+      }
+    };
+    wc.once('destroyed', detach);
+    wc.once('render-process-gone', detach);
+  } catch (e) {
+    // ignore
+  }
   return true;
 }
 
-async function findAndSeekVideo(wc, time) {
+async function playPlayerVideo(wc, seekTo) {
   const frames = collectFrames(wc);
+  let best = 0;
+  const mode =
+    seekTo === 'nudge' ? 'nudge' : seekTo == null || !Number.isFinite(Number(seekTo)) ? 'play' : 'seek';
+  const seekNum = mode === 'seek' ? Number(seekTo) : 0;
   for (const frame of frames) {
     try {
-      const dur = await frame.executeJavaScript(
+      const info = await frame.executeJavaScript(
         `(() => {
-          const v = document.querySelector('video');
-          if (!v) return null;
+          const findV = (root) => {
+            if (!root) return null;
+            const direct = root.querySelector && root.querySelector('video');
+            if (direct) return direct;
+            const els = root.querySelectorAll ? root.querySelectorAll('*') : [];
+            for (const el of els) {
+              if (el.shadowRoot) {
+                const inner = findV(el.shadowRoot);
+                if (inner) return inner;
+              }
+            }
+            return null;
+          };
+          const v = findV(document);
+          if (!v) {
+            try {
+              document.querySelectorAll('.vjs-big-play-button, .jw-icon-playback, [aria-label="Play"], [aria-label="play"]').forEach((el) => el.click());
+            } catch (e) {}
+            return 0;
+          }
           v.muted = true;
-          if (${JSON.stringify(time)} != null && ${JSON.stringify(time)} >= 0) v.currentTime = ${Number(time) || 0};
-          v.play().catch(() => {});
-          return v.duration || 0;
+          try { v.autoplay = true; } catch (e) {}
+          try { v.playbackRate = 1; } catch (e) {}
+          try { v.play().catch(() => {}); } catch (e) {}
+          try { v.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
+          try {
+            if (window.__wvdHls && window.__wvdHls.config) {
+              window.__wvdHls.config.maxBufferLength = 4000;
+              window.__wvdHls.config.maxMaxBufferLength = 8000;
+              window.__wvdHls.config.maxBufferSize = 500 * 1000 * 1000;
+              window.__wvdHls.config.capLevelToPlayerSize = false;
+              window.__wvdHls.config.abrEwmaDefaultEstimate = 20000000;
+            }
+            if (window.__wvdHls && window.__wvdHls.levels && window.__wvdHls.levels.length) {
+              const levels = window.__wvdHls.levels;
+              let best = 0;
+              for (let i = 1; i < levels.length; i++) {
+                const a = levels[i] || {};
+                const b = levels[best] || {};
+                const ah = a.height || 0;
+                const bh = b.height || 0;
+                const ab = a.bitrate || 0;
+                const bb = b.bitrate || 0;
+                if (ah > bh || (ah === bh && ab > bb)) best = i;
+              }
+              try { window.__wvdHls.autoLevelCapping = -1; } catch (e) {}
+              try { window.__wvdHls.currentLevel = best; } catch (e) {}
+              try { window.__wvdHls.loadLevel = best; } catch (e) {}
+              try { window.__wvdHls.nextLevel = best; } catch (e) {}
+            }
+          } catch (e) {}
+          const d = Number(v.duration);
+          const mode = ${JSON.stringify(mode)};
+          if (Number.isFinite(d) && d > 0) {
+            if (mode === 'nudge') {
+              const t = Math.min(Math.max(0, d - 0.25), (v.currentTime || 0) + 1);
+              if (Math.abs((v.currentTime || 0) - t) > 0.2) v.currentTime = t;
+            } else if (mode === 'seek') {
+              const t = Math.max(0, Math.min(${seekNum}, Math.max(0, d - 0.25)));
+              try { v.currentTime = t; } catch (e) {}
+              try {
+                if (window.__wvdHls && typeof window.__wvdHls.startLoad === 'function') {
+                  window.__wvdHls.startLoad(t);
+                }
+              } catch (e) {}
+            } else {
+              try {
+                if (window.__wvdHls && typeof window.__wvdHls.startLoad === 'function' && !window.__wvdHlsLoadKicked) {
+                  window.__wvdHlsLoadKicked = true;
+                  window.__wvdHls.startLoad(-1);
+                }
+              } catch (e) {}
+            }
+          }
+          return Number.isFinite(d) && d > 0 ? d : 0;
         })()`,
         true
       );
-      if (dur != null) return Number(dur) || 0;
+      const n = Number(info);
+      if (Number.isFinite(n) && n > best) best = n;
     } catch (e) {
       // ignore
     }
   }
-  return 0;
+  return best;
 }
 
 async function drainMseChunks(wc) {
@@ -1091,7 +1825,7 @@ async function drainMseChunks(wc) {
       const batch = await frame.executeJavaScript(
         `(function() {
           const all = window.__wvdMse || [];
-          const take = all.splice(0, 20);
+          const take = all.splice(0, 80);
           return take;
         })()`,
         true
@@ -1102,6 +1836,160 @@ async function drainMseChunks(wc) {
     }
   }
   return out;
+}
+
+function splitMp4Boxes(buf) {
+  const boxes = [];
+  if (!buf || buf.length < 8) return boxes;
+  let i = 0;
+  while (i + 8 <= buf.length) {
+    let size = buf.readUInt32BE(i);
+    if (size === 1 && i + 16 <= buf.length) {
+      size = buf.readUInt32BE(i + 8) * 0x100000000 + buf.readUInt32BE(i + 12);
+    }
+    if (size < 8 || i + size > buf.length) {
+      if (i < buf.length) boxes.push(buf.subarray(i));
+      break;
+    }
+    boxes.push(buf.subarray(i, i + size));
+    i += size;
+  }
+  return boxes;
+}
+
+function classifyMseBuffers(buf) {
+  if (!buf || !buf.length) return [];
+  if (buf[0] === 0x47) return [{ kind: 'ts', buf }];
+  const parts = splitMp4Boxes(buf);
+  if (!parts.length) return [{ kind: isFmp4At(buf, 0) ? 'init' : 'media', buf }];
+  const out = [];
+  let init = [];
+  let frag = [];
+  const flushInit = () => {
+    if (!init.length) return;
+    out.push({ kind: 'init', buf: Buffer.concat(init) });
+    init = [];
+  };
+  const flushFrag = () => {
+    if (!frag.length) return;
+    out.push({ kind: 'media', buf: Buffer.concat(frag) });
+    frag = [];
+  };
+  for (const box of parts) {
+    if (box.length < 8) continue;
+    const typ = box.toString('ascii', 4, 8);
+    if (typ === 'ftyp' || typ === 'moov' || typ === 'mvex' || typ === 'sidx' || typ === 'styp') {
+      flushFrag();
+      init.push(box);
+    } else if (typ === 'moof' || typ === 'mdat' || typ === 'emsg') {
+      flushInit();
+      frag.push(box);
+    } else if (frag.length) {
+      frag.push(box);
+    } else {
+      init.push(box);
+    }
+  }
+  flushInit();
+  flushFrag();
+  return out.length ? out : [{ kind: 'media', buf }];
+}
+
+function forEachIsoBox(buf, fn, start = 0, end = buf.length) {
+  let i = start;
+  while (i + 8 <= end) {
+    const size = buf.readUInt32BE(i);
+    const typ = buf.toString('ascii', i + 4, i + 8);
+    if (size < 8 || i + size > end) break;
+    fn(typ, i, size);
+    i += size;
+  }
+}
+
+function tfhdTrackId(buf) {
+  let id = 0;
+  const visit = (from, to) => {
+    forEachIsoBox(
+      buf,
+      (typ, i, size) => {
+        if (typ === 'tfhd' && size >= 16) id = buf.readUInt32BE(i + 12);
+        else if (typ === 'moof' || typ === 'traf') visit(i + 8, i + size);
+      },
+      from,
+      to
+    );
+  };
+  visit(0, buf.length);
+  return id;
+}
+
+function tfdtBaseMediaDecodeTime(buf) {
+  let t = null;
+  const visit = (from, to) => {
+    forEachIsoBox(
+      buf,
+      (typ, i, size) => {
+        if (typ === 'tfdt' && size >= 16) {
+          const ver = buf[i + 8];
+          t =
+            ver === 1 && size >= 24
+              ? buf.readUInt32BE(i + 12) * 0x100000000 + buf.readUInt32BE(i + 16)
+              : buf.readUInt32BE(i + 12);
+        } else if (typ === 'moof' || typ === 'traf') visit(i + 8, i + size);
+      },
+      from,
+      to
+    );
+  };
+  visit(0, buf.length);
+  return t;
+}
+
+function tkhdTrackId(buf) {
+  let id = 0;
+  const visit = (from, to) => {
+    forEachIsoBox(
+      buf,
+      (typ, i, size) => {
+        if (typ === 'tkhd' && size >= 24) {
+          const ver = buf[i + 8];
+          id = ver === 1 ? buf.readUInt32BE(i + 28) : buf.readUInt32BE(i + 20);
+        } else if (typ === 'moov' || typ === 'trak') visit(i + 8, i + size);
+      },
+      from,
+      to
+    );
+  };
+  visit(0, buf.length);
+  return id;
+}
+
+function initStreamKind(buf) {
+  const s = buf.toString('latin1');
+  if (s.indexOf('soun') !== -1 || s.indexOf('SoundHandler') !== -1) return 'audio';
+  if (s.indexOf('vide') !== -1 || s.indexOf('VideoHandler') !== -1) return 'video';
+  return 'video';
+}
+
+function writeMseHlsPlaylist(dir, initName, mediaNames, durationSec, fileName) {
+  if (!mediaNames.length) return null;
+  const each = durationSec && mediaNames.length ? durationSec / mediaNames.length : 4;
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:7',
+    `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(each))}`,
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+    '#EXT-X-MEDIA-SEQUENCE:0'
+  ];
+  if (initName) lines.push(`#EXT-X-MAP:URI="${initName}"`);
+  for (const name of mediaNames) {
+    lines.push(`#EXTINF:${each.toFixed(3)},`);
+    lines.push(name);
+  }
+  lines.push('#EXT-X-ENDLIST');
+  const playlistPath = path.join(dir, fileName || 'mse-index.m3u8');
+  fs.writeFileSync(playlistPath, lines.join('\n'));
+  return playlistPath;
 }
 
 // Walk the playing video and collect MSE appendBuffer chunks. Token CDNs
@@ -1132,8 +2020,24 @@ async function harvestPlayerMse(wc, dir, { signal, onProgress, onLog } = {}) {
       const buf = Buffer.from(b64 || '', 'base64');
       if (buf.length) early.push(buf);
     }
-    const rawPath = path.join(dir, looksLikeSegment(early[0]) ? 'player.ts' : 'player.mp4');
-    fs.writeFileSync(rawPath, Buffer.concat(early));
+    const joined = Buffer.concat(early);
+    const box = joined.length >= 8 ? joined.toString('ascii', 4, 8) : '';
+    // Live MSE is fMP4 fragments (ftyp/moof) without a full moov/trex. Remuxing
+    // a few seconds of those dies immediately; the HLS part walk has the episode.
+    if (joined[0] !== 0x47) {
+      throw new Error(
+        'MSE snapshot is incomplete fMP4 (' +
+          (box || 'unknown') +
+          ', ' +
+          early.length +
+          ' fragment(s)); capturing HLS parts instead'
+      );
+    }
+    if (joined.length < 2 * 1024 * 1024) {
+      throw new Error('MSE capture too short for remux');
+    }
+    const rawPath = path.join(dir, 'player.ts');
+    fs.writeFileSync(rawPath, joined);
     return rawPath;
   }
   if (onLog) onLog('Player does not use MSE appends (native HLS); intercepting its CDN responses.');
@@ -1145,9 +2049,17 @@ async function harvestMediaRecorder(wc, dir, { signal, onProgress, onLog } = {})
     const { BrowserWindow } = require('electron');
     const win = BrowserWindow.fromWebContents(wc);
     if (win && !win.isDestroyed()) {
-      win.setSkipTaskbar(false);
-      win.setBounds({ x: 40, y: 40, width: 960, height: 540 });
-      win.show();
+      try {
+        win.showInactive();
+        require('./discoverwindow').cloak(win);
+      } catch (e2) {
+        // ignore
+      }
+      try {
+        wc.setBackgroundThrottling(false);
+      } catch (e2) {
+        // ignore
+      }
     }
   } catch (e) {
     // ignore
@@ -1288,16 +2200,20 @@ async function harvestMediaRecorder(wc, dir, { signal, onProgress, onLog } = {})
 async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, drainOnly } = {}) {
   if (!wc || wc.isDestroyed()) throw new Error('player window is gone');
   try {
-    if (onLog) onLog(`Player page ${wc.getURL()}`);
+    if (onLog) {
+    const uniq = new Set(jobs.map((j) => j.abs)).size;
+    let uniqP = 0;
+    try {
+      uniqP = new Set(jobs.map((j) => new URL(j.abs).pathname)).size;
+    } catch (e) {
+      uniqP = 0;
+    }
+    onLog(`Playlist has ${jobs.length} part(s) (${uniq} unique URL(s), ${uniqP} unique path(s)).`);
+  }
     const { BrowserWindow } = require('electron');
     const win = BrowserWindow.fromWebContents(wc);
     if (win && !win.isDestroyed()) {
-      win.showInactive();
-      try {
-        wc.setBackgroundThrottling(false);
-      } catch (e2) {
-        // ignore
-      }
+      require('./discoverwindow').cloakForPlayback(win);
     }
   } catch (e) {
     // ignore
@@ -1305,22 +2221,131 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
 
   const remaining = new Map(jobs.map((j) => [j.abs, j]));
   const byPath = new Map();
+  const byName = new Map();
+  const pathCount = new Map();
+  const nameCount = new Map();
   for (const job of jobs) {
     try {
-      byPath.set(new URL(job.abs).pathname, job);
+      const p = new URL(job.abs).pathname;
+      pathCount.set(p, (pathCount.get(p) || 0) + 1);
+      const base = p.split('/').filter(Boolean).pop();
+      if (base) nameCount.set(base, (nameCount.get(base) || 0) + 1);
+    } catch (e) {
+      // ignore
+    }
+  }
+  for (const job of jobs) {
+    try {
+      const p = new URL(job.abs).pathname;
+      if (pathCount.get(p) === 1) byPath.set(p, job);
+      const base = p.split('/').filter(Boolean).pop();
+      if (base && nameCount.get(base) === 1 && !byName.has(base)) byName.set(base, job);
     } catch (e) {
       // ignore
     }
   }
   const written = new Set();
   let done = 0;
+  for (const job of jobs) {
+    try {
+      const p = path.join(dir, job.name);
+      if (fs.existsSync(p) && fs.statSync(p).size > 200) {
+        written.add(job.name);
+        remaining.delete(job.abs);
+        done += 1;
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
   const matchJob = (url) => {
     if (!url) return null;
     if (remaining.has(url)) return remaining.get(url);
     try {
-      return byPath.get(new URL(url).pathname) || null;
+      const u = new URL(url);
+      u.hash = '';
+      u.search = '';
+      if (remaining.has(u.toString())) return remaining.get(u.toString());
+      if (byPath.has(u.pathname)) return byPath.get(u.pathname);
+      const base = u.pathname.split('/').filter(Boolean).pop();
+      if (base && byName.has(base)) return byName.get(base);
+      for (const job of jobs) {
+        if (written.has(job.name)) continue;
+        try {
+          if (new URL(job.abs).pathname === u.pathname) return job;
+        } catch (e) {
+          // ignore
+        }
+      }
     } catch (e) {
-      return null;
+      // ignore
+    }
+    return null;
+  };
+
+  let mseLogged = false;
+  const mseInits = { audio: null, video: null };
+  const mseMedia = { audio: [], video: [] };
+  const mseTrackKind = Object.create(null);
+  const mseLastSig = { audio: '', video: '' };
+  const mseTfdt = { audio: new Set(), video: new Set() };
+  let mseN = 0;
+  const mseCount = () => mseMedia.audio.length + mseMedia.video.length;
+  const flushMse = async () => {
+    const batch = await drainMseChunks(wc);
+    for (const b64 of batch) {
+      const raw = Buffer.from(b64 || '', 'base64');
+      if (!raw.length) continue;
+      for (const piece of classifyMseBuffers(raw)) {
+        if (piece.kind === 'init') {
+          const kind = initStreamKind(piece.buf);
+          if (mseInits[kind]) continue;
+          const name = kind === 'audio' ? 'init-a.mp4' : 'init-v.mp4';
+          fs.writeFileSync(path.join(dir, name), piece.buf);
+          mseInits[kind] = name;
+          const tid = tkhdTrackId(piece.buf);
+          if (tid) mseTrackKind[tid] = kind;
+          continue;
+        }
+        if (piece.kind === 'ts') {
+          const name = `mse${String(mseN).padStart(5, '0')}.ts`;
+          mseN += 1;
+          fs.writeFileSync(path.join(dir, name), piece.buf);
+          mseMedia.video.push(name);
+          continue;
+        }
+        const tid = tfhdTrackId(piece.buf);
+        const kind =
+          mseTrackKind[tid] || (piece.buf.length < 400000 ? 'audio' : 'video');
+        const sig = String(piece.buf.length) + ':' + piece.buf.slice(0, 24).toString('hex');
+        if (mseLastSig[kind] === sig) continue;
+        mseLastSig[kind] = sig;
+        const dt = tfdtBaseMediaDecodeTime(piece.buf);
+        if (dt != null) {
+          if (mseTfdt[kind].has(dt)) continue;
+          mseTfdt[kind].add(dt);
+        }
+        const name = `${kind === 'audio' ? 'a' : 'v'}${String(mseMedia[kind].length).padStart(5, '0')}.m4s`;
+        fs.writeFileSync(path.join(dir, name), piece.buf);
+        mseMedia[kind].push(name);
+      }
+    }
+    if (!mseLogged && mseCount()) {
+      mseLogged = true;
+      if (onLog) {
+        onLog(
+          `Capturing the live player buffer (video ${mseMedia.video.length}, audio ${mseMedia.audio.length}).`
+        );
+      }
+    }
+    if (onProgress && jobs.length) {
+      const byMse = mseCount() / Math.max(jobs.length, 1);
+      const byHls = done / jobs.length;
+      onProgress({
+        received: Math.max(done, mseCount()),
+        total: jobs.length,
+        percent: Math.min(0.99, Math.max(byMse, byHls))
+      });
     }
   };
 
@@ -1330,7 +2355,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     const out = window.__wvdParts || {};
     const keys = Object.keys(out);
     const batch = {};
-    for (const k of keys.slice(0, 6)) {
+    for (const k of keys.slice(0, 40)) {
       batch[k] = out[k];
       delete out[k];
     }
@@ -1348,6 +2373,11 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     }
   }
   if (onLog) onLog(`Hooked fetch/XHR in ${hooked} player frame(s).`);
+  try {
+    await wc.executeJavaScript(ensureMseHookScript(), true);
+  } catch (e) {
+    // preload already hooked appendBuffer
+  }
 
   try {
     const dbg = wc.debugger;
@@ -1357,6 +2387,11 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
         new Promise((_, reject) => setTimeout(() => reject(new Error('attach timeout')), 2000))
       ]);
     }
+    // Linux Electron 31 SIGSEGV'd inside Fetch.getResponseBody on 8MB+
+    // peakstorm/ashencloud parts. Network.enable in installPlayerCdpTap still
+    // copies those bodies without pausing the request.
+    // Linux SIGSEGV'd on 8MB+ Fetch.getResponseBody copies. Segment TS parts
+    // are a few hundred KB; skip anything over 2 MB.
     if (!wc._cdpFetchOn) {
       dbg.on('message', async (_event, method, params) => {
         wc._cdpMsgs = (wc._cdpMsgs || 0) + 1;
@@ -1365,14 +2400,15 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
         const url = (params.request && params.request.url) || '';
         try {
           const code = params.responseStatusCode || 0;
-          if (code >= 200 && code < 400 && isCdnMediaUrl(url)) {
+          const headers = params.responseHeaders || [];
+          let len = 0;
+          for (const h of headers) {
+            if (h && /content-length/i.test(h.name)) len = Number(h.value) || 0;
+          }
+          if (code >= 200 && code < 400 && isCdnMediaUrl(url) && len > 0 && len < 2 * 1024 * 1024) {
             try {
               const body = await dbg.sendCommand('Fetch.getResponseBody', { requestId });
-              storeCdpPart(
-                wc,
-                url,
-                Buffer.from(body.body || '', body.base64Encoded ? 'base64' : 'utf8')
-              );
+              storeCdpPart(wc, url, bufferFromCdpString(body.body, body.base64Encoded));
             } catch (e) {
               // ignore
             }
@@ -1389,6 +2425,8 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
         dbg.sendCommand('Fetch.enable', {
           patterns: [
             { urlPattern: '*peakstorm*', requestStage: 'Response' },
+            { urlPattern: '*ashencloud*', requestStage: 'Response' },
+            { urlPattern: '*/r2/*', requestStage: 'Response' },
             { urlPattern: '*/r6/*', requestStage: 'Response' }
           ]
         }),
@@ -1410,6 +2448,8 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     remaining.delete(job.abs);
     done += 1;
     if (done === 1 && onLog) onLog(note || 'Captured first HLS part from the player.');
+    else if (onLog && done <= 6) onLog(`Wrote ${job.name}`);
+    else if (onLog && done % 40 === 0) onLog(`Captured ${done}/${jobs.length} HLS part(s).`);
     if (onProgress) onProgress({ received: done, total: jobs.length, percent: done / jobs.length });
     return true;
   };
@@ -1445,9 +2485,27 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     }
   };
 
+  const hookAllFrames = async () => {
+    const mse = ensureMseHookScript();
+    const fetchHook = playerHookScript();
+    for (const frame of collectFrames(wc)) {
+      try {
+        await frame.executeJavaScript(fetchHook, true);
+      } catch (e) {
+        // ignore
+      }
+      try {
+        await frame.executeJavaScript(mse, true);
+      } catch (e) {
+        // ignore
+      }
+    }
+  };
+
   const drain = async () => {
-    drainCdp();
-    await drainPageResources();
+    await hookAllFrames();
+    // In-page fetch hook copies ArrayBuffers (binary-safe). CDP Network bodies
+    // on Linux are often UTF-8-mangled; only use them to fill gaps.
     for (const frame of collectFrames(wc)) {
       let info;
       try {
@@ -1459,7 +2517,9 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       for (const [url, b64] of Object.entries(batch)) {
         const job = matchJob(url);
         if (!job || written.has(job.name)) {
-          if (!job && onLog && done === 0) onLog(`Unmatched player part ${String(url).slice(0, 100)}`);
+          if (!job && onLog && done === 0 && isCdnMediaUrl(url)) {
+            onLog(`Unmatched player part ${String(url).slice(0, 100)}`);
+          }
           continue;
         }
         let buf = Buffer.from(b64 || '', 'base64');
@@ -1470,29 +2530,66 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
         remaining.delete(job.abs);
         done += 1;
         if (done === 1 && onLog) onLog('Captured first HLS part from the player.');
+        else if (onLog && done % 40 === 0) onLog(`Captured ${done}/${jobs.length} HLS part(s).`);
         if (onProgress) onProgress({ received: done, total: jobs.length, percent: done / jobs.length });
       }
     }
+    drainCdp();
+    await drainPageResources();
+    await flushMse();
   };
 
-  const duration = await findAndSeekVideo(wc, 0);
+  let duration = await playPlayerVideo(wc, 0);
+  for (let i = 0; i < 20 && !duration; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    duration = await playPlayerVideo(wc, null);
+  }
   if (onLog) {
     onLog(
       `Waiting for the player to fetch ${jobs.length} part(s)` +
-        (duration ? ` (video ${Math.round(duration)}s)` : '') +
+        (duration ? ` (video ${Math.round(duration)}s)` : ' (waiting for duration)') +
         '...'
     );
   }
 
   await drain();
   if (done && onLog) onLog(`Already had ${done} HLS part(s) from the live player.`);
+  try {
+    const hook = await wc.executeJavaScript(
+      `({ w: window.__wvdWorkerPatched || '', seen: window.__wvdWorkerSeen || [], parts: Object.keys(window.__wvdParts || {}).length })`,
+      true
+    );
+    if (onLog) {
+      onLog(
+        `Player worker hook: ${hook && hook.w ? hook.w : 'none'}; parts=${hook && hook.parts}; seen=${JSON.stringify((hook && hook.seen) || [])}`
+      );
+    }
+  } catch (e) {
+    // ignore
+  }
   if (drainOnly) return;
 
   const started = Date.now();
   let warned = false;
-  const deadline = Date.now() + Math.max(180000, (duration || 600) * 400);
-  let t = 0;
-  const step = 5;
+  const deadline = Date.now() + Math.max(180000, Math.min((duration || 600) * 800, 15 * 60 * 1000));
+  let lastVideo = 0;
+  let lastWritten = written.size;
+  let stagnant = 0;
+  let peakPercent = 0;
+  let playerFetchLogged = false;
+  const report = () => {
+    if (!onProgress) return;
+    const byJobs = jobs.length ? written.size / jobs.length : 0;
+    const expectMse = Math.max(24, duration ? duration / 4 : 24);
+    const byMse = mseMedia.video.length / expectMse;
+    const p = Math.min(0.99, Math.max(byJobs, byMse, peakPercent));
+    peakPercent = p;
+    onProgress({
+      received: written.size,
+      total: jobs.length || mseMedia.video.length,
+      percent: p
+    });
+  };
   while (written.size < jobs.length && Date.now() < deadline) {
     if (signal && signal.aborted) {
       const err = new Error('Aborted');
@@ -1509,7 +2606,15 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
             const ifr = Array.from(document.querySelectorAll('iframe')).map((f) => f.src || '').slice(0, 6);
             return JSON.stringify({
               hooked: window.__wvdHooked || '',
+              workerPatched: window.__wvdWorkerPatched || '',
+              workerSeen: window.__wvdWorkerSeen || [],
               parts: Object.keys(window.__wvdParts || {}).length,
+              mse: (window.__wvdMse || []).length,
+              videos: Array.from(document.querySelectorAll('video')).map((v) => ({
+                r: v.readyState,
+                d: v.duration,
+                src: String(v.currentSrc || v.src || '').slice(0, 80)
+              })),
               seen: window.__wvdSeen || [],
               ifr,
               perf: perf.map((n) => String(n).slice(0, 80))
@@ -1520,18 +2625,143 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       } catch (e) {
         diag = String(e && e.message);
       }
-      if (onLog) onLog(`No player CDN responses yet; diag=${diag}`);
+      if (onLog) {
+        onLog(
+          `No HLS parts from fetch yet (MSE video ${mseMedia.video.length}, audio ${mseMedia.audio.length}); diag=${diag}`
+        );
+      }
     }
-    await findAndSeekVideo(wc, t);
+    duration = (await playPlayerVideo(wc, null)) || duration;
+    await new Promise((r) => setTimeout(r, duration ? 400 : 500));
     await drain();
-    t += step;
-    if (duration && t > duration + 2) t = 0;
-    await new Promise((r) => setTimeout(r, 350));
+    report();
+    const gettingHls = written.size > lastWritten;
+    lastWritten = written.size;
+    if (mseMedia.video.length > lastVideo) {
+      lastVideo = mseMedia.video.length;
+      stagnant = 0;
+    } else if (gettingHls) {
+      stagnant = 0;
+    } else {
+      stagnant += 1;
+    }
+    const frac = jobs.length ? written.size / jobs.length : 0;
+    if (stagnant >= 12 && frac >= 0.98) break;
+    if (duration) {
+      const segs = jobs.filter((j) => /^seg\d+\.ts$/i.test(j.name));
+      let nextIdx = 0;
+      while (nextIdx < segs.length && written.has(segs[nextIdx].name)) nextIdx += 1;
+      // Only seek once most parts are in. Early seeking makes HLS.js skip
+      // around and remux a stuttering file.
+      if (nextIdx < segs.length && stagnant >= 25 && frac >= 0.85) {
+        const t = nextIdx * (duration / Math.max(segs.length, 1)) + 0.05;
+        await playPlayerVideo(wc, Math.min(Math.max(0, duration - 0.25), t));
+        stagnant = 0;
+      }
+    } else if (stagnant >= 45) {
+      break;
+    }
   }
   await drain();
-  if (written.size < jobs.length) {
-    throw new Error(`player only yielded ${written.size}/${jobs.length} HLS parts`);
+  const stats = holeStats(jobs, dir);
+  if (stats.have >= jobs.length) return;
+  if (stats.internal === 0 && stats.have / Math.max(jobs.length, 1) >= 0.98) {
+    if (onLog) onLog(`Player yielded ${stats.have}/${jobs.length} HLS parts (trailing only).`);
+    return;
   }
+  throw new Error(
+    `player only yielded ${stats.have}/${jobs.length} HLS parts` +
+      (stats.internal ? ` with ${stats.internal} hole(s) in the middle` : '') +
+      (mseCount() ? ` and ${mseCount()} MSE fragment(s)` : '')
+  );
+}
+
+function jobFileOk(dir, job) {
+  try {
+    const p = path.join(dir, job.name);
+    return fs.existsSync(p) && fs.statSync(p).size > 200;
+  } catch (e) {
+    return false;
+  }
+}
+
+function holeStats(jobs, dir) {
+  const ok = jobs.map((job) => jobFileOk(dir, job));
+  const have = ok.filter(Boolean).length;
+  let lastHave = -1;
+  for (let i = ok.length - 1; i >= 0; i--) {
+    if (ok[i]) {
+      lastHave = i;
+      break;
+    }
+  }
+  let internal = 0;
+  for (let i = 0; i < lastHave; i++) {
+    if (!ok[i]) internal += 1;
+  }
+  const trailing = lastHave < 0 ? ok.length : ok.length - 1 - lastHave;
+  return { have, total: jobs.length, internal, trailing };
+}
+
+function writeLocalIndexPlaylist(lines, jobs, dir) {
+  const have = new Set();
+  for (const job of jobs) {
+    if (jobFileOk(dir, job)) have.add(job.name);
+  }
+  const jobAt = new Map(jobs.map((job) => [job.i, job]));
+  const out = [];
+  let pendingExtinf = null;
+  let emittedSeg = false;
+  let gap = false;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const t = String(raw).trim();
+    if (/^#EXTINF/i.test(t)) {
+      pendingExtinf = raw;
+      continue;
+    }
+    const job = jobAt.get(i);
+    if (job && !t.startsWith('#')) {
+      if (have.has(job.name)) {
+        if (pendingExtinf != null) out.push(pendingExtinf);
+        out.push(job.name);
+        emittedSeg = true;
+        gap = false;
+      } else if (emittedSeg) {
+        gap = true;
+      }
+      pendingExtinf = null;
+      continue;
+    }
+    pendingExtinf = null;
+    if (/^#EXT-X-ENDLIST/i.test(t)) continue;
+    out.push(raw);
+  }
+  out.push('#EXT-X-ENDLIST');
+  const playlistPath = path.join(dir, 'index.m3u8');
+  fs.writeFileSync(playlistPath, out.join('\n'), 'utf8');
+  return { playlistPath, kept: have.size };
+}
+
+// Token CDNs sometimes never give Node an #EXTM3U body (one-shot /s/ URLs).
+// Walk the live player anyway and remux whatever MSE already decoded.
+async function captureLivePlayer(wc, dir, opts = {}) {
+  if (!wc || wc.isDestroyed()) throw new Error('player window is gone');
+  fs.mkdirSync(dir, { recursive: true });
+  const jobs = [{ abs: 'https://mse.invalid/live', name: 'seg00000.ts', strip: true }];
+  try {
+    await watchPlayerSegments(wc, jobs, dir, opts);
+  } catch (e) {
+    const msePath = path.join(dir, 'mse-video.m3u8');
+    if (fs.existsSync(msePath)) {
+      if (opts.onLog) opts.onLog(`Player HLS capture failed (${e.message || e}); remuxing MSE fragments instead.`);
+      return msePath;
+    }
+    throw e;
+  }
+  const msePath = path.join(dir, 'mse-video.m3u8');
+  if (!fs.existsSync(msePath)) throw new Error('Player did not yield a video buffer');
+  return msePath;
 }
 
 // Download every playlist URI through Chromium, unwrap PNG-disguised TS, and
@@ -1567,6 +2797,20 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
     jobs.push({ i, abs, name: `seg${String(segN++).padStart(5, '0')}.ts`, strip: true });
   }
   if (!jobs.length) throw new Error('HLS playlist has no segments');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '_source.m3u8'), String(text || ''), 'utf8');
+  } catch (e) {
+    // ignore
+  }
+  if (onLog) {
+    const tags = {};
+    for (const line of lines) {
+      const m = String(line).match(/^(#EXT[^:\s]*)/);
+      if (m) tags[m[1]] = (tags[m[1]] || 0) + 1;
+    }
+    onLog(`Playlist tags ${JSON.stringify(tags)}; ${segN} segment(s), ${keyN} key URI(s).`);
+  }
   const viaPlayer = !!liveWebContents(playerWebContentsId);
   if (onLog) {
     onLog(
@@ -1588,11 +2832,24 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
         drainOnly: !bound
       });
     } catch (e) {
+      const msePath = [path.join(dir, 'mse-video.m3u8'), path.join(dir, 'mse-index.m3u8')].find((p) =>
+        fs.existsSync(p)
+      );
+      const anyHls = jobs.some((job) => fs.existsSync(path.join(dir, job.name)));
+      if (msePath && !anyHls) {
+        throw e;
+      }
       if (onLog) onLog(`Player capture skipped: ${e.message || e}`);
       if (bound) throw e;
     }
   }
-  const remaining = jobs.filter((job) => !fs.existsSync(path.join(dir, job.name)));
+  const msePath = [path.join(dir, 'mse-video.m3u8'), path.join(dir, 'mse-index.m3u8')].find((p) =>
+    fs.existsSync(p)
+  );
+  const remaining = jobs.filter((job) => !jobFileOk(dir, job));
+  if (remaining.length === jobs.length && fs.existsSync(msePath)) {
+    throw new Error('Player did not yield HLS parts; not remuxing MSE/WebM');
+  }
   if (remaining.length && remaining.length < jobs.length && onLog) {
     onLog(`Captured ${jobs.length - remaining.length} part(s) from the player; fetching ${remaining.length} more.`);
   }
@@ -1605,19 +2862,38 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
       'Player did not yield any HLS parts; peakstorm/vidfast segments cannot be fetched from the main process'
     );
   }
+  if (remaining.length && bound) {
+    const stats = holeStats(jobs, dir);
+    if (stats.internal > 0 || stats.have / Math.max(jobs.length, 1) < 0.98) {
+      throw new Error(
+        `player only yielded ${stats.have}/${jobs.length} HLS parts` +
+          (stats.internal ? ` with ${stats.internal} hole(s) in the middle` : '') +
+          '; not remuxing a stuttering file'
+      );
+    }
+    const { playlistPath, kept } = writeLocalIndexPlaylist(out, jobs, dir);
+    if (onLog) onLog(`Remuxing ${kept}/${jobs.length} captured HLS part(s) to MP4.`);
+    return playlistPath;
+  }
   if (remaining.length) {
+    const wc = liveWebContents(playerWebContentsId);
     await mapPool(remaining, 2, async (job) => {
       if (signal && signal.aborted) {
         const err = new Error('Aborted');
         err.name = 'AbortError';
         throw err;
       }
-      let buf = await fetchBufferRetry(job.abs, headers, {
-        timeoutMs: 20000,
-        signal,
-        playerWebContentsId,
-        skipPageFetch: true
-      });
+      let buf;
+      if (wc) {
+        buf = await fetchViaWebContents(wc, job.abs, { timeoutMs: 20000, signal });
+      } else {
+        buf = await fetchBufferRetry(job.abs, headers, {
+          timeoutMs: 20000,
+          signal,
+          playerWebContentsId,
+          skipPageFetch: !wc
+        });
+      }
       if (job.strip) {
         const head = buf.toString('utf8', 0, 256);
         if (looksLikeHtml(head) || looksLikeJson(head)) {
@@ -1631,7 +2907,12 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
       fs.writeFileSync(path.join(dir, job.name), buf);
       done += 1;
       if (onProgress) {
-        onProgress({ received: done, total: jobs.length, percent: done / jobs.length });
+        const already = jobs.length - remaining.length;
+        onProgress({
+          received: already + done,
+          total: jobs.length,
+          percent: Math.min(0.99, (already + done) / jobs.length)
+        });
       }
     });
   }
@@ -1664,7 +2945,12 @@ async function bodyReachableInner(url, headers, signal = null) {
   if (signal && signal.aborted) return { ok: true, status: 0, reason: 'cancelled' };
 
   const master = await request(url, h, { maxBytes: 16000, timeoutMs: left(), signal });
-  if (master.status && master.status >= 400) return { ok: false, status: master.status, reason: 'playlist' };
+  if (master.status && master.status >= 400) {
+    // Peakstorm/vidfast playlists 500 from Node while the in-page player still
+    // holds a working copy. Treat that as "keep the stream".
+    if (isTokenCdn(url, '')) return { ok: true, status: master.status, reason: 'token-cdn' };
+    return { ok: false, status: master.status, reason: 'playlist' };
+  }
   if (!looksLikePlaylist(master.body)) {
     // A .m3u8 URL that is actually HTML/JSON will make ffmpeg die with
     // "Invalid data found when processing input". Skip this server instead.
@@ -1721,7 +3007,9 @@ module.exports = {
   bodyReachable,
   materializePlaylist,
   loadMediaPlaylist,
+  cachedPlaylist,
   localizePlaylist,
+  captureLivePlayer,
   fetchBuffer,
   stripPngWrapper,
   isPng,
@@ -1730,6 +3018,8 @@ module.exports = {
   streamIsDownloadable,
   harvestPlayerMse,
   firstUri,
+  playlistMediaDuration,
   looksLikePlaylist,
-  installPlayerFetchHook
+  installPlayerFetchHook,
+  playPlayerVideo
 };

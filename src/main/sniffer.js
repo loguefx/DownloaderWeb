@@ -4,6 +4,51 @@ const { session, webContents } = require('electron');
 const { EventEmitter } = require('events');
 const config = require('./config');
 
+const guestTabIds = new Set();
+
+function windowOf(id) {
+  try {
+    const wc = webContents.fromId(id);
+    if (!wc || wc.isDestroyed()) return null;
+    if (typeof wc.getOwnerBrowserWindow === 'function') {
+      const w = wc.getOwnerBrowserWindow();
+      if (w && !w.isDestroyed()) return w;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return null;
+}
+
+// The app chrome (renderer + visible <webview>/BrowserView). Never fold player
+// iframe traffic into this window: Detected Videos keys off the guest tab id.
+function isUiChromeWindow(win) {
+  if (!win || win.isDestroyed()) return false;
+  if (guestTabIds.size) {
+    for (const gid of guestTabIds) {
+      try {
+        const g = webContents.fromId(gid);
+        if (!g || g.isDestroyed()) continue;
+        if (typeof g.getOwnerBrowserWindow === 'function' && g.getOwnerBrowserWindow() === win) {
+          return true;
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    return false;
+  }
+  try {
+    if (typeof win.isFocusable === 'function' && win.isFocusable()) {
+      const b = win.getBounds();
+      if (b && b.width >= 800 && b.height >= 500) return true;
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return false;
+}
+
 // Which "tab" a request belongs to. Requests from nested frames can carry a
 // guest webContents id, so fold those into the frame's owning window.
 //
@@ -12,6 +57,7 @@ const config = require('./config');
 // window would hide every stream the user plays by hand.
 function ownerTabId(id) {
   if (id == null) return id;
+  if (guestTabIds.has(id)) return id;
   try {
     let wc = webContents.fromId(id);
     if (!wc || wc.isDestroyed()) return id;
@@ -19,10 +65,18 @@ function ownerTabId(id) {
     while (wc && !wc.isDestroyed() && !seen.has(wc.id)) {
       seen.add(wc.id);
       const type = typeof wc.getType === 'function' ? wc.getType() : '';
-      // Stop at the visible <webview> or a discovery window. Nested player
-      // iframes (SFlix Server 1–3) have their own webContents; folding those
-      // all the way to the host window hid every stream from Detected Videos.
-      if (type === 'webview' || type === 'window' || type === 'browserView') return wc.id;
+      // Stop at the visible <webview>, Linux BrowserView, or a discovery window.
+      // Nested player iframes (SFlix Server 1–3) have their own webContents;
+      // folding those all the way to the host window hid every stream from
+      // Detected Videos.
+      if (
+        type === 'webview' ||
+        type === 'window' ||
+        type === 'browserView' ||
+        type === 'webContentsView'
+      ) {
+        return wc.id;
+      }
       const host = wc.hostWebContents;
       if (host && !host.isDestroyed() && host.id !== wc.id) {
         wc = host;
@@ -30,11 +84,64 @@ function ownerTabId(id) {
       }
       break;
     }
+    // Linux OOPIF players often have no hostWebContents. Fold those into the
+    // discovery window so waitForMedia(windowId) sees the playlist. Never do
+    // this for the UI chrome window.
+    try {
+      const win = wc && typeof wc.getOwnerBrowserWindow === 'function' ? wc.getOwnerBrowserWindow() : null;
+      if (
+        win &&
+        !win.isDestroyed() &&
+        !isUiChromeWindow(win) &&
+        win.webContents &&
+        !win.webContents.isDestroyed()
+      ) {
+        return win.webContents.id;
+      }
+    } catch (e) {
+      /* ignore */
+    }
     if (wc && !wc.isDestroyed()) return wc.id;
   } catch (e) {
     /* ignore */
   }
   return id;
+}
+
+// All webContents that belong with this tab: the id itself, its ownerTabId, and
+// sibling frames in the same discovery window. Used so list()/best() still see
+// a playlist that Chromium attributed to an iframe process.
+function relatedTabIds(id) {
+  const ids = new Set();
+  if (id == null) return ids;
+  ids.add(id);
+  const mapped = ownerTabId(id);
+  if (mapped != null) ids.add(mapped);
+  try {
+    const dw = require('./discoverwindow');
+    if (typeof dw.idsSharingOwner === 'function') {
+      for (const other of dw.idsSharingOwner(id)) ids.add(other);
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  const win = windowOf(id);
+  if (!win || isUiChromeWindow(win)) return ids;
+  try {
+    for (const wc of webContents.getAllWebContents()) {
+      if (!wc || wc.isDestroyed()) continue;
+      try {
+        if (typeof wc.getOwnerBrowserWindow === 'function' && wc.getOwnerBrowserWindow() === win) {
+          ids.add(wc.id);
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  } catch (e) {
+    /* ignore */
+  }
+  return ids;
 }
 
 // ajax/sources may return "//host/embed/..." or a site-relative path.
@@ -63,6 +170,9 @@ function resOf(url) {
 // Quality ranking: HLS master > HLS variant (by res) > mp4 > dash.
 function baseScore(d) {
   const u = d.url.toLowerCase();
+  // NontonGo / EmbedFlix progressive MP4 is the Windows-quality path. Rank it
+  // above HLS so a leftover ad playlist cannot steal the download.
+  if (d.type === 'mp4' && /\/_stream(?:\?|$)/i.test(u)) return 200000 + resOf(u);
   if (d.type === 'hls' && /master/.test(u)) return 100000;
   if (d.type === 'hls') return 50000 + resOf(u);
   if (d.type === 'mp4') return 40000 + resOf(u);
@@ -107,8 +217,14 @@ class Sniffer extends EventEmitter {
   }
 
   attach() {
-    if (this.attached) return;
-    const sess = session.fromPartition(config.sessionPartition);
+    this.attachSession(session.fromPartition(config.sessionPartition));
+  }
+
+  // Linux gives each SFlix episode its own Chromium partition so five Vidfast
+  // players do not spend one-shot /s/ tokens on each other.
+  attachSession(sess) {
+    if (!sess || sess._wvdSniffAttached) return;
+    sess._wvdSniffAttached = true;
 
     // Requests to "https://undefined/..." can never succeed (ERR_NAME_NOT_RESOLVED)
     // and they spam the console. Cancel them, but remember the initiator so
@@ -132,8 +248,21 @@ class Sniffer extends EventEmitter {
 
     // Capture media requests with their headers as they are sent.
     sess.webRequest.onSendHeaders((details) => {
+      if (process.env.WVD_SNIFF_DEBUG) {
+        const u = String(details.url || '');
+        if (/m3u8|mpd|\.mp4|\/hls\/|\/stream|_stream|playlist|master|videm|nontongo|peakstorm|r6\/s\/|embedflix|vidfast|video\//i.test(u)) {
+          try {
+            console.log(`[sniff-send] wc=${details.webContentsId} -> ${ownerTabId(details.webContentsId)} ${u.slice(0, 180)}`);
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      }
       const tabId = ownerTabId(details.webContentsId);
-      if (this._isMediaUrl(details.url)) {
+      // One-shot /s/ playlists 500 if we record (and later re-fetch) on send.
+      // Wait for a 2xx in onHeadersReceived before treating them as a stream.
+      const waitForBody = /\.m3u8(\?|$)|peakstorm\.top\/s\//i.test(details.url || '');
+      if (this._isMediaUrl(details.url) && !waitForBody) {
         this._record({ url: details.url, webContentsId: tabId }, details.requestHeaders || {});
       }
       if (this._isSourcesApi(details.url) || this._isEmbedApi(details.url)) {
@@ -149,11 +278,33 @@ class Sniffer extends EventEmitter {
     sess.webRequest.onHeadersReceived((details, cb) => {
       try {
         const status = details.statusCode || 0;
+        if (/peakstorm|\.m3u8(\?|$)/i.test(String(details.url || ''))) {
+          const cl = this._headerValue(details.responseHeaders, 'content-length');
+          console.log(
+            `[sniff-hls] ${status} ${cl || '?'}b wc=${details.webContentsId} ${String(details.url).slice(0, 100)}`
+          );
+        }
         const ct = this._headerValue(details.responseHeaders, 'content-type');
         const byType = ct && this._isMediaContentType(ct) && !this._isIgnoredHost(details.url);
         const byUrl = this._isMediaUrl(details.url);
 
         const tabId = ownerTabId(details.webContentsId);
+        if (process.env.WVD_SNIFF_DEBUG) {
+          const u = String(details.url || '');
+          if (
+            byUrl ||
+            byType ||
+            /m3u8|mpd|\.mp4|\/hls\/|_stream|videm|nontongo|peakstorm|r6\/s\/|embedflix|vidfast/i.test(u)
+          ) {
+            try {
+              console.log(
+                `[sniff-hdr] ${status} wc=${details.webContentsId}->${tabId} byUrl=${!!byUrl} byType=${!!byType} ct=${ct || ''} ${u.slice(0, 160)}`
+              );
+            } catch (e) {
+              /* ignore */
+            }
+          }
+        }
         if ((byUrl || byType) && status >= 200 && status < 300) {
           const existing = this.byTab.get(tabId);
           const prev = existing && existing.get(details.url);
@@ -406,6 +557,7 @@ class Sniffer extends EventEmitter {
     // (ETIMEDOUT).
     if (
       /\.mp4(\?|$)/i.test(url) ||
+      /\/_stream(?:\?|$)/i.test(url) ||
       /video\/mp4/i.test(ct) ||
       /^video\//i.test(ct) ||
       (/cloudatacdn\.com/i.test(url) && !/\.m3u8/i.test(url))
@@ -468,9 +620,55 @@ class Sniffer extends EventEmitter {
     return out;
   }
 
+  covers(rootId, otherId) {
+    if (rootId == null || otherId == null) return false;
+    if (rootId === otherId) return true;
+    return relatedTabIds(rootId).has(otherId);
+  }
+
+  relatedIds(webContentsId) {
+    return relatedTabIds(webContentsId);
+  }
+
+  forEachRelated(webContentsId, fn) {
+    for (const id of relatedTabIds(webContentsId)) {
+      try {
+        const wc = webContents.fromId(id);
+        if (wc && !wc.isDestroyed()) fn(wc);
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  debugDump(webContentsId) {
+    const related = webContentsId != null ? relatedTabIds(webContentsId) : null;
+    const row = (id, map) => ({
+      id,
+      n: map.size,
+      urls: [...map.keys()].slice(0, 4).map((u) => String(u).slice(0, 100))
+    });
+    const rows = [];
+    for (const [id, map] of this.byTab) {
+      if (related && related.size && !related.has(id)) continue;
+      rows.push(row(id, map));
+    }
+    return rows;
+  }
+
   list(webContentsId) {
-    const tabMap = this.byTab.get(webContentsId);
-    return tabMap ? Array.from(tabMap.values()) : [];
+    const items = [];
+    const seen = new Set();
+    for (const id of relatedTabIds(webContentsId)) {
+      const tabMap = this.byTab.get(id);
+      if (!tabMap) continue;
+      for (const d of tabMap.values()) {
+        if (seen.has(d.url)) continue;
+        seen.add(d.url);
+        items.push(d);
+      }
+    }
+    return items;
   }
 
   latest(webContentsId, types = ['hls', 'mp4', 'dash']) {
@@ -510,29 +708,62 @@ class Sniffer extends EventEmitter {
   }
 
   lastEmbed(webContentsId) {
-    return this._embeds.get(webContentsId) || null;
+    for (const id of relatedTabIds(webContentsId)) {
+      const embed = this._embeds.get(id);
+      if (embed) return embed;
+    }
+    return null;
   }
 
   // Requests we cancelled because the page built a URL with no host.
   badHosts(webContentsId) {
-    return this._badHosts.get(webContentsId) || [];
+    const items = [];
+    for (const id of relatedTabIds(webContentsId)) {
+      const list = this._badHosts.get(id);
+      if (list && list.length) items.push(...list);
+    }
+    return items;
   }
 
   // Streams that were detected and then 404'd, so they can't be downloaded.
   droppedMedia(webContentsId) {
-    return this._dropped.get(webContentsId) || [];
+    const items = [];
+    const seen = new Set();
+    for (const id of relatedTabIds(webContentsId)) {
+      const list = this._dropped.get(id);
+      if (!list) continue;
+      for (const d of list) {
+        const key = `${d.status}|${d.url}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        items.push(d);
+      }
+    }
+    return items;
+  }
+
+  registerGuestTab(id) {
+    if (id != null) guestTabIds.add(id);
+  }
+
+  unregisterGuestTab(id) {
+    guestTabIds.delete(id);
   }
 
   clear(webContentsId) {
-    this.byTab.delete(webContentsId);
-    this._embeds.delete(webContentsId);
-    this._badHosts.delete(webContentsId);
-    this._dropped.delete(webContentsId);
-    for (const [apiUrl, meta] of [...this._sourcesMeta]) {
-      if (meta.webContentsId !== webContentsId) continue;
-      this._sourcesMeta.delete(apiUrl);
-      this._sourcesFetched.delete(apiUrl);
-      this._sourcesFetched.delete(`${webContentsId}|${apiUrl}`);
+    const ids = relatedTabIds(webContentsId);
+    if (!ids.size && webContentsId != null) ids.add(webContentsId);
+    for (const id of ids) {
+      this.byTab.delete(id);
+      this._embeds.delete(id);
+      this._badHosts.delete(id);
+      this._dropped.delete(id);
+      for (const [apiUrl, meta] of [...this._sourcesMeta]) {
+        if (meta.webContentsId !== id) continue;
+        this._sourcesMeta.delete(apiUrl);
+        this._sourcesFetched.delete(apiUrl);
+        this._sourcesFetched.delete(`${id}|${apiUrl}`);
+      }
     }
   }
 }

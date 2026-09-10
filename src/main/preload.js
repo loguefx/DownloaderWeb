@@ -4,6 +4,19 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Safe, minimal API surface exposed to the renderer.
 contextBridge.exposeInMainWorld('api', {
+  platform: process.platform,
+  linuxBrowser: {
+    setBounds: (bounds) => ipcRenderer.invoke('linux-browser:bounds', bounds),
+    setVisible: (show) => ipcRenderer.invoke('linux-browser:set-visible', show),
+    loadURL: (url) => ipcRenderer.invoke('linux-browser:load-url', url),
+    goBack: () => ipcRenderer.invoke('linux-browser:go-back'),
+    goForward: () => ipcRenderer.invoke('linux-browser:go-forward'),
+    reload: () => ipcRenderer.invoke('linux-browser:reload'),
+    getURL: () => ipcRenderer.invoke('linux-browser:get-url'),
+    getWebContentsId: () => ipcRenderer.invoke('linux-browser:get-wc-id'),
+    exec: (code) => ipcRenderer.invoke('linux-browser:exec', code),
+    onEvent: (cb) => subscribe('linux-browser:event', cb)
+  },
   chooseFolder: () => ipcRenderer.invoke('choose-folder'),
   defaultDownloadDir: () => ipcRenderer.invoke('default-download-dir'),
 
@@ -20,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   queueRemove: (ids) => ipcRenderer.invoke('queue-remove', ids),
   queueClear: () => ipcRenderer.invoke('queue-clear'),
   queueSnapshot: () => ipcRenderer.invoke('queue-snapshot'),
+  logSnapshot: () => ipcRenderer.invoke('queue-log-snapshot'),
+  logClear: () => ipcRenderer.invoke('queue-log-clear'),
   vpnStatus: () => ipcRenderer.invoke('vpn-status'),
 
   scheduleList: () => ipcRenderer.invoke('schedule-list'),

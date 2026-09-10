@@ -1,11 +1,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const { Readable } = require('stream');
 const { spawn, spawnSync, execFileSync } = require('child_process');
-const { session } = require('electron');
+const { session, webContents } = require('electron');
 const config = require('./config');
 const hlscheck = require('./hlscheck');
 
@@ -280,6 +283,13 @@ function rmrf(p) {
   }
 }
 
+// Segment cache used only while ffmpeg remuxes to MP4. Keep it out of the
+// user's Downloads folder and always delete it afterwards.
+function hlsWorkDir(partPath) {
+  const id = crypto.createHash('sha1').update(String(partPath || '')).digest('hex').slice(0, 16);
+  return path.join(os.tmpdir(), `wvd-hls-${id}`);
+}
+
 function ffmpegFileArg(p) {
   const norm = String(p).replace(/\\/g, '/');
   if (/^[a-zA-Z]:\//.test(norm)) return `file:${norm}`;
@@ -300,6 +310,12 @@ async function prepareDownloadHeaders(detection) {
 function unlinkPart(partPath) {
   try {
     if (fs.existsSync(partPath)) fs.unlinkSync(partPath);
+  } catch (e) {
+    // ignore
+  }
+  rmrf(`${partPath}.hls`);
+  try {
+    fs.unlinkSync(`${partPath}.m3u8`);
   } catch (e) {
     // ignore
   }
@@ -351,7 +367,7 @@ async function downloadMp4(detection, partPath, opts = {}) {
   unlinkPart(partPath);
   const headers = mp4Headers(detection);
   try {
-    const sess = session.fromPartition(config.sessionPartition);
+    const sess = session.fromPartition(detection.sessionPartition || config.sessionPartition);
     if (sess && typeof sess.fetch === 'function') {
       const res = await sess.fetch(detection.url, { headers, signal: opts.signal });
       const code = res.status || 0;
@@ -453,67 +469,124 @@ async function downloadHls(detection, partPath, opts = {}) {
     return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
   }
 
-  const dir = `${partPath}.hls`;
+  const dir = hlsWorkDir(partPath);
   let localPlaylist = null;
   let allLocal = false;
   try {
-    const loaded = detection.playlistText
+    let loaded = detection.playlistText
       ? { text: detection.playlistText, base: detection.playlistBase || detection.url }
-      : await hlscheck.loadMediaPlaylist(detection.url, headers, signal);
-    const firstSeg = hlscheck.firstUri(loaded.text);
-    let disguised = hlscheck.isTokenCdn(detection.url, detection.embedUrl);
-    let pngSeen = false;
-    if (firstSeg && !detection.playerWebContentsId) {
-      try {
-        const buf = await hlscheck.fetchBuffer(firstSeg, headers, {
-          timeoutMs: 20000,
-          signal,
-          playerWebContentsId: detection.playerWebContentsId
-        });
-        pngSeen = hlscheck.isPng(buf);
-        if (pngSeen) disguised = true;
-      } catch (e) {
-        if (e && e.name === 'AbortError') throw e;
-        if (onLog) onLog(`Could not peek the first segment (${e.message || e}); will still pull parts via the browser session.`);
+      : null;
+    const boundPlayer =
+      hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl) &&
+      detection.playerWebContentsId != null;
+    if (!loaded && boundPlayer) {
+      const wc =
+        detection.playerWebContentsId != null
+          ? webContents.fromId(detection.playerWebContentsId)
+          : null;
+      const nPl = wc && wc._cdpPlaylists ? wc._cdpPlaylists.size : 0;
+      const nParts = wc && wc._cdpParts ? wc._cdpParts.size : 0;
+      if (onLog) {
+        onLog(
+          `Player debugger has ${nPl} playlist body(ies), ${nParts} part(s), ${
+            (wc && wc._cdpMsgs) || 0
+          } CDP events.`
+        );
+      }
+      const cached = hlscheck.cachedPlaylist(detection.playerWebContentsId, detection.url);
+      if (cached) {
+        if (onLog) onLog('Using the playlist the player already fetched.');
+        loaded = cached;
       }
     }
-    if (disguised) {
-      allLocal = true;
-      if (onLog) {
-        const viaPlayer = detection.playerWebContentsId != null;
-        onLog(
-          pngSeen
-            ? 'Stream segments are disguised (PNG-wrapped); downloading them through Chromium, then remuxing.'
-            : 'Token CDN stream; downloading segments through Chromium, then remuxing.'
+    if (!loaded && boundPlayer) {
+      try {
+        loaded = await hlscheck.loadMediaPlaylist(
+          detection.url,
+          headers,
+          signal,
+          detection.playerWebContentsId
         );
-        if (viaPlayer) onLog('Using the live player page to fetch segments (same origin as playback).');
+        if (onLog) onLog('Got the live player playlist; downloading its parts.');
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        if (onLog) onLog(`Player playlist fetch failed (${e.message || e}); will retry instead of recording MSE.`);
+        throw e;
       }
+    }
+    if (!loaded) {
+      try {
+        loaded = await hlscheck.loadMediaPlaylist(
+          detection.url,
+          headers,
+          signal,
+          detection.playerWebContentsId
+        );
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        const hasPlayer = detection.playerWebContentsId != null;
+        const bound = hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl);
+        if (!hasPlayer || !bound) throw e;
+        throw e;
+      }
+    }
+    const firstSeg = hlscheck.firstUri(loaded.text);
+    if (loaded.text) {
+      detection.playlistDuration = hlscheck.playlistMediaDuration(loaded.text);
+    }
+    let disguised = hlscheck.isTokenCdn(detection.url, detection.embedUrl);
+    let pngSeen = false;
+    if (loaded.mseOnly || !firstSeg) {
+      if (hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl)) {
+        throw new Error('Player did not yield a complete HLS playlist; not capturing MSE/WebM');
+      }
+      const wc =
+        detection.playerWebContentsId != null ? webContents.fromId(detection.playerWebContentsId) : null;
+      if (!wc || wc.isDestroyed()) {
+        throw new Error('CDN playlist unavailable and the player window is gone');
+      }
+      allLocal = true;
+      if (onLog) onLog('Capturing the live player buffer (no CDN playlist).');
       fs.mkdirSync(dir, { recursive: true });
-      if (
-        detection.playerWebContentsId != null &&
-        hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl)
-      ) {
+      localPlaylist = await hlscheck.captureLivePlayer(wc, dir, { signal, onProgress, onLog });
+    } else {
+      if (firstSeg && !detection.playerWebContentsId) {
         try {
-          const { webContents } = require('electron');
-          const wc = webContents.fromId(Number(detection.playerWebContentsId));
-          if (wc && !wc.isDestroyed()) {
-            const msePath = await hlscheck.harvestPlayerMse(wc, dir, { signal, onProgress, onLog });
-            return await spawnFfmpegCopy(msePath, partPath, opts);
-          }
+          const buf = await hlscheck.fetchBuffer(firstSeg, headers, {
+            timeoutMs: 20000,
+            signal,
+            playerWebContentsId: detection.playerWebContentsId
+          });
+          pngSeen = hlscheck.isPng(buf);
+          if (pngSeen) disguised = true;
         } catch (e) {
           if (e && e.name === 'AbortError') throw e;
-          if (onLog) onLog(`Direct player capture skipped (${e.message || e}); intercepting live CDN responses.`);
+          if (onLog) onLog(`Could not peek the first segment (${e.message || e}); will still pull parts via the browser session.`);
         }
       }
-      localPlaylist = await hlscheck.localizePlaylist(loaded.text, loaded.base, dir, headers, {
-        signal,
-        onProgress,
-        onLog,
-        playerWebContentsId: detection.playerWebContentsId
-      });
-    } else {
-      localPlaylist = `${partPath}.m3u8`;
-      fs.writeFileSync(localPlaylist, loaded.text, 'utf8');
+      if (disguised) {
+        allLocal = true;
+        if (onLog) {
+          const viaPlayer = detection.playerWebContentsId != null;
+          onLog(
+            pngSeen
+              ? 'Stream segments are disguised (PNG-wrapped); downloading them through Chromium, then remuxing.'
+              : 'Token CDN stream; downloading segments through Chromium, then remuxing.'
+          );
+          if (viaPlayer) onLog('Using the live player page to fetch segments (same origin as playback).');
+        }
+        fs.mkdirSync(dir, { recursive: true });
+        localPlaylist = await hlscheck.localizePlaylist(loaded.text, loaded.base, dir, headers, {
+          signal,
+          onProgress,
+          onLog,
+          playerWebContentsId: detection.playerWebContentsId
+        });
+      } else {
+        fs.mkdirSync(dir, { recursive: true });
+        localPlaylist = path.join(dir, 'playlist.m3u8');
+        fs.writeFileSync(localPlaylist, loaded.text, 'utf8');
+      }
     }
     const inputUrl = ffmpegFileArg(localPlaylist);
     return await spawnFfmpegHls(
@@ -532,14 +605,13 @@ async function downloadHls(detection, partPath, opts = {}) {
     if (allLocal || hlscheck.isTokenCdn(detection.url, detection.embedUrl)) throw err;
     return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
   } finally {
-    if (localPlaylist && !allLocal) {
-      try {
-        fs.unlinkSync(localPlaylist);
-      } catch (e) {
-        // ignore
-      }
-    }
     rmrf(dir);
+    rmrf(`${partPath}.hls`);
+    try {
+      fs.unlinkSync(`${partPath}.m3u8`);
+    } catch (e) {
+      // ignore
+    }
   }
 }
 
@@ -603,36 +675,6 @@ function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
     proc.on('close', (code) => {
       if (aborted) return reject(new AbortError());
       if (code === 0) return resolve(partPath);
-      if (/\.webm$/i.test(inputPath)) {
-        const recode = spawn(
-          ffmpegPath(),
-          [
-            '-y',
-            '-hide_banner',
-            '-loglevel',
-            'error',
-            '-i',
-            inputPath,
-            '-c:v',
-            'libx264',
-            '-c:a',
-            'aac',
-            '-movflags',
-            '+faststart',
-            '-f',
-            'mp4',
-            partPath
-          ],
-          { windowsHide: true }
-        );
-        recode.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
-        recode.on('close', (c2) => {
-          if (aborted) return reject(new AbortError());
-          if (c2 === 0) return resolve(partPath);
-          reject(new Error((stderrTail || `ffmpeg exited ${code}`).trim().slice(-500)));
-        });
-        return;
-      }
       reject(new Error((stderrTail || `ffmpeg exited ${code}`).trim().slice(-500)));
     });
   });
@@ -658,22 +700,35 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
       }
       if (localPlaylist || allLocal || /\.m3u8/i.test(detection.url || '')) args.push('-f', 'hls');
     }
+    args.push('-fflags', '+genpts', '-avoid_negative_ts', 'make_zero');
     args.push('-i', ffmpegFileArg(inputUrl));
+
+    const audioPl = /mse-video\.m3u8$/i.test(String(inputUrl || ''))
+      ? String(inputUrl).replace(/mse-video\.m3u8$/i, 'mse-audio.m3u8')
+      : '';
+    const hasMseAudio = !!(audioPl && fs.existsSync(audioPl));
+    if (hasMseAudio) {
+      args.push('-f', 'hls', '-i', ffmpegFileArg(audioPl));
+    }
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;
     if (hasExternalSub) args.push('-i', detection.subtitleUrl);
+    const fmp4Hls = /mse-(index|video)\.m3u8$/i.test(String(inputUrl || ''));
 
-    if (detection.embedSubs) {
+    if (hasMseAudio) {
+      args.push('-map', '0:v?', '-map', '1:a?', '-c', 'copy', '-dn', '-sn');
+    } else if (detection.embedSubs) {
       args.push('-map', '0:v:0', '-map', '0:a:0?');
       args.push('-map', hasExternalSub ? '1:0' : '0:s:0?');
       args.push('-c:v', 'copy', '-c:a', 'copy', '-c:s', 'mov_text');
-      args.push('-bsf:a', 'aac_adtstoasc');
+      if (!fmp4Hls) args.push('-bsf:a', 'aac_adtstoasc');
       args.push('-metadata:s:s:0', 'language=eng', '-disposition:s:0', 'default');
     } else if (detection.type === 'mp4') {
       args.push('-c', 'copy', '-dn', '-sn');
     } else {
       args.push('-map', '0:v?', '-map', '0:a?');
-      args.push('-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-dn', '-sn');
+      args.push('-c', 'copy', '-dn', '-sn');
+      if (!fmp4Hls) args.push('-bsf:a', 'aac_adtstoasc');
     }
     args.push('-f', 'mp4', partPath);
 
@@ -725,7 +780,11 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
         // Some CDNs serve the episode body as one huge segment and 502 on it. The
         // HLS demuxer moves on to the next segment and still exits 0, so without
         // this check a 45-second file would pass as a finished episode.
-        const shortfall = durationSec > 60 && writtenSec > 0 && writtenSec < durationSec * 0.9;
+        // MSE playlists invent EXTINF from player duration / fragment count, so
+        // ffmpeg's Duration line is not the real media length — don't reject a
+        // complete remux just because that estimate was high.
+        const shortfall =
+          !fmp4Hls && durationSec > 60 && writtenSec > 0 && writtenSec < durationSec * 0.9;
         if (shortfall) {
           const mins = (s) => `${Math.floor(s / 60)}m${String(Math.round(s % 60)).padStart(2, '0')}s`;
           return reject(
@@ -758,8 +817,11 @@ function describeFfmpegExit(code, stderrTail) {
   if (/403|forbidden|401|unauthorized/i.test(tail)) {
     return 'CDN rejected the stream (expired token or missing headers); will retry';
   }
-  if (/Invalid data found when processing input|Video: png/i.test(tail)) {
+  if (/Video: png/i.test(tail)) {
     return 'CDN disguised the video as PNG images; will retry with a fresh stream';
+  }
+  if (/Invalid data found when processing input/i.test(tail)) {
+    return 'Captured video parts could not be remuxed; will retry with a fresh stream';
   }
   return `ffmpeg exited with code ${code}: ${tail}`;
 }

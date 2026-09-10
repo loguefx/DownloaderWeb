@@ -14,6 +14,43 @@ const pending = require('./pending');
 const schedule = require('./schedule');
 const watcher = require('./watcher');
 
+if (!app || typeof app.commandLine === 'undefined') {
+  console.error(
+    'Electron started as Node instead of the desktop app (require("electron").app is missing).'
+  );
+  console.error(
+    'This usually means ELECTRON_RUN_AS_NODE is set (Cursor/VS Code terminals). Use `npm start`.'
+  );
+  process.exit(1);
+}
+
+// Linux-only Chromium flags. Windows keeps the stock GPU + <webview> path.
+const linuxBrowser = process.platform === 'linux' ? require('./linuxbrowser') : null;
+if (linuxBrowser) {
+  app.commandLine.appendSwitch('no-sandbox');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('ozone-platform-hint', 'x11');
+  app.commandLine.appendSwitch('ozone-platform', 'x11');
+  app.commandLine.appendSwitch('ignore-gpu-blocklist');
+  // Keep GPU compositing (needed to draw frames). Decode in software so AMD
+  // VAAPI / Mesa overlays do not present a black video layer.
+  app.commandLine.appendSwitch('disable-accelerated-video-decode');
+  app.commandLine.appendSwitch('disable-accelerated-video-encode');
+  app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames');
+  // Cross-origin player iframes often fail to start media under site isolation
+  // in Electron's BrowserView. Windows <webview> does not need this.
+  app.commandLine.appendSwitch('disable-site-isolation-trials');
+  try {
+    const st = fs.statfsSync('/dev/shm');
+    const bytes = Number(st.bavail) * Number(st.bsize);
+    if (bytes > 0 && bytes < 256 * 1024 * 1024) {
+      app.commandLine.appendSwitch('disable-dev-shm-usage');
+    }
+  } catch (e) {
+    // leave /dev/shm enabled
+  }
+}
+
 // Suppress noisy Chromium ERROR logs (e.g. WebRTC "Failed to resolve address
 // for stun.cloudflare.com" - harmless when STUN/DNS is blocked by the VPN).
 app.commandLine.appendSwitch('log-level', '3');
@@ -30,10 +67,27 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 // Windows Chromium marks off-screen / covered windows as occluded and freezes
 // their media pipeline. Bulk discovery uses an off-screen window, so without
 // this, stream resolution never fires on Windows while the same code works on Linux.
-app.commandLine.appendSwitch(
-  'disable-features',
-  'CalculateNativeWinOcclusion,ThirdPartyCookiePhaseout,TrackingProtection3pcd'
-);
+const disabledFeatures = [
+  'CalculateNativeWinOcclusion',
+  'ThirdPartyCookiePhaseout',
+  'TrackingProtection3pcd',
+  // One-shot peakstorm /s/ playlists are spent by Chrome speculation prefetch
+  // before HLS.js can play them.
+  'SpeculationRulesPrefetch',
+  'Prerender2'
+];
+if (process.platform === 'linux') {
+  disabledFeatures.push(
+    'VaapiVideoDecoder',
+    'VaapiVideoEncoder',
+    'VaapiVideoDecodeLinuxGL',
+    // Nested player iframes otherwise become OOPIF processes whose media
+    // never attributes to the discovery window on Linux.
+    'IsolateOrigins',
+    'site-per-process'
+  );
+}
+app.commandLine.appendSwitch('disable-features', disabledFeatures.join(','));
 
 // A realistic Chrome User-Agent. Many video hosts/players serve a broken page or
 // refuse to play when they see Electron's default UA. We derive the real bundled
@@ -46,8 +100,12 @@ const CHROME_UA =
 app.userAgentFallback = CHROME_UA;
 
 let mainWindow = null;
+let rendererReady = false;
+const pendingSends = [];
+const logLines = [];
 
 function createWindow() {
+  rendererReady = false;
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -64,15 +122,37 @@ function createWindow() {
     }
   });
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    rendererReady = true;
+    const queued = pendingSends.splice(0, pendingSends.length);
+    for (const { channel, payload } of queued) {
+      if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+    }
+  });
+
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  if (linuxBrowser) linuxBrowser.attach(mainWindow, CHROME_UA);
   mainWindow.maximize();
-  mainWindow.on('closed', () => (mainWindow = null));
+  mainWindow.on('closed', () => {
+    rendererReady = false;
+    mainWindow = null;
+  });
 }
 
 function send(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload);
+  if (channel === 'queue:log') {
+    logLines.push(payload);
+    if (logLines.length > 500) logLines.shift();
   }
+  const canSend = mainWindow && !mainWindow.isDestroyed() && rendererReady;
+  if (!canSend) {
+    if (channel !== 'queue:log') {
+      pendingSends.push({ channel, payload });
+      if (pendingSends.length > 600) pendingSends.shift();
+    }
+    return;
+  }
+  mainWindow.webContents.send(channel, payload);
 }
 
 function wireEvents() {
@@ -85,6 +165,11 @@ function wireEvents() {
 }
 
 function wireIpc() {
+  if (linuxBrowser) {
+    linuxBrowser.setLogger((payload) => send('queue:log', payload));
+    linuxBrowser.wireIpc();
+  }
+
   ipcMain.handle('choose-folder', async () => {
     const res = await dialog.showOpenDialog(mainWindow, {
       title: 'Choose download folder',
@@ -110,17 +195,21 @@ function wireIpc() {
     const watchUrl = String(pageUrl || '').trim();
     const profile = watchUrl ? sites.resolve(watchUrl) : null;
     if (profile && profile.id === 'sflix' && watchUrl) {
-      return bulk.queueOne(
-        {
-          url: watchUrl,
-          series: (meta && (meta.series || meta.name)) || 'Video',
-          season: meta && meta.season,
-          episode: meta && meta.episode,
-          mode: mode || 'dub',
-          outputRoot
-        },
-        onLog
-      );
+      const u = String((detection && detection.url) || '');
+      const usable = /\.m3u8|\.mp4(\?|$)|\/_stream(?:\?|$)|\/hls\//i.test(u);
+      if (!usable) {
+        return bulk.queueOne(
+          {
+            url: watchUrl,
+            series: (meta && (meta.series || meta.name)) || 'Video',
+            season: meta && meta.season,
+            episode: meta && meta.episode,
+            mode: mode || 'dub',
+            outputRoot
+          },
+          onLog
+        );
+      }
     }
     const label =
       (meta && (meta.series || meta.name)) +
@@ -180,6 +269,11 @@ function wireIpc() {
     return true;
   });
   ipcMain.handle('queue-snapshot', () => manager.snapshot());
+  ipcMain.handle('queue-log-snapshot', () => logLines.slice());
+  ipcMain.handle('queue-log-clear', () => {
+    logLines.length = 0;
+    return true;
+  });
   ipcMain.handle('vpn-status', () => ({ connected: vpn.isConnected() }));
 
   // Scheduled series (auto-pull new episodes weekly).
@@ -202,13 +296,40 @@ function wireIpc() {
   ipcMain.handle('schedule-check', () => watcher.checkSchedules());
 }
 
+app.on('web-contents-created', (_e, contents) => {
+  if (contents.getType() !== 'webview') return;
+  try {
+    contents.setBackgroundThrottling(false);
+  } catch (err) {
+    // ignore
+  }
+});
+
 app.whenReady().then(() => {
   // Ensure the shared session exists and looks like normal Chrome to sites.
   const ses = session.fromPartition(config.sessionPartition);
   ses.setUserAgent(CHROME_UA);
-  // Some players probe Client Hints; keep them consistent with the UA.
+  ses.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === 'media' || permission === 'fullscreen' || permission === 'pointerLock') {
+      return callback(true);
+    }
+    callback(false);
+  });
   ses.webRequest.onBeforeSendHeaders((details, cb) => {
     details.requestHeaders['User-Agent'] = CHROME_UA;
+    details.requestHeaders['Sec-CH-UA-Platform'] = '"Windows"';
+    details.requestHeaders['Sec-CH-UA-Mobile'] = '?0';
+    const purpose = String(
+      details.requestHeaders['Sec-Purpose'] ||
+        details.requestHeaders['sec-purpose'] ||
+        details.requestHeaders['Purpose'] ||
+        details.requestHeaders['purpose'] ||
+        ''
+    );
+    if (/prefetch|prerender/i.test(purpose) && /peakstorm|\.m3u8/i.test(details.url || '')) {
+      console.log(`[net] cancelled prefetch ${String(details.url).slice(0, 80)}`);
+      return cb({ cancel: true });
+    }
     cb({ requestHeaders: details.requestHeaders });
   });
   sites.init(app.getPath('userData'));
@@ -219,6 +340,21 @@ app.whenReady().then(() => {
   wireEvents();
   wireIpc();
   createWindow();
+  if (linuxBrowser) {
+    try {
+      const st = fs.statfsSync('/dev/shm');
+      const mb = Math.round((Number(st.bavail) * Number(st.bsize)) / 1024 / 1024);
+      if (mb < 256) {
+        send('queue:log', {
+          ts: Date.now(),
+          msg:
+            `Linux /dev/shm is only ${mb} MB. Video decode will fail if the app was started from Cursor. Run from a normal terminal: npm start`
+        });
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
 
   const onLog = (msg) => send('queue:log', { ts: Date.now(), msg });
 
@@ -242,7 +378,9 @@ app.whenReady().then(() => {
       baseUrl: rec.baseUrl,
       mode: rec.mode
     };
-    const skipSources = [];
+    const skipSources = (Array.isArray(rec.skipSources) ? rec.skipSources : [])
+      .map((s) => String(s || '').trim())
+      .filter((s) => s && !/vidfast|server\s*2/i.test(s));
     return {
       discover: bulk.makeDiscover(rec.url, onLog, rec.mode, () => ({ skipSources })),
       skipSources,
@@ -256,6 +394,14 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  try {
+    manager._persist();
+  } catch (e) {
+    // ignore
+  }
 });
 
 app.on('window-all-closed', () => {

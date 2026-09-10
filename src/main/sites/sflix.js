@@ -47,18 +47,29 @@ module.exports = {
     sourceSelector: '.player-tab-btn',
     sourceWaitMs: 14000,
     pageSettleMs: 3000,
-    // vidapi never yields a playlist. vidfast/peakstorm play but their
-    // segments cannot be fetched. embedmaster is blob/Turnstile offscreen;
-    // multiembed is Cloudflare. Opening those as extra windows froze the
-    // app and burned the 138s stall budget before NontonGo (the host that
-    // actually downloads) was reached. Skip them and go to Server 5.
+    // vidapi never yields a playlist. embedmaster is blob/Turnstile offscreen;
+    // multiembed is Cloudflare. Windows skips vidfast (segments are not
+    // fetchable from Node) and uses NontonGo progressive MP4 at 5-wide.
+    // Linux NontonGo/EmbedFlix never requests /_stream (nested Cloudflare
+    // iframe), so skip it and capture Vidfast. Each episode gets its own
+    // Chromium partition so five live players can run without sharing tokens.
     maxSources: 5,
     skipEmbedHosts: [
       /vidapi\./i,
-      /vidfast\./i,
+      ...(process.platform === 'win32' ? [/vidfast\./i] : [/nontongo/i]),
       /embedmaster\.|embdmstrplayer/i,
       /multiembed\.|streamingnow\.mov/i
-    ]
+    ],
+    preferEmbedHosts: process.platform === 'win32' ? [/nontongo/i] : [],
+    deferEmbedHosts: []
+  },
+
+  // NontonGo MP4 downloads like Windows: 5 files at once, prefetch the next
+  // episode. Vidfast token-CDN capture is serialized in the queue so overlapping
+  // live players cannot spend one-shot /s/ tokens.
+  download: {
+    concurrency: 5,
+    prefetchDiscover: 1
   },
 
   urlTemplates: [

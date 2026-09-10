@@ -127,6 +127,32 @@ function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function isCaptureJunk(name) {
+  const n = String(name || '');
+  return /\.part\.hls$/i.test(n) || /\.hls$/i.test(n) || /\.part\.m3u8$/i.test(n);
+}
+
+function cleanupCaptureJunk(dir) {
+  if (!dir) return 0;
+  let ents = [];
+  try {
+    ents = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    return 0;
+  }
+  let n = 0;
+  for (const ent of ents) {
+    if (!isCaptureJunk(ent.name)) continue;
+    try {
+      fs.rmSync(path.join(dir, ent.name), { recursive: true, force: true });
+      n += 1;
+    } catch (e) {
+      // ignore
+    }
+  }
+  return n;
+}
+
 module.exports = {
   sanitize,
   pad,
@@ -136,5 +162,6 @@ module.exports = {
   buildOutputPath,
   expectedPath,
   existingEpisodeFile,
-  ensureDir
+  ensureDir,
+  cleanupCaptureJunk
 };

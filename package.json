@@ -6,11 +6,15 @@
   "author": "WebVideoDownloader <dev@webvideodownloader.local>",
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start.js",
     "postinstall": "node scripts/postinstall.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
+  },
+  "allowScripts": {
+    "electron": true,
+    "ffmpeg-static": true
   },
   "dependencies": {
     "ffmpeg-static": "^5.2.0",

@@ -55,6 +55,13 @@ npm install
 npm start
 ```
 
+On npm 10+, Electron and ffmpeg download via install scripts. This repo allows
+those two packages in `package.json` (`allowScripts`). If `npm start` fails with
+`ENOENT` spawning `electron`, run `npm install-scripts approve electron ffmpeg-static`
+and `npm install` again. Do not copy a Windows `node_modules` onto Linux.
+Use `npm start` (not `electron .`) so Linux launch can trim Electron's path.txt
+and clear `ELECTRON_RUN_AS_NODE` from Cursor/VS Code terminals.
+
 ### CachyOS / Arch quick start
 
 CachyOS is Arch-based, so everything installs from the official repos with

@@ -18,7 +18,9 @@ module.exports = {
       /\.mp4(\?|$)/i,
       /\/hls\//i,
       /\/playlist(?:\.m3u8)?(?:\?|$)/i,
-      /\/master(?:\.m3u8)?(?:\?|$)/i
+      /\/master(?:\.m3u8)?(?:\?|$)/i,
+      // NontonGo / EmbedFlix token progressive MP4 (no file extension).
+      /\/_stream(?:\?|$)/i
     ],
     contentTypePatterns: [
       /application\/vnd\.apple\.mpegurl/i,
@@ -68,10 +70,16 @@ module.exports = {
     useCliFallback: true // try `mullvad status` if the HTTP check is inconclusive
   },
 
-  // download.concurrency: how many episodes resolve/download at once.
+  // download.concurrency: how many files write at once. Discovery of the next
+  // episode can run ahead of that (see prefetchDiscover) so the queue does not
+  // sit idle between files. Site profiles may override both. Player-bound
+  // token CDNs (Vidfast) still serialize in the queue even when concurrency is 5.
   download: {
-    // How many episodes to download at the same time.
+    // How many episodes to download at the same time (Aniwave and others).
     concurrency: 5,
+    // While one file is downloading, resolve the next episode so it can start
+    // the moment a download slot frees.
+    prefetchDiscover: 1,
     // How many episode pages may be opened at once. Stream discovery is Chromium-
     // heavy; 5 overlapping players make embed APIs drop the host (iframe ->
     // https://undefined/...) and episodes fail with "no DUB server produced a stream".
@@ -83,8 +91,8 @@ module.exports = {
     rateLimitCooldownMs: 30000,
     maxRetries: 6,
     retryBaseDelayMs: 2000,
-    // Cap for endless retries of timeouts / 429s (never mark Failed just because
-    // a DUB server was slow under load).
+    // Cap for the delay between retries. After maxRetries failed discoveries,
+    // the item is moved to the back of the queue so later episodes can start.
     retryMaxDelayMs: 60000,
     // Minimum acceptable output size (bytes) before a file is considered real.
     minFileBytes: 64 * 1024,
