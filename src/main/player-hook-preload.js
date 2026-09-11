@@ -20,7 +20,7 @@
 
   const keep = (url, buf) => {
     if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push(String(url).slice(0, 120));
-    if (!url || !/peakstorm|ashencloud|vidfast|\/r6\/|\/r2\//i.test(String(url))) return;
+    if (!url || !/peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|vidfast|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger|\/r6\/|\/r2\/|\/vd\//i.test(String(url))) return;
     if (window.__wvdParts[url]) return;
     try {
       const bytes =
@@ -207,7 +207,7 @@
   window.fetch = function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
     return origFetch(input, init).then((res) => {
-      if (/peakstorm|ashencloud|vidfast|\/r6\/|\/r2\//i.test(url)) {
+      if (/peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|vidfast|\/r6\/|\/r2\/|\/vd\//i.test(url)) {
         res
           .clone()
           .arrayBuffer()

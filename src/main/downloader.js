@@ -283,8 +283,9 @@ function rmrf(p) {
   }
 }
 
-// Segment cache used only while ffmpeg remuxes to MP4. Keep it out of the
-// user's Downloads folder and always delete it afterwards.
+// Segment cache used while ffmpeg remuxes to MP4. Keep it out of Downloads.
+// Delete it after a successful remux; keep it on failure so the next try
+// does not re-download hundreds of parts from scratch.
 function hlsWorkDir(partPath) {
   const id = crypto.createHash('sha1').update(String(partPath || '')).digest('hex').slice(0, 16);
   return path.join(os.tmpdir(), `wvd-hls-${id}`);
@@ -472,14 +473,13 @@ async function downloadHls(detection, partPath, opts = {}) {
   const dir = hlsWorkDir(partPath);
   let localPlaylist = null;
   let allLocal = false;
+  let keepCache = false;
   try {
-    let loaded = detection.playlistText
-      ? { text: detection.playlistText, base: detection.playlistBase || detection.url }
-      : null;
+    let loaded = null;
     const boundPlayer =
       hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl) &&
       detection.playerWebContentsId != null;
-    if (!loaded && boundPlayer) {
+    if (boundPlayer) {
       const wc =
         detection.playerWebContentsId != null
           ? webContents.fromId(detection.playerWebContentsId)
@@ -493,40 +493,29 @@ async function downloadHls(detection, partPath, opts = {}) {
           } CDP events.`
         );
       }
-      const cached = hlscheck.cachedPlaylist(detection.playerWebContentsId, detection.url);
-      if (cached) {
-        if (onLog) onLog('Using the playlist the player already fetched.');
-        loaded = cached;
-      }
     }
-    if (!loaded && boundPlayer) {
+    const startUrl = detection.url;
+    const startText =
+      detection.playlistText && !hlscheck.isMasterPlaylist(detection.playlistText)
+        ? { text: detection.playlistText, base: detection.playlistBase || detection.url }
+        : null;
+    if (startText) loaded = startText;
+    if (!loaded || hlscheck.isMasterPlaylist(loaded.text)) {
       try {
         loaded = await hlscheck.loadMediaPlaylist(
-          detection.url,
+          startUrl,
           headers,
           signal,
           detection.playerWebContentsId
         );
-        if (onLog) onLog('Got the live player playlist; downloading its parts.');
+        if (onLog) {
+          onLog(
+            'Using media playlist: ' + hlscheck.describeMediaPlaylist(loaded.base, loaded.text)
+          );
+        }
       } catch (e) {
         if (e && e.name === 'AbortError') throw e;
-        if (onLog) onLog(`Player playlist fetch failed (${e.message || e}); will retry instead of recording MSE.`);
-        throw e;
-      }
-    }
-    if (!loaded) {
-      try {
-        loaded = await hlscheck.loadMediaPlaylist(
-          detection.url,
-          headers,
-          signal,
-          detection.playerWebContentsId
-        );
-      } catch (e) {
-        if (e && e.name === 'AbortError') throw e;
-        const hasPlayer = detection.playerWebContentsId != null;
-        const bound = hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl);
-        if (!hasPlayer || !bound) throw e;
+        if (onLog) onLog(`Player playlist fetch failed (${e.message || e}); will retry.`);
         throw e;
       }
     }
@@ -600,12 +589,14 @@ async function downloadHls(detection, partPath, opts = {}) {
       allLocal
     );
   } catch (err) {
+    keepCache = !!(err && err.name !== 'AbortError');
     if (err && err.name === 'AbortError') throw err;
     if (err && (err.kind === 'html' || err.kind === 'json')) throw err;
     if (allLocal || hlscheck.isTokenCdn(detection.url, detection.embedUrl)) throw err;
+    keepCache = false;
     return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
   } finally {
-    rmrf(dir);
+    if (!keepCache) rmrf(dir);
     rmrf(`${partPath}.hls`);
     try {
       fs.unlinkSync(`${partPath}.m3u8`);

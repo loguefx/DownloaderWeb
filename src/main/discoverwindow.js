@@ -103,9 +103,9 @@ function cloak(win) {
 }
 
 // Capture needs Chromium to actually play the video (parked-below-monitor
-// windows stop decoding, so HLS.js only buffers ~7% then stalls). Keep the
-// window mapped on the real display, invisible, and click-through — not
-// reveal(), which shows a black loading chrome the user cannot close.
+// windows stop decoding, so HLS.js only buffers ~7% then stalls). Keep a
+// 1-cell mapped window on the real display, click-through and nearly
+// transparent — not reveal(), which shows a full player the user cannot close.
 function cloakForPlayback(win, size = null) {
   cloak(win);
   if (!win || win.isDestroyed()) return;
@@ -122,18 +122,21 @@ function cloakForPlayback(win, size = null) {
     // ignore
   }
   try {
-    win.setOpacity(1);
+    win.setOpacity(0.01);
   } catch (e) {
     // ignore
   }
   try {
     const d = screen.getPrimaryDisplay();
     const b = d.workArea || d.bounds;
-    const width = Math.max(320, (size && size.width) || 320);
-    const height = Math.max(180, (size && size.height) || 180);
+    // Window size does not influence the rendition here: measured identical
+    // per-episode results with an 8x8 and a 1920x1080 playback window, so keep
+    // the small one-cell park.
+    const width = Math.max(8, (size && size.width) || 8);
+    const height = Math.max(8, (size && size.height) || 8);
     win.setBounds({
-      x: Math.max(b.x, b.x + (b.width || 1280) - width - 20),
-      y: Math.max(b.y, b.y + (b.height || 720) - height - 20),
+      x: Math.max(b.x, b.x + (b.width || 1280) - width),
+      y: Math.max(b.y, b.y + (b.height || 720) - height),
       width,
       height
     });
@@ -142,6 +145,21 @@ function cloakForPlayback(win, size = null) {
   }
   try {
     win.setIgnoreMouseEvents(true, { forward: true });
+  } catch (e) {
+    // ignore
+  }
+  try {
+    win.setSkipTaskbar(true);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    win.setFocusable(false);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    win.setTitle(' ');
   } catch (e) {
     // ignore
   }
@@ -223,13 +241,8 @@ function attachOpenHandler(win, owner, partition) {
     } catch (e) {
       // ignore
     }
-    cloak(child);
-    try {
-      child.showInactive();
-    } catch (e) {
-      // ignore
-    }
-    cloak(child);
+    if (process.platform === 'linux') cloakForPlayback(child);
+    else cloak(child);
     attachOpenHandler(child, owner, partition);
   });
 }

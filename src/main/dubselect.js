@@ -679,8 +679,7 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
     return null;
   }
   try {
-    const embedPlayer = /nontongo|embedflix|videoplayback/i.test(String(embedUrl || ''));
-    cloakForPlayback(win, embedPlayer ? { width: 960, height: 540 } : null);
+    cloakForPlayback(win);
   } catch (e) {
     // ignore
   }
@@ -1136,10 +1135,20 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     // SFlix (and similar) store the real player on data-player-url. A JS click
     // often leaves #main-player on Server 1, so Server 2/3 were opened as vidapi
     // and looked dead. Prefer the tab's own URL over whatever iframe is showing.
-    const tabPlayer = clicked.playerUrl || '';
+    const tabPlayerRaw = clicked.playerUrl || '';
     const skipHosts = dub.skipEmbedHosts || [];
+    let tabPlayer = tabPlayerRaw;
+    if (typeof profile.injectPlayerUrl === 'function' && wc._wvdMediaId) {
+      tabPlayer = profile.injectPlayerUrl(tabPlayer, wc._wvdMediaId);
+    }
     if (tabPlayer && skipHosts.some((re) => re && re.test(tabPlayer))) {
       onLog(`Skipping "${src.label || src.index}" player ${tabPlayer}; this embed cannot be downloaded.`);
+      continue;
+    }
+    if (typeof profile.playerUrlNeedsId === 'function' && profile.playerUrlNeedsId(tabPlayer)) {
+      onLog(
+        `Skipping "${src.label || src.index}" player ${tabPlayer || tabPlayerRaw}; missing IMDB/TMDB id.`
+      );
       continue;
     }
     let frames = [];
@@ -1225,9 +1234,24 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
           cached = hlscheck.cachedPlaylist(pid, arrived.url);
         }
         if (cached) {
-          arrived.playlistText = cached.text;
-          arrived.playlistBase = cached.base;
-          onLog(`Captured "${src.label || src.index}" playlist from the player debugger.`);
+          try {
+            const loaded = await hlscheck.loadMediaPlaylist(
+              arrived.url,
+              arrived.headers || {},
+              signal,
+              pid
+            );
+            arrived.playlistText = loaded.text;
+            arrived.playlistBase = loaded.base;
+            arrived.url = loaded.base;
+            onLog(
+              `Captured "${src.label || src.index}" ${hlscheck.describeMediaPlaylist(loaded.base, loaded.text)}.`
+            );
+          } catch (e) {
+            arrived.playlistText = cached.text;
+            arrived.playlistBase = cached.base;
+            onLog(`Captured "${src.label || src.index}" playlist from the player debugger.`);
+          }
         }
       } else {
         onLog(`Checking whether "${src.label || src.index}" playlist is complete...`);

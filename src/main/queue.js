@@ -77,6 +77,7 @@ class DownloadManager extends EventEmitter {
         error: null,
         attempts: 0,
         finalPath: null,
+        expectedDuration: 0,
         bytes: 0,
         stopRunOnFail: false, // bulk sets true; single/watcher leave false
         onUnavailable: null,
@@ -336,8 +337,14 @@ class DownloadManager extends EventEmitter {
         organizer.cleanupCaptureJunk(path.dirname(finalPath));
         const partPath = finalPath + '.part';
         const existing = fs.existsSync(finalPath) ? finalPath : fs.existsSync(partPath) ? partPath : '';
-        if (existing) {
-          const already = await verifyFile(existing);
+        // A .part is an aborted remux until proven otherwise. verifyFile with no
+        // minDuration only asks for 20s and 64KB, so promoting one on that basis
+        // renamed truncated files to .mp4 and reported them Completed. Only trust
+        // a .part when a previous attempt recorded how long the episode runs.
+        const expected = item.expectedDuration > 0 ? item.expectedDuration : 0;
+        const trustable = existing && (existing === finalPath || expected > 0);
+        if (trustable) {
+          const already = await verifyFile(existing, expected ? { minDuration: expected } : {});
           if (already.ok) {
             if (existing === partPath) fs.renameSync(partPath, finalPath);
             item.status = 'done';
@@ -394,11 +401,11 @@ class DownloadManager extends EventEmitter {
               this.items.splice(idx, 1);
               this.items.push(item);
             }
-            item.status = 'queued';
+            item.status = 'failed';
             this._emit();
             this._log(
               `Gave up on "${item.label}" after ${item.attempts} tries (${reason}). ` +
-                'Moving it to the back of the queue so other downloads can start.'
+                'Stopped retrying so other downloads can start.'
             );
             return { fatal: false };
           }
@@ -416,6 +423,12 @@ class DownloadManager extends EventEmitter {
         }
 
         const detection = (outcome && outcome.detection) || outcome;
+
+        // Remembered so a later resume can hold a leftover .part to the same
+        // 90%-of-runtime bar the post-download check uses.
+        if (detection && detection.playlistDuration > 0) {
+          item.expectedDuration = detection.playlistDuration;
+        }
 
         item._playerBoundDownload = !!(
           detection && hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl)
@@ -592,6 +605,7 @@ class DownloadManager extends EventEmitter {
           status: it.status,
           attempts: it.attempts || 0,
           skipSources: Array.isArray(it.skipSources) ? it.skipSources : [],
+          expectedDuration: it.expectedDuration || 0,
           baseUrl: it.baseUrl || it.url || null
         }));
       fs.writeFileSync(this._manifestPath(), JSON.stringify(data, null, 2));
@@ -641,7 +655,11 @@ class DownloadManager extends EventEmitter {
             key: rec.key,
             stopRunOnFail: rec.stopRunOnFail,
             skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],
-            attempts: rec.attempts || 0
+            expectedDuration: rec.expectedDuration || 0,
+            // Carrying the old count over meant a restored item that already sat
+            // at maxRetries was marked failed by its first timeout this session,
+            // so whole shows died at once. The in-session cap still stops runaways.
+            attempts: 0
           },
           extra
         )

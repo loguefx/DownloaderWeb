@@ -17,6 +17,39 @@ const zlib = require('zlib');
 // sits silent until the stall watchdog kills the episode.
 const PROBE_MS = 8000;
 
+const CDN_HOST_RE =
+  /peakstorm|vidfast|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|cybergate|quietraven|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger/i;
+const CDN_PATH_RE = /\/r6\/|\/r2\/|\/vd\//i;
+const PAGE_CDN_RE =
+  'peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|vidfast|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger|\\/r6\\/|\\/r2\\/|\\/vd\\/';
+const CDP_FETCH_PATTERNS = [
+  { urlPattern: '*peakstorm*', requestStage: 'Response' },
+  { urlPattern: '*ashencloud*', requestStage: 'Response' },
+  { urlPattern: '*ashenlion*', requestStage: 'Response' },
+  { urlPattern: '*orbitnorth*', requestStage: 'Response' },
+  { urlPattern: '*hiddenmesa*', requestStage: 'Response' },
+  { urlPattern: '*solidbear*', requestStage: 'Response' },
+  { urlPattern: '*primecomet*', requestStage: 'Response' },
+  { urlPattern: '*calmcanvas*', requestStage: 'Response' },
+  { urlPattern: '*nobleember*', requestStage: 'Response' },
+  { urlPattern: '*plainorbit*', requestStage: 'Response' },
+  { urlPattern: '*nobletrail*', requestStage: 'Response' },
+  { urlPattern: '*rapidtree*', requestStage: 'Response' },
+  { urlPattern: '*metaldisk*', requestStage: 'Response' },
+  { urlPattern: '*/r2/*', requestStage: 'Response' },
+  { urlPattern: '*/r6/*', requestStage: 'Response' },
+  { urlPattern: '*/vd/*', requestStage: 'Response' }
+];
+const CDP_BODY_MAX = 12 * 1024 * 1024;
+const fetchBodyQueues = new WeakMap();
+
+function enqueueFetchBodyCopy(wc, fn) {
+  const prev = (wc && fetchBodyQueues.get(wc)) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  if (wc) fetchBodyQueues.set(wc, run.catch(() => {}));
+  return run;
+}
+
 function finishOnce() {
   let done = false;
   return (fn) => (v) => {
@@ -157,6 +190,23 @@ function looksLikePlaylist(text) {
   return /^#EXTM3U/m.test(text || '');
 }
 
+function isMasterPlaylist(text) {
+  const t = String(text || '');
+  return /#EXT-X-STREAM-INF/i.test(t) && !/#EXTINF:/i.test(t);
+}
+
+function isMediaPlaylist(text) {
+  return /#EXTINF:/i.test(String(text || ''));
+}
+
+function playlistPathname(url) {
+  try {
+    return new URL(url).pathname;
+  } catch (e) {
+    return String(url || '').split('?')[0];
+  }
+}
+
 function playlistFromBuffer(buf, url) {
   if (!buf || !buf.length) return null;
   const utf8 = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf);
@@ -243,6 +293,55 @@ function bestVariantUri(playlist, base) {
   }
 }
 
+// The player picks its own rendition by ABR, and the window.Hls hook in
+// player-hook-preload never lands on bundlers that keep hls.js module-scoped
+// (vidfast). With several captures running at once ABR reads the contention as
+// low bandwidth and settles on 360-800p, so we harvest a downgraded stream.
+// Serving a master that advertises only the best variant removes the choice.
+// EXT-X-MEDIA rows stay so the variant's AUDIO/SUBTITLES groups still resolve.
+function trimMasterToBest(text, base) {
+  if (!isMasterPlaylist(text)) return '';
+  const best = bestVariantUri(text, base);
+  if (!best) return '';
+  const lines = String(text).split(/\r?\n/);
+  const out = [];
+  let kept = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^#EXT-X-STREAM-INF:/i.test(lines[i].trim())) {
+      out.push(lines[i]);
+      continue;
+    }
+    let j = i + 1;
+    while (j < lines.length && (!lines[j].trim() || lines[j].trim().startsWith('#'))) j++;
+    if (j >= lines.length) break;
+    let abs = '';
+    try {
+      abs = new URL(lines[j].trim(), base).toString();
+    } catch (e) {
+      abs = '';
+    }
+    if (!kept && abs === best) {
+      out.push(lines[i].trim(), lines[j].trim());
+      kept = true;
+    }
+    i = j;
+  }
+  if (!kept) return '';
+  return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+}
+
+// Replaying the upstream headers keeps CORS intact; the body length and any
+// content-encoding no longer describe what we are about to send.
+function fulfillHeadersFrom(headers) {
+  const out = [];
+  for (const h of headers || []) {
+    if (!h || !h.name) continue;
+    if (/^(content-length|content-encoding)$/i.test(h.name)) continue;
+    out.push({ name: String(h.name), value: String(h.value) });
+  }
+  return out;
+}
+
 function playlistMediaDuration(text) {
   let dur = 0;
   for (const m of String(text || '').matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
@@ -250,16 +349,15 @@ function playlistMediaDuration(text) {
 }
 
 function mediaPlaylistScore(url, text) {
-  const n = (String(text).match(/^#EXTINF/gm) || []).length || 1;
+  if (isMasterPlaylist(text)) return -1e9;
+  const n = (String(text).match(/^#EXTINF/gm) || []).length || 0;
   let dur = 0;
   for (const m of String(text).matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
-  const avg = dur / n;
-  let score = avg;
-  if (/\/r2\//i.test(url)) score += 1000;
-  if (/peakstorm\.top\/s\//i.test(url)) score -= 200;
-  if (/#EXT-X-STREAM-INF/i.test(text)) score += 5000;
-  const inf = String(text).match(/#EXT-X-STREAM-INF:[^\n]+/i);
-  if (inf) score += variantScore(parseStreamInf(inf[0])) / 1e12;
+  let score = n * 10 + dur;
+  if (/\/r2\//i.test(url) || /index-s1080p/i.test(url)) score += 5000;
+  if (/index-s720p/i.test(url)) score += 2000;
+  if (/index-s480p/i.test(url)) score += 200;
+  if (/peakstorm\.top\/s\//i.test(url)) score -= 500;
   return score;
 }
 
@@ -274,7 +372,11 @@ function describeMediaPlaylist(url, text) {
   if (info.bw) parts.push(`${Math.round(info.bw / 1000)}kbps`);
   if (n) parts.push(`${n} part(s)`);
   if (dur) parts.push(`${Math.round(dur)}s`);
-  if (/\/r2\//i.test(url || '')) parts.push('high-bitrate');
+  // Deliberately not claiming a quality here: this used to print "high-bitrate"
+  // for any /r2/ URL, which labelled 640x360 captures as high-bitrate and sent
+  // every quality investigation down the wrong path. A media playlist does not
+  // say what resolution it carries.
+  if (/\/r2\//i.test(url || '')) parts.push('vod');
   return parts.join(', ') || String(url || '').slice(0, 80);
 }
 
@@ -358,7 +460,17 @@ function cachedPlaylist(playerWebContentsId, url) {
     const text = wc._cdpPlaylists.get(want);
     if (looksLikePlaylist(text)) return { text, base: want };
   }
-  if (want) return null;
+  if (want) {
+    const wantPath = playlistPathname(want);
+    const wantName = wantPath.split('/').filter(Boolean).pop() || '';
+    for (const [u, text] of wc._cdpPlaylists) {
+      if (!looksLikePlaylist(text)) continue;
+      const p = playlistPathname(u);
+      if (p === wantPath) return { text, base: u };
+      if (wantName && wantName !== 'master.m3u8' && p.endsWith('/' + wantName)) return { text, base: u };
+    }
+    return null;
+  }
   return bestCachedPlaylist(playerWebContentsId);
 }
 
@@ -368,7 +480,7 @@ function bestCachedPlaylist(playerWebContentsId) {
   let best = null;
   let bestScore = -Infinity;
   for (const [u, text] of wc._cdpPlaylists) {
-    if (!looksLikePlaylist(text)) continue;
+    if (!looksLikePlaylist(text) || isMasterPlaylist(text) || !isMediaPlaylist(text)) continue;
     const score = mediaPlaylistScore(u, text);
     if (score > bestScore) {
       bestScore = score;
@@ -383,7 +495,6 @@ async function fetchPlaylist(url, headers, signal = null, playerWebContentsId = 
   const cached = cachedPlaylist(playerWebContentsId, url);
   if (cached) return { body: cached.text, url: cached.base, status: 200 };
   const wc = liveWebContents(playerWebContentsId);
-  const bound = isPlayerBoundCdn(url, '');
   if (wc) {
     try {
       const fromCache = playlistFromBuffer(await readPageResource(wc, url), url);
@@ -394,8 +505,8 @@ async function fetchPlaylist(url, headers, signal = null, playerWebContentsId = 
     const hooked = await playlistFromPlayerHook(wc, url);
     if (hooked) return hooked;
     // One-shot /s/ tokens die if anything besides the player fetches them.
-    // Do not issue a second GET from the page, Node, or performance URLs.
-    if (bound) throw notPlaylistError('other', 0);
+    // VOD `/vd/` playlists can be re-fetched from the live page.
+    if (isOneShotHls(url)) throw notPlaylistError('other', 0);
     try {
       const buf = await fetchViaWebContents(wc, url, { timeoutMs: 10000, signal });
       const fromPage = playlistFromBuffer(buf, url);
@@ -436,25 +547,52 @@ async function fetchPlaylist(url, headers, signal = null, playerWebContentsId = 
 }
 
 async function loadMediaPlaylist(url, headers, signal = null, playerWebContentsId = null) {
-  const cachedBest = bestCachedPlaylist(playerWebContentsId);
-  const master = cachedBest
-    ? { body: cachedBest.text, url: cachedBest.base, status: 200 }
-    : await fetchPlaylist(url, headers, signal, playerWebContentsId);
-  let text = master.body;
-  let base = master.url || url;
-  if (/#EXT-X-STREAM-INF/i.test(text) || !/#EXTINF:/i.test(text)) {
+  let text = '';
+  let base = url;
+  const exact = cachedPlaylist(playerWebContentsId, url);
+  if (exact) {
+    text = exact.text;
+    base = exact.base;
+  } else {
+    const master = await fetchPlaylist(url, headers, signal, playerWebContentsId);
+    text = master.body;
+    base = master.url || url;
+  }
+  if (isMasterPlaylist(text) || (/#EXT-X-STREAM-INF/i.test(text) && !isMediaPlaylist(text))) {
     const variant = bestVariantUri(text, base);
-    if (variant) {
+    if (!variant) throw new Error('Master playlist has no variants');
+    const vCached = cachedPlaylist(playerWebContentsId, variant);
+    if (vCached && isMediaPlaylist(vCached.text)) {
+      text = vCached.text;
+      base = vCached.base;
+    } else {
       try {
         const v = await fetchPlaylist(variant, headers, signal, playerWebContentsId);
-        if (looksLikePlaylist(v.body) && /#EXTINF:/i.test(v.body)) {
+        if (looksLikePlaylist(v.body) && isMediaPlaylist(v.body)) {
           text = v.body;
           base = v.url || variant;
         }
       } catch (e) {
-        if (e && e.code === 'not-playlist') throw e;
+        if (e && e.name === 'AbortError') throw e;
+        const fallback = bestCachedPlaylist(playerWebContentsId);
+        if (fallback && isMediaPlaylist(fallback.text)) {
+          text = fallback.text;
+          base = fallback.base;
+        } else {
+          throw new Error('Could not load the highest-quality media playlist from the master');
+        }
       }
     }
+  }
+  if (isMasterPlaylist(text) || !isMediaPlaylist(text)) {
+    const fallback = bestCachedPlaylist(playerWebContentsId);
+    if (fallback && isMediaPlaylist(fallback.text)) {
+      text = fallback.text;
+      base = fallback.base;
+    }
+  }
+  if (isMasterPlaylist(text) || !isMediaPlaylist(text)) {
+    throw new Error('Player did not yield a media playlist');
   }
   return { text: rewritePlaylistUris(text, base), base };
 }
@@ -521,13 +659,40 @@ function isTokenCdn(url, embedUrl) {
   );
 }
 
-// Vidfast/peakstorm playlists resolve, but segments are bound to the live
-// player (partitioned cookies + PNG wrapper). net.request / in-page fetch
-// always 502 or CORS-fail. Do not treat these as downloadable unless the
-// player hook already captured at least one part. Leave megacloud/Aniwave
-// alone — those still download through the normal session path.
+// Vidfast/peakstorm playlists resolve, but Node/net.request cannot pull the
+// parts (partitioned cookies). The live player can. One-shot `/s/` tokens die
+// if anything besides playback fetches them. `/vd/` and `/r2/` are VOD: the
+// player page/worker can fetch remaining segments without burning a token.
 function isPlayerBoundCdn(url, embedUrl) {
-  return /peakstorm\.|vidfast\.|ashencloud\./i.test(`${url || ''} ${embedUrl || ''}`);
+  const s = `${url || ''} ${embedUrl || ''}`;
+  if (CDN_PATH_RE.test(s)) return true;
+  return /peakstorm\.|vidfast\.|ashencloud\.|ashenlion\.|orbitnorth\.|hiddenmesa\.|solidbear\.|primecomet\.|calmcanvas\.|nobleember\.|plainorbit\.|nobletrail\.|rapidtree\.|metaldisk\.|thunderpencil\.|pearlmaple\.|novaoak\./i.test(
+    s
+  );
+}
+
+// `/s/` tokens are spent by the first non-playback request. They are not always
+// hex: `/r6/s/ma9yIsUHLd1o…` is base64url, and treating those as VOD made the
+// main process refetch a spent token and get 400 on every segment.
+function isOneShotHls(url) {
+  const s = String(url || '');
+  if (/\/vd\/|\/r2\//i.test(s)) return false;
+  try {
+    const u = new URL(s);
+    return /peakstorm|vidfast/i.test(u.hostname) && /\/s\/[A-Za-z0-9_-]{6,}/.test(u.pathname);
+  } catch (e) {
+    return /peakstorm\.top\/(?:[a-z0-9]+\/)?s\//i.test(s);
+  }
+}
+
+function isVodHls(text, url) {
+  if (isOneShotHls(url)) return false;
+  const t = String(text || '');
+  const u = String(url || '');
+  if (/\/vd\/|\/r2\//i.test(u)) return true;
+  if (/#EXT-X-PLAYLIST-TYPE:\s*VOD/i.test(t)) return true;
+  if (/#EXT-X-ENDLIST/i.test(t) && /#EXT-X-ALLOW-CACHE:\s*YES/i.test(t)) return true;
+  return false;
 }
 
 function looksLikeSegment(buf) {
@@ -681,8 +846,8 @@ async function ensureDebugger(wc) {
   }
   if (!wc._cdpNetOn) {
     await dbg.sendCommand('Network.enable', {
-      maxResourceBufferSize: 50 * 1024 * 1024,
-      maxTotalBufferSize: 150 * 1024 * 1024
+      maxResourceBufferSize: 64 * 1024 * 1024,
+      maxTotalBufferSize: 512 * 1024 * 1024
     });
     await dbg.sendCommand('Page.enable');
     wc._cdpNetOn = true;
@@ -924,7 +1089,13 @@ async function fetchViaWebContents(wc, url, opts = {}) {
   const preferred = [];
   const other = [];
   for (const frame of frames) {
-    if (/vidfast|peakstorm|soap2day|sflix/i.test(frameUrl(frame))) preferred.push(frame);
+    if (
+      /vidfast|peakstorm|soap2day|sflix|ashencloud|ashenlion|orbitnorth|primecomet|calmcanvas|nobleember/i.test(
+        frameUrl(frame)
+      )
+    ) {
+      preferred.push(frame);
+    }
     else other.push(frame);
   }
   const order = preferred.length ? preferred : other;
@@ -958,7 +1129,7 @@ async function fetchViaWorker(wc, url, opts = {}) {
   const timeout = Math.max(4000, opts.timeoutMs || 10000);
   const expr = `(() => {
     const url = ${JSON.stringify(url)};
-    return fetch(url, { credentials: 'include', cache: 'no-store', mode: 'cors' }).then((res) => {
+    return fetch(url, { credentials: 'include', cache: ${JSON.stringify(opts.cacheMode || 'default')}, mode: 'cors' }).then((res) => {
       if (!res.ok) return { ok: false, status: res.status, error: 'HTTP ' + res.status };
       return res.arrayBuffer().then((buf) => {
         const u8 = new Uint8Array(buf);
@@ -1011,7 +1182,7 @@ async function fetchViaWorker(wc, url, opts = {}) {
 // segment with net::ERR_FAILED even though the same URL plays in the player.
 // electron.net.request uses the session's cookies but is not a web fetch, so
 // those headers actually go out.
-function fetchBufferViaNet(url, headers, { timeoutMs = 60000, signal } = {}) {
+function fetchBufferViaNet(url, headers, { timeoutMs = 60000, signal, session: sesOpt } = {}) {
   return new Promise((resolve, reject) => {
     let net;
     let ses;
@@ -1019,7 +1190,7 @@ function fetchBufferViaNet(url, headers, { timeoutMs = 60000, signal } = {}) {
       const electron = require('electron');
       const config = require('./config');
       net = electron.net;
-      ses = electron.session.fromPartition(config.sessionPartition);
+      ses = sesOpt || electron.session.fromPartition(config.sessionPartition);
       if (!net || typeof net.request !== 'function') {
         return reject(new Error('no net.request'));
       }
@@ -1066,6 +1237,7 @@ function fetchBufferViaNet(url, headers, { timeoutMs = 60000, signal } = {}) {
         method: 'GET',
         url,
         session: ses,
+        useSessionCookies: true,
         redirect: 'follow'
       });
     } catch (e) {
@@ -1097,6 +1269,539 @@ function fetchBufferViaNet(url, headers, { timeoutMs = 60000, signal } = {}) {
   });
 }
 
+async function disablePlayerFetchTap(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  wc._cdpSkipFetch = true;
+  wc._cdpFetchOn = false;
+  if (!wc.debugger) return;
+  try {
+    if (wc.debugger.isAttached()) await wc.debugger.sendCommand('Fetch.disable');
+  } catch (e) {
+    // ignore
+  }
+  for (const sid of wc._cdpWorkerSessions || []) {
+    try {
+      await cdpSend(wc.debugger, 'Fetch.disable', {}, sid);
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+function playerSessionHeaders(wc, headers) {
+  const h = { ...(headers || {}) };
+  try {
+    const u = wc && typeof wc.getURL === 'function' ? wc.getURL() : '';
+    if (u && /^https?:/i.test(u)) {
+      if (!Object.keys(h).some((k) => k.toLowerCase() === 'referer')) h.Referer = u;
+      if (!Object.keys(h).some((k) => k.toLowerCase() === 'origin')) {
+        h.Origin = new URL(u).origin;
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return h;
+}
+
+const sessionDownloadState = new WeakMap();
+let vodPullSeq = 0;
+
+function sessionDownloads(ses) {
+  let st = sessionDownloadState.get(ses);
+  if (st) return st;
+  st = { pending: new Map() };
+  sessionDownloadState.set(ses, st);
+  ses.on('will-download', (_event, item) => {
+    const chain = [];
+    try {
+      if (typeof item.getURLChain === 'function') chain.push(...(item.getURLChain() || []));
+    } catch (e) {
+      // ignore
+    }
+    try {
+      chain.push(item.getURL());
+    } catch (e) {
+      // ignore
+    }
+    let rec = null;
+    let key = null;
+    for (const u of chain) {
+      if (st.pending.has(u)) {
+        rec = st.pending.get(u);
+        key = u;
+        break;
+      }
+    }
+    if (!rec) {
+      try {
+        const p = new URL(item.getURL()).pathname;
+        for (const [u, r] of st.pending) {
+          try {
+            if (new URL(u).pathname === p) {
+              rec = r;
+              key = u;
+              break;
+            }
+          } catch (e2) {
+            // ignore
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (!rec && st.pending.size === 1) {
+      key = st.pending.keys().next().value;
+      rec = st.pending.get(key);
+    }
+    if (!rec) return;
+    try {
+      item.setSavePath(rec.dest);
+    } catch (e) {
+      rec.fail(e);
+      return;
+    }
+    item.on('done', (_e, state) => {
+      st.pending.delete(key);
+      if (state === 'completed') rec.ok();
+      else rec.fail(new Error('download ' + state));
+    });
+  });
+  return st;
+}
+
+function downloadViaWebContents(wc, url, dest, { timeoutMs = 60000, signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!wc || wc.isDestroyed() || typeof wc.downloadURL !== 'function') {
+      return reject(new Error('no downloadURL'));
+    }
+    const ses = wc.session;
+    if (!ses) return reject(new Error('no session'));
+    const st = sessionDownloads(ses);
+    let done = false;
+    const finish = (fn) => {
+      if (done) return;
+      done = true;
+      clearTimeout(hard);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      st.pending.delete(url);
+      fn();
+    };
+    const rec = {
+      dest,
+      ok: () => finish(() => resolve(dest)),
+      fail: (e) => finish(() => reject(e))
+    };
+    st.pending.set(url, rec);
+    const onAbort = () => {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      rec.fail(err);
+    };
+    const hard = setTimeout(() => rec.fail(new Error('download timed out')), timeoutMs);
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+    try {
+      wc.downloadURL(url);
+    } catch (e) {
+      rec.fail(e);
+    }
+  });
+}
+
+function vodPullStartExpr(url, id, credentials) {
+  return `(async () => {
+    try {
+      self.__wvdPull = self.__wvdPull || {};
+      const res = await fetch(${JSON.stringify(url)}, {
+        credentials: ${JSON.stringify(credentials || 'omit')},
+        mode: 'cors',
+        cache: 'default'
+      });
+      if (!res.ok) return { ok: false, status: res.status, error: 'HTTP ' + res.status };
+      const buf = new Uint8Array(await res.arrayBuffer());
+      self.__wvdPull[${JSON.stringify(id)}] = buf;
+      return { ok: true, status: res.status, n: buf.length };
+    } catch (e) {
+      return { ok: false, status: 0, error: String((e && e.message) || e) };
+    }
+  })()`;
+}
+
+function vodPullSliceExpr(id, off, step) {
+  return `(function() {
+    const buf = (self.__wvdPull || {})[${JSON.stringify(id)}];
+    if (!buf) return { ok: false, error: 'missing' };
+    const n = Math.min(${step}, buf.length - ${off});
+    if (n <= 0) return { ok: true, b64: '', n: 0 };
+    const slice = buf.subarray(${off}, ${off} + n);
+    let bin = '';
+    const s = 0x4000;
+    for (let i = 0; i < slice.length; i += s) {
+      bin += String.fromCharCode.apply(null, slice.subarray(i, i + s));
+    }
+    return { ok: true, b64: btoa(bin), n: n };
+  })()`;
+}
+
+function vodPullClearExpr(id) {
+  return `(function() { if (self.__wvdPull) delete self.__wvdPull[${JSON.stringify(id)}]; return true; })()`;
+}
+
+async function evalReturn(run, expr, timeoutMs, awaitPromise) {
+  const raw = await run(expr, timeoutMs, awaitPromise);
+  if (raw && raw.result && Object.prototype.hasOwnProperty.call(raw.result, 'value')) {
+    return raw.result.value;
+  }
+  return raw;
+}
+
+async function fetchChunkedViaEvaluate(run, url, { timeoutMs = 90000 } = {}) {
+  const id = 'p' + ++vodPullSeq;
+  const start = await evalReturn(run, vodPullStartExpr(url, id, 'omit'), Math.max(20000, timeoutMs), true);
+  if (!start || !start.ok) {
+    const again = await evalReturn(run, vodPullStartExpr(url, id, 'same-origin'), Math.max(20000, timeoutMs), true);
+    if (!again || !again.ok) {
+      const err = new Error((start && start.error) || (again && again.error) || `HTTP ${(start && start.status) || 0}`);
+      err.status = (again && again.status) || (start && start.status);
+      throw err;
+    }
+    return fetchChunkedSlices(run, id, again.n);
+  }
+  return fetchChunkedSlices(run, id, start.n);
+}
+
+async function fetchChunkedSlices(run, id, size) {
+  const chunks = [];
+  const step = 256 * 1024;
+  let off = 0;
+  try {
+    while (off < size) {
+      const part = await evalReturn(run, vodPullSliceExpr(id, off, step), 8000, false);
+      if (!part || !part.ok) throw new Error((part && part.error) || 'chunk missing');
+      if (part.n) chunks.push(Buffer.from(part.b64 || '', 'base64'));
+      off += part.n || 0;
+      if (!part.n) break;
+    }
+  } finally {
+    try {
+      await evalReturn(run, vodPullClearExpr(id), 2000, false);
+    } catch (e) {
+      // ignore
+    }
+  }
+  return Buffer.concat(chunks);
+}
+
+function workerEvaluate(wc, sid) {
+  return async (expr, timeoutMs, awaitPromise) => {
+    const raw = await cdpSendTimed(
+      wc.debugger,
+      'Runtime.evaluate',
+      { expression: expr, awaitPromise: !!awaitPromise, returnByValue: true },
+      sid,
+      timeoutMs
+    );
+    if (raw && raw.exceptionDetails) {
+      throw new Error((raw.exceptionDetails.text || 'worker evaluate failed').slice(0, 160));
+    }
+    return raw;
+  };
+}
+
+function pageEvaluate(wc) {
+  return async (expr, timeoutMs, awaitPromise) => {
+    const result = await Promise.race([
+      wc.executeJavaScript(expr, true),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('page fetch timed out')), timeoutMs))
+    ]);
+    return { result: { value: result } };
+  };
+}
+
+async function fetchVodPartViaPlayer(wc, url, { timeoutMs = 90000 } = {}) {
+  let last;
+  const sessions = (wc._cdpWorkerSessions || []).slice();
+  if (wc.debugger && wc.debugger.isAttached()) {
+    for (const sid of sessions) {
+      try {
+        const buf = await fetchChunkedViaEvaluate(workerEvaluate(wc, sid), url, { timeoutMs });
+        if (buf && buf.length) return buf;
+      } catch (e) {
+        last = e;
+        if (e && e.name === 'AbortError') throw e;
+      }
+    }
+  }
+  try {
+    const buf = await fetchChunkedViaEvaluate(pageEvaluate(wc), url, { timeoutMs });
+    if (buf && buf.length) return buf;
+  } catch (e) {
+    last = e;
+    if (e && e.name === 'AbortError') throw e;
+  }
+  throw last || new Error('player chunked fetch failed');
+}
+
+function saveVodJobBuf(dir, job, buf0) {
+  let buf = buf0;
+  if (!buf || !buf.length) return false;
+  if (job.strip) {
+    const head = buf.toString('utf8', 0, 256);
+    if (looksLikeHtml(head) || looksLikeJson(head)) return false;
+    buf = stripPngWrapper(buf);
+  }
+  if (!buf || buf.length < 200) return false;
+  if (!looksLikeSegment(buf) && buf.length < 24 * 1024) return false;
+  fs.writeFileSync(path.join(dir, job.name), buf);
+  return true;
+}
+
+async function kickWorkerFetches(wc, urls, opts = {}) {
+  const list = (urls || []).filter(Boolean).slice(0, 8);
+  if (!list.length || !wc || wc.isDestroyed()) return 0;
+  const timeout = Math.max(8000, opts.timeoutMs || 30000);
+  const expr = `(() => {
+    const urls = ${JSON.stringify(list)};
+    return Promise.all(urls.map((url) =>
+      fetch(url, { credentials: 'omit', cache: 'default', mode: 'cors' })
+        .then((res) => ({ ok: res.ok, status: res.status }))
+        .catch((e) => ({ ok: false, error: String((e && e.message) || e) }))
+    ));
+  })()`;
+  const sessions = (wc._cdpWorkerSessions || []).slice();
+  if (sessions.length && wc.debugger && wc.debugger.isAttached()) {
+    try {
+      await cdpSendTimed(
+        wc.debugger,
+        'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true },
+        sessions[0],
+        timeout
+      );
+      return list.length;
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+    }
+  }
+  try {
+    await Promise.race([
+      wc.executeJavaScript(expr, true),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('kick timeout')), timeout))
+    ]);
+    return list.length;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function matchJobUrl(jobs, url) {
+  if (!url) return null;
+  for (const job of jobs) {
+    if (job.abs === url) return job;
+  }
+  try {
+    const p = new URL(url).pathname;
+    for (const job of jobs) {
+      try {
+        if (new URL(job.abs).pathname === p) return job;
+      } catch (e) {
+        // ignore
+      }
+    }
+    const base = p.split('/').filter(Boolean).pop();
+    if (base) {
+      for (const job of jobs) {
+        try {
+          if (new URL(job.abs).pathname.split('/').filter(Boolean).pop() === base) return job;
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+}
+
+function drainCdpPartsToDir(wc, jobs, dir) {
+  const parts = wc && wc._cdpParts;
+  if (!parts || !parts.size) return 0;
+  let n = 0;
+  for (const [url, buf0] of [...parts]) {
+    const job = matchJobUrl(jobs, url);
+    if (!job) continue;
+    if (jobFileOk(dir, job)) {
+      parts.delete(url);
+      continue;
+    }
+    let buf = Buffer.isBuffer(buf0) ? buf0 : Buffer.from(buf0 || []);
+    if (job.strip) buf = stripPngWrapper(buf);
+    if (!buf || buf.length < 200) continue;
+    fs.writeFileSync(path.join(dir, job.name), buf);
+    parts.delete(url);
+    n += 1;
+  }
+  return n;
+}
+
+async function pullRemainingViaPlayer(wc, remaining, jobs, dir, { signal, onProgress, onLog, headers } = {}) {
+  await disablePlayerFetchTap(wc);
+  const h = playerSessionHeaders(wc, headers);
+  const ses = wc && wc.session;
+  const report = () => {
+    const have = jobs.filter((job) => jobFileOk(dir, job)).length;
+    if (onProgress) {
+      onProgress({ received: have, total: jobs.length, percent: Math.min(0.99, have / jobs.length) });
+    }
+    return have;
+  };
+  let how = '';
+  let lastErr;
+  let lastLog = 0;
+  let netWorks = null;
+  let netProbeFails = 0;
+  let skipDownload = false;
+  let downloadFails = 0;
+  // A spent one-shot token answers 400 for every segment. Without this the pool
+  // walked all 330 jobs, three transports each, and re-queued for 20 minutes.
+  let deadStreak = 0;
+  let spent = false;
+  const throwIfAborted = () => {
+    if (signal && signal.aborted) {
+      const err = new Error('Aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+  };
+  const noteFail = (e) => {
+    lastErr = e;
+    if (e && (e.status === 400 || e.status === 401 || e.status === 403 || e.status === 410)) {
+      deadStreak += 1;
+      if (!how && deadStreak >= 6) spent = true;
+    }
+  };
+  const fetchOne = async (job) => {
+    throwIfAborted();
+    if (spent) return false;
+    if (jobFileOk(dir, job)) return true;
+    if (netWorks !== false) {
+      try {
+        const buf = await fetchBufferViaNet(job.abs, h, {
+          timeoutMs: netWorks ? 60000 : 20000,
+          signal,
+          session: ses
+        });
+        if (saveVodJobBuf(dir, job, buf)) {
+          netWorks = true;
+          deadStreak = 0;
+          if (!how) how = 'net.request';
+          return true;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        noteFail(e);
+        if (netWorks !== true) {
+          netProbeFails += 1;
+          if (netProbeFails >= 2) netWorks = false;
+        }
+      }
+    }
+    try {
+      throwIfAborted();
+      const buf = await fetchVodPartViaPlayer(wc, job.abs, { timeoutMs: 90000 });
+      if (saveVodJobBuf(dir, job, buf)) {
+        deadStreak = 0;
+        if (!how) how = 'player fetch';
+        return true;
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw e;
+      noteFail(e);
+    }
+    if (!skipDownload && !spent) {
+      try {
+        throwIfAborted();
+        const dest = path.join(dir, `${job.name}.part`);
+        await downloadViaWebContents(wc, job.abs, dest, { timeoutMs: 45000, signal });
+        let buf = fs.readFileSync(dest);
+        try {
+          fs.unlinkSync(dest);
+        } catch (e2) {
+          // ignore
+        }
+        if (saveVodJobBuf(dir, job, buf)) {
+          deadStreak = 0;
+          if (!how) how = 'downloadURL';
+          return true;
+        }
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        noteFail(e);
+        downloadFails += 1;
+        if (downloadFails >= 2) skipDownload = true;
+      }
+    }
+    return false;
+  };
+
+  const deadline = Date.now() + 8 * 60 * 1000;
+  let round = 0;
+  let before = report();
+  while (Date.now() < deadline) {
+    throwIfAborted();
+    drainCdpPartsToDir(wc, jobs, dir);
+    const left = jobs.filter((job) => !jobFileOk(dir, job));
+    if (!left.length) break;
+    round += 1;
+    if (onLog && round === 1) {
+      onLog('Pulling leftover VOD parts without copying multi-MB bodies through the debugger.');
+    }
+    await mapPool(left, 2, async (job) => {
+      await fetchOne(job);
+      const have = report();
+      if (onLog && Date.now() - lastLog > 3000) {
+        lastLog = Date.now();
+        onLog(`Fetched ${have}/${jobs.length} HLS parts.`);
+      }
+    });
+    drainCdpPartsToDir(wc, jobs, dir);
+    const have = report();
+    if (have >= jobs.length) break;
+    if (spent) {
+      if (onLog) onLog('CDN rejects every leftover segment (token already spent); giving up on this capture.');
+      break;
+    }
+    // A round that gained nothing will not gain anything on the next pass
+    // either; retrying only hammers the CDN and holds the player window open.
+    if (have <= before) {
+      if (onLog) {
+        const hint = lastErr && lastErr.message ? ` (${String(lastErr.message).slice(0, 120)})` : '';
+        onLog(`Direct fetch made no progress this pass${hint}; stopping.`);
+      }
+      break;
+    }
+    before = have;
+    if (onLog) {
+      const hint = lastErr && lastErr.message ? `; last error: ${String(lastErr.message).slice(0, 120)}` : '';
+      onLog(`Direct fetch still missing ${jobs.length - have} part(s); retrying${hint}.`);
+    }
+    await new Promise((r) => setTimeout(r, 500 * Math.min(round, 6)));
+  }
+  if (onLog) {
+    const left = jobs.filter((job) => !jobFileOk(dir, job)).length;
+    if (how && !left) onLog(`Fetched remaining HLS parts via ${how}.`);
+    if (left) {
+      const hint = lastErr && lastErr.message ? ` (${String(lastErr.message).slice(0, 120)})` : '';
+      onLog(`Direct fetch left ${left} part(s) missing${hint}.`);
+    } else onLog(`Fetched all ${jobs.length} HLS parts.`);
+  }
+}
+
 async function fetchBuffer(url, headers, opts = {}) {
   const wc = opts.webContents || liveWebContents(opts.playerWebContentsId);
   if (wc && opts.allowCdp) {
@@ -1117,7 +1822,10 @@ async function fetchBuffer(url, headers, opts = {}) {
   }
 
   try {
-    const buf = await fetchBufferViaNet(url, headers, opts);
+    const buf = await fetchBufferViaNet(url, headers, {
+      ...opts,
+      session: opts.session || (wc && wc.session)
+    });
     if (buf && buf.length) return buf;
   } catch (e) {
     if (e && e.name === 'AbortError') throw e;
@@ -1245,7 +1953,7 @@ function playerHookScript() {
     } catch (e) {}
     const keep = (url, buf) => {
       if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push(String(url).slice(0, 120));
-      if (!url || !/peakstorm|ashencloud|vidfast|\\/r6\\/|\\/r2\\//i.test(String(url))) return;
+      if (!url || !/${PAGE_CDN_RE}/i.test(String(url))) return;
       if (window.__wvdParts[url]) return;
       try {
         const bytes = buf instanceof Uint8Array
@@ -1269,7 +1977,7 @@ function playerHookScript() {
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push('fetch:' + String(url).slice(0, 110));
       return origFetch(input, init).then((res) => {
-        if (/peakstorm|ashencloud|vidfast|\\/r6\\/|\\/r2\\//i.test(url)) {
+        if (/${PAGE_CDN_RE}/i.test(url)) {
           res.clone().arrayBuffer().then((buf) => keep(url, buf)).catch(() => {});
         }
         return res;
@@ -1321,9 +2029,18 @@ function playerHookScript() {
 }
 
 function isCdnMediaUrl(url) {
-  return /peakstorm|vidfast|ashencloud|cybergate|quietraven|\/r6\/|\/r2\/|\.m3u8|\/hls\/|\.ts(\?|$)|mp2t|video\/mp4|\/_stream/i.test(
-    String(url || '')
-  );
+  const u = String(url || '');
+  return CDN_HOST_RE.test(u) || CDN_PATH_RE.test(u) || /\.m3u8|\/hls\/|\.ts(\?|$)|mp2t|video\/mp4|\/_stream/i.test(u);
+}
+
+function shouldCopyFetchBody(url, len) {
+  if (/\.m3u8(\?|$)/i.test(url || '')) return true;
+  if (!isCdnMediaUrl(url)) return false;
+  // Linux Electron 31 SIGSEGV'd / timed out on multi-MB Fetch.getResponseBody.
+  // VOD /r2/ parts are 3–5 MB; copy those via net.request / chunked worker fetch.
+  if (len > 0 && process.platform === 'linux' && len >= 2 * 1024 * 1024) return false;
+  if (len > 0 && len >= CDP_BODY_MAX) return false;
+  return true;
 }
 
 function maybeGunzip(buf) {
@@ -1380,7 +2097,7 @@ async function attachTarget(dbg, wc, t) {
     const att = await dbg.sendCommand('Target.attachToTarget', { targetId: t.targetId, flatten: true });
     const sid = att && att.sessionId;
     if (!sid) return;
-    await enableCdpSession(dbg, sid, false);
+    await enableCdpSession(dbg, sid, false, wc);
     rememberWorkerSession(wc, sid, t);
     console.log(`[cdp] attached-to ${t.type} sid=${String(sid).slice(0, 8)} ${String(t.url || '').slice(0, 60)}`);
   } catch (e) {
@@ -1419,9 +2136,80 @@ function rememberWorkerSession(wc, sessionId, targetInfo) {
   if (!wc._cdpWorkerSessions.includes(sessionId)) wc._cdpWorkerSessions.push(sessionId);
 }
 
-async function enableCdpSession(dbg, sessionId, waitingForDebugger) {
+async function injectWorkerFetchHook(dbg, sessionId) {
+  const expr = `(function() {
+    if (self.__wvdHooked) return self.__wvdHooked;
+    self.__wvdHooked = 'ok';
+    self.__wvdParts = self.__wvdParts || {};
+    var re = /${PAGE_CDN_RE}/i;
+    function send(url, buf) {
+      if (!url || !re.test(String(url))) return;
+      if (self.__wvdParts[url]) return;
+      try {
+        var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+        if (!bytes.length) return;
+        var bin = '';
+        var step = 0x4000;
+        for (var i = 0; i < bytes.length; i += step) {
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+        }
+        var b64 = btoa(bin);
+        self.__wvdParts[url] = b64;
+        try { new BroadcastChannel('__wvdParts').postMessage({ url: String(url), b64: b64 }); } catch (e1) {}
+      } catch (e) {}
+    }
+    function wrapFetch() {
+      try {
+        var origFetch = self.fetch;
+        if (!origFetch || origFetch.__wvd) return;
+        var wrapped = function(input, init) {
+          var url = typeof input === 'string' ? input : (input && input.url) || '';
+          return origFetch.call(self, input, init).then(function(res) {
+            try { res.clone().arrayBuffer().then(function(buf) { send(url, buf); }).catch(function(){}); } catch (e) {}
+            return res;
+          });
+        };
+        wrapped.__wvd = true;
+        self.fetch = wrapped;
+      } catch (e) {}
+    }
+    wrapFetch();
+    try { setInterval(wrapFetch, 750); } catch (e) {}
+    try {
+      var origOpen = XMLHttpRequest.prototype.open;
+      var origSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__wvdUrl = url;
+        return origOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        var xhr = this;
+        xhr.addEventListener('load', function() {
+          if (xhr.status < 200 || xhr.status >= 300) return;
+          try {
+            var r = xhr.response;
+            if (r instanceof ArrayBuffer) send(xhr.__wvdUrl, r);
+            else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(r)) send(xhr.__wvdUrl, r.buffer);
+          } catch (e) {}
+        });
+        return origSend.apply(this, arguments);
+      };
+    } catch (e) {}
+    return 'hooked';
+  })()`;
+  const r = await cdpSend(dbg, 'Runtime.evaluate', { expression: expr, returnByValue: true }, sessionId);
+  const val = r && r.result && r.result.value;
+  console.log(`[cdp] worker fetch hook sid=${String(sessionId || '').slice(0, 8)} ${val || ''}`);
+}
+
+async function enableCdpSession(dbg, sessionId, waitingForDebugger, wc) {
   try {
     await cdpSend(dbg, 'Runtime.enable', {}, sessionId);
+  } catch (e) {
+    // ignore
+  }
+  try {
+    await injectWorkerFetchHook(dbg, sessionId);
   } catch (e) {
     // ignore
   }
@@ -1430,8 +2218,8 @@ async function enableCdpSession(dbg, sessionId, waitingForDebugger) {
       dbg,
       'Network.enable',
       {
-        maxResourceBufferSize: 50 * 1024 * 1024,
-        maxTotalBufferSize: 150 * 1024 * 1024
+        maxResourceBufferSize: 64 * 1024 * 1024,
+        maxTotalBufferSize: 512 * 1024 * 1024
       },
       sessionId
     );
@@ -1439,19 +2227,16 @@ async function enableCdpSession(dbg, sessionId, waitingForDebugger) {
     // ignore
   }
   try {
-    await cdpSend(
-      dbg,
-      'Fetch.enable',
-      {
-        patterns: [
-          { urlPattern: '*peakstorm*', requestStage: 'Response' },
-          { urlPattern: '*ashencloud*', requestStage: 'Response' },
-          { urlPattern: '*/r2/*', requestStage: 'Response' },
-          { urlPattern: '*/r6/*', requestStage: 'Response' }
-        ]
-      },
-      sessionId
-    );
+    if (!(wc && wc._cdpSkipFetch)) {
+      await cdpSend(
+        dbg,
+        'Fetch.enable',
+        {
+          patterns: CDP_FETCH_PATTERNS
+        },
+        sessionId
+      );
+    }
   } catch (e) {
     // ignore
   }
@@ -1487,7 +2272,7 @@ async function installPlayerCdpTap(wc) {
       const u = (params.targetInfo && params.targetInfo.url) || '';
       console.log(`[cdp] attached ${t} ${String(u).slice(0, 80)} sid=${String(params.sessionId).slice(0, 8)}`);
       rememberWorkerSession(wc, params.sessionId, params.targetInfo);
-      enableCdpSession(dbg, params.sessionId, true).catch(() => {});
+      enableCdpSession(dbg, params.sessionId, true, wc).catch(() => {});
       return;
     }
     const sessionId = msgSessionId || '';
@@ -1533,14 +2318,40 @@ async function installPlayerCdpTap(wc) {
       for (const h of params.responseHeaders || []) {
         if (h && /content-length/i.test(h.name)) len = Number(h.value) || 0;
       }
-      if (code >= 200 && code < 400 && isCdnMediaUrl(url) && len < 12 * 1024 * 1024) {
-        const bodyMs = len > 512 * 1024 ? 8000 : 3000;
-        cdpSendTimed(dbg, 'Fetch.getResponseBody', { requestId }, sid, bodyMs)
-          .then((body) => {
-            storeCdpPart(wc, url, bufferFromCdpString(body.body, body.base64Encoded));
-          })
-          .catch(() => {})
-          .finally(resume);
+      if (code >= 200 && code < 400 && isCdnMediaUrl(url) && shouldCopyFetchBody(url, len)) {
+        const bodyMs = len > 512 * 1024 ? 12000 : 3000;
+        enqueueFetchBodyCopy(wc, async () => {
+          let answered = false;
+          try {
+            const body = await cdpSendTimed(dbg, 'Fetch.getResponseBody', { requestId }, sid, bodyMs);
+            const buf = bufferFromCdpString(body.body, body.base64Encoded);
+            storeCdpPart(wc, url, buf);
+            if (/\.m3u8(\?|$)/i.test(url) && buf.length) {
+              const trimmed = trimMasterToBest(buf.toString('utf8'), url);
+              if (trimmed) {
+                await cdpSend(
+                  dbg,
+                  'Fetch.fulfillRequest',
+                  {
+                    requestId,
+                    responseCode: 200,
+                    responseHeaders: fulfillHeadersFrom(params.responseHeaders),
+                    body: Buffer.from(trimmed, 'utf8').toString('base64')
+                  },
+                  sid
+                );
+                answered = true;
+                if (!wc._cdpLockedQuality) {
+                  wc._cdpLockedQuality = true;
+                  console.log(`[cdp] locked player to best variant ${String(url).slice(0, 96)}`);
+                }
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+          if (!answered) resume();
+        });
       } else {
         resume();
       }
@@ -1560,21 +2371,33 @@ async function installPlayerCdpTap(wc) {
         null;
       const url = rec && rec.url;
       const n = params.encodedDataLength || 0;
-      const interesting = /m3u8|peakstorm|ashencloud|\/r2\/|\/s\//i.test(url || '');
+      const interesting = /m3u8|peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|plainorbit|\/r2\/|\/vd\/|\/s\//i.test(
+        url || ''
+      );
       if (!interesting) return;
       console.log(`[cdp] fin n=${n} id=${params.requestId} ${String(url || '(no url)').slice(0, 96)}`);
+      // 3–5 MB VOD parts time out or SIGSEGV inside Network.getResponseBody on
+      // Linux. Do not enqueue those copies; pullRemainingViaPlayer writes them.
+      if (process.platform === 'linux' && n > 2 * 1024 * 1024) return;
       const sid = (rec && rec.sessionId) || sessionId;
-      cdpSendTimed(dbg, 'Network.getResponseBody', { requestId: params.requestId }, sid, n > 512 * 1024 ? 8000 : 2500)
-        .then((body) => {
+      enqueueFetchBodyCopy(wc, async () => {
+        try {
+          const body = await cdpSendTimed(
+            dbg,
+            'Network.getResponseBody',
+            { requestId: params.requestId },
+            sid,
+            n > 512 * 1024 ? 8000 : 2500
+          );
           storeCdpPart(
             wc,
             url || `https://orphan.invalid/${params.requestId}`,
             bufferFromCdpString(body.body, body.base64Encoded)
           );
-        })
-        .catch((e) => {
+        } catch (e) {
           console.log(`[cdp] body fail n=${n} ${String(url || params.requestId).slice(0, 80)} ${e && e.message}`);
-        });
+        }
+      });
     }
   });
   try {
@@ -1582,8 +2405,8 @@ async function installPlayerCdpTap(wc) {
       if (!dbg.isAttached()) await dbg.attach('1.3');
       await dbg.sendCommand('Page.enable');
       await dbg.sendCommand('Network.enable', {
-        maxResourceBufferSize: 50 * 1024 * 1024,
-        maxTotalBufferSize: 150 * 1024 * 1024
+        maxResourceBufferSize: 64 * 1024 * 1024,
+        maxTotalBufferSize: 512 * 1024 * 1024
       });
       try {
         await dbg.sendCommand('Network.setBypassServiceWorker', { bypass: true });
@@ -1592,13 +2415,9 @@ async function installPlayerCdpTap(wc) {
       }
       try {
         await dbg.sendCommand('Fetch.enable', {
-          patterns: [
-            { urlPattern: '*peakstorm*', requestStage: 'Response' },
-            { urlPattern: '*ashencloud*', requestStage: 'Response' },
-            { urlPattern: '*/r2/*', requestStage: 'Response' },
-            { urlPattern: '*/r6/*', requestStage: 'Response' }
-          ]
+          patterns: CDP_FETCH_PATTERNS
         });
+        wc._cdpFetchOn = true;
       } catch (e) {
         // ignore
       }
@@ -1752,7 +2571,7 @@ async function playPlayerVideo(wc, seekTo) {
           }
           v.muted = true;
           try { v.autoplay = true; } catch (e) {}
-          try { v.playbackRate = 1; } catch (e) {}
+          try { v.playbackRate = 3; } catch (e) {}
           try { v.play().catch(() => {}); } catch (e) {}
           try { v.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (e) {}
           try {
@@ -1815,6 +2634,28 @@ async function playPlayerVideo(wc, seekTo) {
     }
   }
   return best;
+}
+
+async function kickHlsLoad(wc, startSec) {
+  const t = Number(startSec) || 0;
+  for (const frame of collectFrames(wc)) {
+    try {
+      await frame.executeJavaScript(
+        `(() => {
+          const hls = window.__wvdHls;
+          if (!hls) return 'no-hls';
+          try { hls.config.maxBufferLength = 4000; } catch (e) {}
+          try { hls.config.maxMaxBufferLength = 8000; } catch (e) {}
+          try { hls.config.maxBufferSize = 500 * 1000 * 1000; } catch (e) {}
+          try { if (typeof hls.startLoad === 'function') hls.startLoad(${JSON.stringify(t)}); } catch (e) {}
+          return 'ok';
+        })()`,
+        true
+      );
+    } catch (e) {
+      // ignore
+    }
+  }
 }
 
 async function drainMseChunks(wc) {
@@ -2050,8 +2891,7 @@ async function harvestMediaRecorder(wc, dir, { signal, onProgress, onLog } = {})
     const win = BrowserWindow.fromWebContents(wc);
     if (win && !win.isDestroyed()) {
       try {
-        win.showInactive();
-        require('./discoverwindow').cloak(win);
+        require('./discoverwindow').cloakForPlayback(win);
       } catch (e2) {
         // ignore
       }
@@ -2197,7 +3037,7 @@ async function harvestMediaRecorder(wc, dir, { signal, onProgress, onLog } = {})
   return rawPath;
 }
 
-async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, drainOnly } = {}) {
+async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, drainOnly, maxWatchMs, allowPartial, prefetchRemaining } = {}) {
   if (!wc || wc.isDestroyed()) throw new Error('player window is gone');
   try {
     if (onLog) {
@@ -2355,9 +3195,16 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     const out = window.__wvdParts || {};
     const keys = Object.keys(out);
     const batch = {};
-    for (const k of keys.slice(0, 40)) {
-      batch[k] = out[k];
+    let bytes = 0;
+    let n = 0;
+    for (const k of keys) {
+      const v = out[k];
+      const len = (v && v.length) || 0;
+      if (n && (n >= 6 || bytes + len > 16 * 1024 * 1024)) break;
+      batch[k] = v;
+      bytes += len;
       delete out[k];
+      n += 1;
     }
     return { hooked: window.__wvdHooked || '', n: keys.length, batch };
   })()`;
@@ -2392,7 +3239,9 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     // copies those bodies without pausing the request.
     // Linux SIGSEGV'd on 8MB+ Fetch.getResponseBody copies. Segment TS parts
     // are a few hundred KB; skip anything over 2 MB.
-    if (!wc._cdpFetchOn) {
+    if (wc._cdpFetchOn || wc._cdpTap) {
+      if (onLog) onLog('Intercepting player CDN responses.');
+    } else if (!wc._cdpFetchOn) {
       dbg.on('message', async (_event, method, params) => {
         wc._cdpMsgs = (wc._cdpMsgs || 0) + 1;
         if (method !== 'Fetch.requestPaused') return;
@@ -2405,13 +3254,15 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
           for (const h of headers) {
             if (h && /content-length/i.test(h.name)) len = Number(h.value) || 0;
           }
-          if (code >= 200 && code < 400 && isCdnMediaUrl(url) && len > 0 && len < 2 * 1024 * 1024) {
-            try {
-              const body = await dbg.sendCommand('Fetch.getResponseBody', { requestId });
-              storeCdpPart(wc, url, bufferFromCdpString(body.body, body.base64Encoded));
-            } catch (e) {
-              // ignore
-            }
+          if (code >= 200 && code < 400 && isCdnMediaUrl(url) && shouldCopyFetchBody(url, len)) {
+            await enqueueFetchBodyCopy(wc, async () => {
+              try {
+                const body = await dbg.sendCommand('Fetch.getResponseBody', { requestId });
+                storeCdpPart(wc, url, bufferFromCdpString(body.body, body.base64Encoded));
+              } catch (e) {
+                // ignore
+              }
+            });
           }
         } finally {
           try {
@@ -2423,12 +3274,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       });
       await Promise.race([
         dbg.sendCommand('Fetch.enable', {
-          patterns: [
-            { urlPattern: '*peakstorm*', requestStage: 'Response' },
-            { urlPattern: '*ashencloud*', requestStage: 'Response' },
-            { urlPattern: '*/r2/*', requestStage: 'Response' },
-            { urlPattern: '*/r6/*', requestStage: 'Response' }
-          ]
+          patterns: CDP_FETCH_PATTERNS
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error('Fetch.enable timeout')), 2000))
       ]);
@@ -2502,6 +3348,46 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     }
   };
 
+  const drainWorkers = async () => {
+    const dbg = wc.debugger;
+    if (!dbg || !dbg.isAttached()) return;
+    for (const sid of wc._cdpWorkerSessions || []) {
+      for (let i = 0; i < 4; i++) {
+        let val = null;
+        try {
+          const r = await cdpSendTimed(
+            dbg,
+            'Runtime.evaluate',
+            {
+              expression: `(function() {
+                var o = self.__wvdParts || {};
+                var keys = Object.keys(o);
+                if (!keys.length) return { n: 0, url: '', b64: '' };
+                var url = keys[0];
+                var b64 = o[url] || '';
+                delete o[url];
+                return { n: keys.length - 1, url: url, b64: b64 };
+              })()`,
+              returnByValue: true
+            },
+            sid,
+            10000
+          );
+          val = r && r.result && r.result.value;
+        } catch (e) {
+          break;
+        }
+        if (!val || !val.url || !val.b64) break;
+        const job = matchJob(val.url);
+        if (!job || written.has(job.name)) {
+          if (!job && onLog && done < 3) onLog(`Unmatched worker part ${String(val.url).slice(0, 120)}`);
+          continue;
+        }
+        writeJob(job, Buffer.from(val.b64, 'base64'), 'Captured first HLS part from the player worker.');
+      }
+    }
+  };
+
   const drain = async () => {
     await hookAllFrames();
     // In-page fetch hook copies ArrayBuffers (binary-safe). CDP Network bodies
@@ -2535,6 +3421,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       }
     }
     drainCdp();
+    await drainWorkers();
     await drainPageResources();
     await flushMse();
   };
@@ -2567,21 +3454,30 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
   } catch (e) {
     // ignore
   }
-  if (drainOnly) return;
+  if (drainOnly && !maxWatchMs) return;
 
   const started = Date.now();
   let warned = false;
-  const deadline = Date.now() + Math.max(180000, Math.min((duration || 600) * 800, 15 * 60 * 1000));
+  const deadline = maxWatchMs
+    ? Date.now() + Math.max(3000, maxWatchMs)
+    : Date.now() + Math.max(180000, Math.min((duration || 600) * 800, 15 * 60 * 1000));
   let lastVideo = 0;
   let lastWritten = written.size;
   let stagnant = 0;
   let peakPercent = 0;
+  let lastSeekIdx = -1;
   let playerFetchLogged = false;
+  // A one-shot token that expired while the episode waited in the queue makes
+  // the player 400 on every segment. Without this the loop seeked for the full
+  // 15-minute deadline and the UI sat on "Downloading" at 0%. Bailing lets the
+  // queue re-resolve the episode and get a fresh token.
+  let lastGainAt = Date.now();
+  const idleLimitMs = maxWatchMs ? Math.max(8000, maxWatchMs) : 90000;
   const report = () => {
     if (!onProgress) return;
     const byJobs = jobs.length ? written.size / jobs.length : 0;
     const expectMse = Math.max(24, duration ? duration / 4 : 24);
-    const byMse = mseMedia.video.length / expectMse;
+    const byMse = jobs.length > 10 ? 0 : mseMedia.video.length / expectMse;
     const p = Math.min(0.99, Math.max(byJobs, byMse, peakPercent));
     peakPercent = p;
     onProgress({
@@ -2636,8 +3532,9 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     await drain();
     report();
     const gettingHls = written.size > lastWritten;
+    const gettingMse = mseMedia.video.length > lastVideo;
     lastWritten = written.size;
-    if (mseMedia.video.length > lastVideo) {
+    if (gettingMse) {
       lastVideo = mseMedia.video.length;
       stagnant = 0;
     } else if (gettingHls) {
@@ -2645,17 +3542,40 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     } else {
       stagnant += 1;
     }
+    if (gettingHls || gettingMse) lastGainAt = Date.now();
+    if (written.size === 0 && mseCount() === 0 && Date.now() - lastGainAt > idleLimitMs) {
+      if (onLog) {
+        onLog(
+          `Player produced nothing in ${Math.round(idleLimitMs / 1000)}s; its stream token looks expired. Giving up so this episode can be resolved again.`
+        );
+      }
+      break;
+    }
     const frac = jobs.length ? written.size / jobs.length : 0;
     if (stagnant >= 12 && frac >= 0.98) break;
     if (duration) {
       const segs = jobs.filter((j) => /^seg\d+\.ts$/i.test(j.name));
       let nextIdx = 0;
       while (nextIdx < segs.length && written.has(segs[nextIdx].name)) nextIdx += 1;
-      // Only seek once most parts are in. Early seeking makes HLS.js skip
-      // around and remux a stuttering file.
-      if (nextIdx < segs.length && stagnant >= 25 && frac >= 0.85) {
+      if (nextIdx < segs.length && stagnant >= (prefetchRemaining ? 4 : 10)) {
         const t = nextIdx * (duration / Math.max(segs.length, 1)) + 0.05;
+        if (lastSeekIdx !== nextIdx) {
+          lastSeekIdx = nextIdx;
+          if (onLog) {
+            onLog(
+              `Requesting player parts from ${nextIdx + 1}/${segs.length}` +
+                (prefetchRemaining ? ' (HLS load).' : '.')
+            );
+          }
+        }
         await playPlayerVideo(wc, Math.min(Math.max(0, duration - 0.25), t));
+        if (prefetchRemaining) {
+          try {
+            await kickHlsLoad(wc, t);
+          } catch (e) {
+            // ignore
+          }
+        }
         stagnant = 0;
       }
     } else if (stagnant >= 45) {
@@ -2667,6 +3587,14 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
   if (stats.have >= jobs.length) return;
   if (stats.internal === 0 && stats.have / Math.max(jobs.length, 1) >= 0.98) {
     if (onLog) onLog(`Player yielded ${stats.have}/${jobs.length} HLS parts (trailing only).`);
+    return;
+  }
+  if (allowPartial || maxWatchMs) {
+    if (onLog) {
+      onLog(
+        `Player snapshot ${stats.have}/${jobs.length} HLS parts; will fetch the rest from the live page.`
+      );
+    }
     return;
   }
   throw new Error(
@@ -2797,6 +3725,9 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
     jobs.push({ i, abs, name: `seg${String(segN++).padStart(5, '0')}.ts`, strip: true });
   }
   if (!jobs.length) throw new Error('HLS playlist has no segments');
+  if (isMasterPlaylist(text)) {
+    throw new Error('Got a master playlist instead of a media playlist');
+  }
   try {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '_source.m3u8'), String(text || ''), 'utf8');
@@ -2822,6 +3753,8 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
 
   let done = 0;
   const bound = jobs.some((job) => isPlayerBoundCdn(job.abs, base));
+  const oneShot = isOneShotHls(base) || jobs.some((job) => isOneShotHls(job.abs));
+  const vod = bound && !oneShot;
   if (viaPlayer) {
     const wc = liveWebContents(playerWebContentsId);
     try {
@@ -2829,7 +3762,10 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
         signal,
         onProgress,
         onLog,
-        drainOnly: !bound
+        drainOnly: !bound,
+        maxWatchMs: vod ? 12000 : 0,
+        allowPartial: vod,
+        prefetchRemaining: vod
       });
     } catch (e) {
       const msePath = [path.join(dir, 'mse-video.m3u8'), path.join(dir, 'mse-index.m3u8')].find((p) =>
@@ -2840,18 +3776,33 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
         throw e;
       }
       if (onLog) onLog(`Player capture skipped: ${e.message || e}`);
-      if (bound) throw e;
+      if (oneShot) throw e;
     }
   }
   const msePath = [path.join(dir, 'mse-video.m3u8'), path.join(dir, 'mse-index.m3u8')].find((p) =>
     fs.existsSync(p)
   );
-  const remaining = jobs.filter((job) => !jobFileOk(dir, job));
+  let remaining = jobs.filter((job) => !jobFileOk(dir, job));
   if (remaining.length === jobs.length && fs.existsSync(msePath)) {
     throw new Error('Player did not yield HLS parts; not remuxing MSE/WebM');
   }
   if (remaining.length && remaining.length < jobs.length && onLog) {
     onLog(`Captured ${jobs.length - remaining.length} part(s) from the player; fetching ${remaining.length} more.`);
+  }
+  if (remaining.length && viaPlayer && vod) {
+    const wc = liveWebContents(playerWebContentsId);
+    if (wc) {
+      if (onLog) {
+        onLog(`Fetching ${remaining.length} remaining HLS part(s) through the player session (VOD).`);
+      }
+      await pullRemainingViaPlayer(wc, remaining, jobs, dir, {
+        signal,
+        onProgress,
+        onLog,
+        headers
+      });
+      remaining = jobs.filter((job) => !jobFileOk(dir, job));
+    }
   }
   if (
     remaining.length === jobs.length &&
@@ -3015,11 +3966,15 @@ module.exports = {
   isPng,
   isTokenCdn,
   isPlayerBoundCdn,
+  isOneShotHls,
   streamIsDownloadable,
   harvestPlayerMse,
   firstUri,
   playlistMediaDuration,
   looksLikePlaylist,
+  isMasterPlaylist,
+  trimMasterToBest,
+  describeMediaPlaylist,
   installPlayerFetchHook,
   playPlayerVideo
 };
