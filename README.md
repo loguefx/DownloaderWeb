@@ -62,6 +62,27 @@ and `npm install` again. Do not copy a Windows `node_modules` onto Linux.
 Use `npm start` (not `electron .`) so Linux launch can trim Electron's path.txt
 and clear `ELECTRON_RUN_AS_NODE` from Cursor/VS Code terminals.
 
+### Which branch?
+
+The repo has two long-lived branches, and **the default branch is the wrong one
+for Linux**:
+
+| Branch | Use it for |
+| --- | --- |
+| `main` | Windows. Uses the `<webview>` / NontonGo progressive-MP4 path. |
+| `linux` | **Linux (CachyOS).** All Linux capture work lives here. |
+
+`git clone` checks out `main`, so on Linux you must `git checkout linux`
+immediately after cloning or you will be running the Windows code path.
+
+```bash
+git checkout linux
+git branch --show-current      # must print: linux
+```
+
+Keep the two separate: Linux fixes go on `linux`, so `main` stays untouched for
+Windows.
+
 ### CachyOS / Arch quick start
 
 CachyOS is Arch-based, so everything installs from the official repos with
@@ -78,9 +99,10 @@ terminal command every time.
 # 1. Install prerequisites (Node.js ships npm; git to clone the repo)
 sudo pacman -Syu --needed nodejs npm git
 
-# 2. Clone the project
+# 2. Clone the project and switch to the Linux branch
 git clone https://github.com/loguefx/DownloaderWeb.git
 cd DownloaderWeb
+git checkout linux             # REQUIRED: see "Which branch?" below
 
 # 3. Install dependencies (downloads the Linux ffmpeg/ffprobe binaries)
 npm install
@@ -100,6 +122,75 @@ Now open it from your app launcher like any other program. To update later,
 > **AppImage** in `dist/`. Make it executable and double-click it — no install
 > needed: `chmod +x dist/WebVideoDownloader-*.AppImage`. (To get a menu entry
 > for an AppImage, use a tool like Gear Lever / AppImageLauncher.)
+
+#### Reinstalling the OS / moving to a new machine
+
+Two things live **outside** the repo and are lost on a wipe unless you copy them
+first: your download queue and your finished videos.
+
+**Before wiping**, back these up to external storage:
+
+```bash
+# In-progress queue, saved presets, "waiting for dub" list, cookies/logins
+cp -r ~/.config/webvideodownloader ~/backup-wvd-config
+
+# Finished videos (not in the repo)
+cp -r ~/Downloads ~/backup-wvd-downloads
+```
+
+**After the new install:**
+
+```bash
+# 1. Prerequisites
+sudo pacman -Syu --needed nodejs npm git
+
+# 2. Clone and switch to the Linux branch (clone lands on main)
+git clone https://github.com/loguefx/DownloaderWeb.git
+cd DownloaderWeb
+git checkout linux
+
+# 3. Fresh dependency install - do NOT copy node_modules across installs.
+#    The bundled ffmpeg/ffprobe are platform-specific binaries.
+npm install
+
+# 4. Restore the queue and settings (run the app once first, then quit it,
+#    so the folder exists and is not overwritten on exit)
+npm start        # let it open, then close it
+cp -r ~/backup-wvd-config/. ~/.config/webvideodownloader/
+
+# 5. Start normally
+npm start
+```
+
+Restore the config **while the app is closed** — it rewrites
+`queue-manifest.json` on exit, which would overwrite what you just copied.
+
+If you only want the queue and not the saved logins/cookies, copy just that one
+file instead of the whole folder:
+
+```bash
+cp ~/backup-wvd-config/queue-manifest.json ~/.config/webvideodownloader/
+```
+
+#### Pushing your own changes back
+
+Pushing over HTTPS does not authenticate on this setup; use SSH. Either push to
+the SSH URL explicitly:
+
+```bash
+git push git@github.com:loguefx/DownloaderWeb.git linux:linux
+```
+
+…or point `origin` at SSH once, after which plain `git push` works:
+
+```bash
+git remote set-url origin git@github.com:loguefx/DownloaderWeb.git
+git push
+```
+
+That needs your SSH key (`~/.ssh/id_ed25519`) restored on the new install and
+added to GitHub. Back up `~/.ssh` alongside the config above, or generate a new
+key with `ssh-keygen -t ed25519` and add it at GitHub → Settings → SSH keys.
 
 #### Alternative: run from source (developer mode)
 
@@ -178,8 +269,11 @@ Everything above works the same on Linux. Two extra notes:
   (`sysctl kernel.unprivileged_userns_clone=1`) or run with
   `npm start -- --no-sandbox`.
 
-Default download folder resolves to `~/Downloads` and app state lives under
-`~/.config/WebVideoDownloader/`.
+Default download folder resolves to `~/Downloads` and app state (queue manifest,
+presets, waiting-for-dub list, browser cookies) lives under
+`~/.config/webvideodownloader/`. Neither is in the repo — see
+[Reinstalling the OS](#reinstalling-the-os--moving-to-a-new-machine) before you
+wipe a disk.
 
 ## Usage
 
