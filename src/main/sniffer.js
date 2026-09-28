@@ -220,7 +220,7 @@ class Sniffer extends EventEmitter {
     this.attachSession(session.fromPartition(config.sessionPartition));
   }
 
-  // Linux gives each SFlix episode its own Chromium partition so five Vidfast
+  // Each SFlix episode gets its own Chromium partition so overlapping Vidfast
   // players do not spend one-shot /s/ tokens on each other.
   attachSession(sess) {
     if (!sess || sess._wvdSniffAttached) return;

@@ -69,19 +69,17 @@ for Linux**:
 
 | Branch | Use it for |
 | --- | --- |
-| `main` | Windows. Uses the `<webview>` / NontonGo progressive-MP4 path. |
-| `linux` | **Linux (CachyOS).** All Linux capture work lives here. |
+| `main` | Older Windows line. Visible browser is a `<webview>` and SFlix prefers NontonGo. |
+| `linux` | **Current capture fixes, on Windows and Linux.** Vidfast live-player HLS, vidapi fallback, per-episode sessions. Windows still uses `<webview>` for the visible browser; Linux uses a BrowserView because Wayland paints `<webview>` black. |
 
-`git clone` checks out `main`, so on Linux you must `git checkout linux`
-immediately after cloning or you will be running the Windows code path.
+`git clone` checks out `main`. Use `linux` on either OS to get the capture fixes.
 
 ```bash
 git checkout linux
 git branch --show-current      # must print: linux
 ```
 
-Keep the two separate: Linux fixes go on `linux`, so `main` stays untouched for
-Windows.
+Capture fixes land on `linux`. `main` stays the older Windows line.
 
 ### CachyOS / Arch quick start
 

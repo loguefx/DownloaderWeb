@@ -237,31 +237,30 @@ module.exports = {
     sourceSelector: '.player-tab-btn',
     sourceWaitMs: 14000,
     pageSettleMs: 3000,
-    // embedmaster is blob/Turnstile offscreen; multiembed is Cloudflare (both
-    // re-probed on Linux: their frame chains dead-end at challenges.cloudflare
-    // .com). Windows skips vidfast (segments are not fetchable from Node) and
-    // uses NontonGo progressive MP4 at 5-wide. Linux NontonGo/EmbedFlix never
-    // requests /_stream (nested Cloudflare iframe), so skip it and capture
-    // Vidfast. Each episode gets its own Chromium partition so five live
-    // players can run without sharing tokens.
+    // embedmaster is blob/Turnstile; multiembed is Cloudflare. Both dead-end
+    // at challenges.cloudflare.com. Vidfast is the primary capture on every OS:
+    // the live player supplies HLS parts that Node cannot fetch. vidapi is
+    // deferred so it only runs when Vidfast has no source (it 500s on those);
+    // it serves playable HLS through videm.xyz.
     //
-    // vidapi is no longer skipped on Linux: it now serves playable HLS through
-    // videm.xyz, and it is the only fallback for episodes Vidfast has no source
-    // for (it 500s on those). It is deferred, not preferred, so Vidfast stays
-    // the first choice and the working path is unchanged.
+    // Linux NontonGo never requests /_stream (nested Cloudflare iframe), so it
+    // is skipped there. Windows can still finish from that progressive MP4,
+    // but only after Vidfast and vidapi. Each episode gets its own Chromium
+    // partition so overlapping players do not spend one-shot /s/ tokens.
     maxSources: 5,
     skipEmbedHosts: [
-      ...(process.platform === 'win32' ? [/vidapi\./i, /vidfast\./i] : [/nontongo/i]),
+      ...(process.platform === 'linux' ? [/nontongo/i] : []),
       /embedmaster\.|embdmstrplayer/i,
       /multiembed\.|streamingnow\.mov/i
     ],
-    preferEmbedHosts: process.platform === 'win32' ? [/nontongo/i] : [],
-    deferEmbedHosts: process.platform === 'win32' ? [] : [/vidapi\./i]
+    preferEmbedHosts: [],
+    deferEmbedHosts: [/vidapi\./i],
+    fallbackEmbedHosts: process.platform === 'win32' ? [/nontongo/i] : []
   },
 
-  // NontonGo MP4 downloads like Windows: 5 files at once, prefetch the next
-  // episode. Vidfast token-CDN capture is serialized in the queue so overlapping
-  // live players cannot spend one-shot /s/ tokens.
+  // Five files at once, and prefetch the next episode. Vidfast players are
+  // isolated by per-episode partitions so overlapping captures do not share
+  // one-shot /s/ tokens.
   download: {
     concurrency: 5,
     prefetchDiscover: 1
@@ -447,7 +446,34 @@ module.exports = {
       );
       await delay(800);
     } else {
-      onLog('SFlix: no server tabs yet; scanner will retry.');
+      let title = '';
+      let pageUrl = '';
+      try {
+        title = wc.getTitle();
+        pageUrl = wc.getURL();
+      } catch (e) {
+        // ignore
+      }
+      onLog(
+        `SFlix: no server tabs yet${title || pageUrl ? ` (${title || 'untitled'} @ ${pageUrl})` : ''}; scanner will retry.`
+      );
+      if (/just a moment|attention required/i.test(title)) {
+        onLog('SFlix page is a Cloudflare check; waiting for it to finish...');
+        const until = Date.now() + 25000;
+        while (Date.now() < until) {
+          await delay(500);
+          let still = false;
+          try {
+            still = await wc.executeJavaScript(
+              `(() => /just a moment|attention required/i.test(document.title || ''))()`,
+              true
+            );
+          } catch (e) {
+            break;
+          }
+          if (!still) break;
+        }
+      }
     }
 
     let mediaId = '';

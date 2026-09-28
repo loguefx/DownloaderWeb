@@ -650,7 +650,9 @@ function rankSource(src, dub) {
   const u = `${src.playerUrl || ''} ${src.label || ''}`;
   const prefer = dub.preferEmbedHosts || [];
   const defer = dub.deferEmbedHosts || [];
+  const fallback = dub.fallbackEmbedHosts || [];
   if (prefer.some((re) => re && re.test(u))) return 0;
+  if (fallback.some((re) => re && re.test(u))) return 3;
   if (defer.some((re) => re && re.test(u))) return 2;
   return 1;
 }
@@ -696,6 +698,13 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
     // These providers redirect a couple of times (myvidplay -> playmogo) and
     // sometimes never fire "loaded" at all, so a slow load is not a failure:
     // start clicking/waiting anyway, because the player may already be running.
+    if (win._wvdReady) {
+      try {
+        await win._wvdReady;
+      } catch (e) {
+        // load anyway
+      }
+    }
     const loaded = await Promise.race([
       wc.loadURL(embedUrl, { httpReferrer: referrer }).then(
         () => true,

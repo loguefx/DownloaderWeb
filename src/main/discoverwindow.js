@@ -17,7 +17,6 @@ const live = new Set();
 const ownerPartitions = new Map();
 
 function partitionForOwner(ownerId) {
-  if (process.platform !== 'linux') return config.sessionPartition;
   if (ownerId && ownerPartitions.has(ownerId)) return ownerPartitions.get(ownerId);
   const name = `persist:wvd-${ownerId || Date.now()}`;
   if (ownerId) ownerPartitions.set(ownerId, name);
@@ -114,7 +113,6 @@ function cloakForPlayback(win, size = null) {
   } catch (e) {
     // ignore
   }
-  if (process.platform !== 'linux') return;
   try {
     const wc = win.webContents;
     if (wc && !wc.isDestroyed()) wc.setBackgroundThrottling(false);
@@ -241,8 +239,7 @@ function attachOpenHandler(win, owner, partition) {
     } catch (e) {
       // ignore
     }
-    if (process.platform === 'linux') cloakForPlayback(child);
-    else cloak(child);
+    cloakForPlayback(child);
     attachOpenHandler(child, owner, partition);
   });
 }
@@ -261,13 +258,17 @@ function createDiscoverWindow(ownerId = null) {
   cloakAll();
   const linux = process.platform === 'linux';
   const park = linux ? linuxParkOrigin() : { x: -32000, y: -32000 };
-  let partition = config.sessionPartition;
-  if (linux) {
-    if (ownerId) {
-      partition = partitionForOwner(ownerId);
-    } else {
-      partition = `persist:wvd-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-    }
+  // The catalog page on Windows must use the visible browser's session.
+  // A fresh partition has no Cloudflare clearance and sits on "Just a moment…".
+  // Player windows (ownerId set) still get a private partition so Vidfast
+  // one-shot tokens are not shared between episodes.
+  let partition;
+  if (!linux && !ownerId) {
+    partition = config.sessionPartition;
+  } else if (ownerId) {
+    partition = partitionForOwner(ownerId);
+  } else {
+    partition = `persist:wvd-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   }
   try {
     require('./sniffer').attachSession(session.fromPartition(partition));
@@ -288,7 +289,7 @@ function createDiscoverWindow(ownerId = null) {
     webPreferences: playerPrefs(partition)
   });
   const owner = ownerId || win.webContents.id;
-  if (linux && !ownerId) ownerPartitions.set(owner, partition);
+  if (!ownerId && partition !== config.sessionPartition) ownerPartitions.set(owner, partition);
   track(win, owner);
   try {
     win.webContents.setBackgroundThrottling(false);
@@ -296,13 +297,56 @@ function createDiscoverWindow(ownerId = null) {
     // ignore
   }
   attachOpenHandler(win, owner, partition);
+  win._wvdPartition = partition;
+  win._wvdReady = seedSharedCookies(partition);
   try {
     win.showInactive();
   } catch (e) {
     // ignore
   }
+  // Catalog pages stay off-screen. Player windows call cloakForPlayback so
+  // HLS.js keeps decoding on Windows the same way it does on Linux.
   cloak(win);
   return win;
+}
+
+// A brand-new partition has no Cloudflare clearance, so SFlix sits on
+// "Just a moment…" and discovery sees no server tabs. Copy the visible
+// browser's cookies across, but not token-CDN cookies — those are one-shot
+// and must stay inside the episode that earned them.
+const TOKEN_COOKIE_RE =
+  /vidfast|peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger|videm|vidapi/i;
+
+async function seedSharedCookies(partition) {
+  if (!partition || partition === config.sessionPartition) return;
+  let cookies = [];
+  try {
+    cookies = await session.fromPartition(config.sessionPartition).cookies.get({});
+  } catch (e) {
+    return;
+  }
+  const to = session.fromPartition(partition);
+  for (const c of cookies) {
+    const domain = String(c.domain || '');
+    if (!domain || TOKEN_COOKIE_RE.test(domain)) continue;
+    const host = domain.replace(/^\./, '');
+    const details = {
+      url: `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`,
+      name: c.name,
+      value: c.value,
+      path: c.path || '/',
+      secure: !!c.secure,
+      httpOnly: !!c.httpOnly
+    };
+    if (c.domain && !String(c.name || '').startsWith('__Host-')) details.domain = c.domain;
+    if (c.expirationDate) details.expirationDate = c.expirationDate;
+    if (c.sameSite && c.sameSite !== 'unspecified') details.sameSite = c.sameSite;
+    try {
+      await to.cookies.set(details);
+    } catch (e) {
+      // ignore cookies Chromium will not accept on this partition
+    }
+  }
 }
 
 // All webContents belonging to the same discovery run as `webContentsId`,
@@ -400,5 +444,6 @@ module.exports = {
   cloak,
   cloakAll,
   cloakForPlayback,
-  reveal
+  reveal,
+  seedSharedCookies
 };

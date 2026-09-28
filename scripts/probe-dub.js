@@ -49,7 +49,7 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch(
   'disable-features',
-  'CalculateNativeWinOcclusion,ThirdPartyCookiePhaseout,TrackingProtection3pcd'
+  'CalculateNativeWinOcclusion,ThirdPartyCookiePhaseout,TrackingProtection3pcd,SpeculationRulesPrefetch,Prerender2'
 );
 
 const CHROME_VERSION = process.versions.chrome || '124.0.0.0';

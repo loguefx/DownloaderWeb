@@ -2036,9 +2036,10 @@ function isCdnMediaUrl(url) {
 function shouldCopyFetchBody(url, len) {
   if (/\.m3u8(\?|$)/i.test(url || '')) return true;
   if (!isCdnMediaUrl(url)) return false;
-  // Linux Electron 31 SIGSEGV'd / timed out on multi-MB Fetch.getResponseBody.
-  // VOD /r2/ parts are 3–5 MB; copy those via net.request / chunked worker fetch.
-  if (len > 0 && process.platform === 'linux' && len >= 2 * 1024 * 1024) return false;
+  // Electron 31 SIGSEGV'd / timed out on multi-MB Fetch.getResponseBody (seen on
+  // Linux; the same copy is not the reliable path on Windows either). VOD
+  // /r2/ parts are 3–5 MB; copy those via net.request / chunked worker fetch.
+  if (len > 0 && len >= 2 * 1024 * 1024) return false;
   if (len > 0 && len >= CDP_BODY_MAX) return false;
   return true;
 }
@@ -2376,9 +2377,9 @@ async function installPlayerCdpTap(wc) {
       );
       if (!interesting) return;
       console.log(`[cdp] fin n=${n} id=${params.requestId} ${String(url || '(no url)').slice(0, 96)}`);
-      // 3–5 MB VOD parts time out or SIGSEGV inside Network.getResponseBody on
-      // Linux. Do not enqueue those copies; pullRemainingViaPlayer writes them.
-      if (process.platform === 'linux' && n > 2 * 1024 * 1024) return;
+      // 3–5 MB VOD parts time out or SIGSEGV inside Network.getResponseBody.
+      // Do not enqueue those copies; pullRemainingViaPlayer writes them.
+      if (n > 2 * 1024 * 1024) return;
       const sid = (rec && rec.sessionId) || sessionId;
       enqueueFetchBodyCopy(wc, async () => {
         try {

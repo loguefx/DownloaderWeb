@@ -22,7 +22,14 @@ const range = (a, b) => {
   return out;
 };
 
-function loadWithTimeout(win, url, timeoutMs) {
+async function loadWithTimeout(win, url, timeoutMs) {
+  if (win && win._wvdReady) {
+    try {
+      await win._wvdReady;
+    } catch (e) {
+      // load anyway
+    }
+  }
   return new Promise((resolve) => {
     let settled = false;
     const done = () => {
