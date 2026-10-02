@@ -1,0 +1,36 @@
+[
+    {
+        "guid": "c86748fd-475a-4cf0-bae0-83b0c8bc9273",
+        "name": "Media Downloader",
+        "description": "Browser-side bridge between Jellyfin and the DownloaderWeb engine: the plugin keeps the engine key server-side, queues download jobs exactly once (outbox), and surfaces engine health/queue in the dashboard.",
+        "overview": "Queues movies, series and anime for the DownloaderWeb engine and shows its health and queue.",
+        "owner": "loguefx",
+        "category": "General",
+        "versions": [
+            {
+                "version": "12.0.0.1",
+                "changelog": "Version 12.0.0.1",
+                "targetAbi": "12.0.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.12.0.0.1.zip",
+                "checksum": "96fd9deda9f5d8527991f97219def6e4",
+                "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.11.0.1",
+                "changelog": "Version 10.11.0.1",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
+                "checksum": "157e16b8036798740d169bb5da01b0b9",
+                "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.1",
+                "changelog": "Version 10.10.0.1",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.10.0.1.zip",
+                "checksum": "c34e090b4cb1f031dd1ac3207f3ef8b8",
+                "timestamp": "2026-10-02T21:43:11.977Z"
+            }
+        ]
+    }
+]
