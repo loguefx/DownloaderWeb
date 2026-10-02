@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.0.0.3",
+                "changelog": "Fix startup NullReferenceException: plugin instance is now resolved lazily in the DI factories (with an IApplicationPaths fallback for the outbox folder). Installs cleanly on 10.10/10.11/12.",
+                "targetAbi": "12.0.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v3/MediaDownloader.12.0.0.3.zip",
+                "checksum": "14eec55be39d9331200c31207405f8a9",
+                "timestamp": "2026-10-02T23:44:06.795Z"
+            },
+            {
                 "version": "12.0.0.2",
                 "changelog": "Add Verify drives: engine write+read round-trip per folder, plugin MediaDownloader/Verify proxy, Settings button. Same-letter (zero pathMappings) is now the documented primary setup.",
                 "targetAbi": "12.0.0.0",
@@ -24,6 +32,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.3",
+                "changelog": "Fix startup NullReferenceException: plugin instance is now resolved lazily in the DI factories (with an IApplicationPaths fallback for the outbox folder). Installs cleanly on 10.10/10.11/12.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v3/MediaDownloader.10.11.0.3.zip",
+                "checksum": "3aa83e49efc4fb947a78ad4cf9b70f05",
+                "timestamp": "2026-10-02T23:44:06.795Z"
+            },
+            {
                 "version": "10.11.0.2",
                 "changelog": "Add Verify drives: engine write+read round-trip per folder, plugin MediaDownloader/Verify proxy, Settings button. Same-letter (zero pathMappings) is now the documented primary setup.",
                 "targetAbi": "10.11.0.0",
@@ -38,6 +54,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.3",
+                "changelog": "Fix startup NullReferenceException: plugin instance is now resolved lazily in the DI factories (with an IApplicationPaths fallback for the outbox folder). Installs cleanly on 10.10/10.11/12.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v3/MediaDownloader.10.10.0.3.zip",
+                "checksum": "6b638510064eb4717112a2b7c99c5741",
+                "timestamp": "2026-10-02T23:44:06.795Z"
             },
             {
                 "version": "10.10.0.2",
