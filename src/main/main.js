@@ -1,5 +1,18 @@
 'use strict';
 
+// Closing the terminal that launched the app breaks stdout. console.log then
+// emits EPIPE on the next tick (the try/catch around the log cannot see it),
+// and Electron shows that as an uncaught-exception dialog while downloads
+// continue. Swallow the broken-pipe error and leave every other stream error.
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') {
+    stream.on('error', (err) => {
+      if (err && (err.code === 'EPIPE' || err.code === 'ECONNRESET')) return;
+      throw err;
+    });
+  }
+}
+
 const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
@@ -88,6 +101,9 @@ if (process.platform === 'linux') {
   );
 }
 app.commandLine.appendSwitch('disable-features', disabledFeatures.join(','));
+// Cloudflare's check stays on "Just a moment..." while this Blink flag is set,
+// which is the default for an Electron app. The check still runs; it can finish.
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
 
 // A realistic Chrome User-Agent. Many video hosts/players serve a broken page or
 // refuse to play when they see Electron's default UA. We derive the real bundled
@@ -363,10 +379,15 @@ app.whenReady().then(() => {
   // bulk/pending, avoiding a circular require inside the queue module).
   manager.restore((rec) => {
     const meta = { series: rec.series, season: rec.season, episode: rec.episode };
-    try {
-      if (organizer.existingEpisodeFile(rec.outputRoot, meta, '.mp4')) return { skip: true };
-    } catch (e) {
-      // fall through and re-queue
+    const floor = (sites.resolve(rec.url || rec.baseUrl || '') || {}).minHeight || 0;
+    // SFlix files under 1080p have to come back through discovery. Skipping
+    // them here would drop the episode URL and leave the short copy in place.
+    if (!floor) {
+      try {
+        if (organizer.existingEpisodeFile(rec.outputRoot, meta, '.mp4')) return { skip: true };
+      } catch (e) {
+        // fall through and re-queue
+      }
     }
     const spec = {
       label: rec.label,

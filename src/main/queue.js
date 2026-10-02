@@ -8,7 +8,7 @@ const config = require('./config');
 const vpn = require('./vpn');
 const organizer = require('./organizer');
 const { download } = require('./downloader');
-const { verifyFile } = require('./verify');
+const { verifyFile, belowMinHeight } = require('./verify');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
 
@@ -303,6 +303,20 @@ class DownloadManager extends EventEmitter {
     this._releaseDownloadSlots();
   }
 
+  _minHeight(item) {
+    const url = String((item && (item.url || item.baseUrl)) || '');
+    const profile = url ? sites.resolve(url) : null;
+    return (profile && profile.minHeight) || 0;
+  }
+
+  _dropShortFile(filePath) {
+    try {
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (e) {
+      // ignore
+    }
+  }
+
   async _process(item) {
     while (true) {
       if (this._stopRequested) {
@@ -328,25 +342,52 @@ class DownloadManager extends EventEmitter {
         item.error = null;
         this._emit();
 
-        const finalPath = organizer.buildOutputPath(
-          item.outputRoot,
-          { series: item.series, season: item.season, episode: item.episode },
-          '.mp4'
-        );
+        const meta = { series: item.series, season: item.season, episode: item.episode };
+        const finalPath = organizer.expectedPath(item.outputRoot, meta, '.mp4');
+        organizer.ensureDir(path.dirname(finalPath));
         item.finalPath = finalPath;
         organizer.cleanupCaptureJunk(path.dirname(finalPath));
         const partPath = finalPath + '.part';
-        const existing = fs.existsSync(finalPath) ? finalPath : fs.existsSync(partPath) ? partPath : '';
+        const found = organizer.existingEpisodeFile(item.outputRoot, meta, '.mp4') || '';
         // A .part is an aborted remux until proven otherwise. verifyFile with no
         // minDuration only asks for 20s and 64KB, so promoting one on that basis
         // renamed truncated files to .mp4 and reported them Completed. Only trust
         // a .part when a previous attempt recorded how long the episode runs.
         const expected = item.expectedDuration > 0 ? item.expectedDuration : 0;
-        const trustable = existing && (existing === finalPath || expected > 0);
-        if (trustable) {
-          const already = await verifyFile(existing, expected ? { minDuration: expected } : {});
-          if (already.ok) {
-            if (existing === partPath) fs.renameSync(partPath, finalPath);
+        const floor = this._minHeight(item);
+        if (found) {
+          const already = await verifyFile(found, expected ? { minDuration: expected } : {});
+          if (already.ok && !belowMinHeight(already, floor)) {
+            item.finalPath = found;
+            item.status = 'done';
+            item.progress = 1;
+            item.bytes = already.bytes || item.bytes;
+            this._emit();
+            this._log(
+              `Completed: ${path.basename(found)} (kept a finished file from a previous attempt)`
+            );
+            if (typeof item.onDone === 'function') {
+              try {
+                item.onDone(item);
+              } catch (e) {
+                // ignore
+              }
+            }
+            this._pruneGroupIfComplete(item.group);
+            return { fatal: false };
+          }
+          if (already.ok && belowMinHeight(already, floor)) {
+            item._replacePath = found;
+            item._replaceHeight = already.height;
+            this._log(
+              `"${item.label}" is ${already.height}p, not ${floor}p. On the download list; ` +
+                `that file will be removed when the ${floor}p copy replaces it.`
+            );
+          }
+        } else if (expected > 0 && fs.existsSync(partPath)) {
+          const already = await verifyFile(partPath, { minDuration: expected });
+          if (already.ok && !belowMinHeight(already, floor)) {
+            fs.renameSync(partPath, finalPath);
             item.status = 'done';
             item.progress = 1;
             item.bytes = already.bytes || item.bytes;
@@ -366,7 +407,29 @@ class DownloadManager extends EventEmitter {
           }
         }
 
-        const outcome = await item.discover();
+        let outcome;
+        {
+          const _prof = sites.resolve(item.url || item.baseUrl || '');
+          if (_prof && typeof _prof.directResolve === 'function') {
+            try {
+              outcome = await _prof.directResolve(
+                {
+                  title: item.label || item.series,
+                  series: item.series,
+                  season: item.season,
+                  episode: item.episode,
+                  url: item.url || item.baseUrl || '',
+                  baseUrl: item.baseUrl || item.url || ''
+                },
+                { onLog: (m) => this._log(m) }
+              );
+            } catch (e) {
+              this._log('Headless resolve failed (' + ((e && e.message) || e) + '); using browser path.');
+              outcome = null;
+            }
+          }
+        }
+        if (!outcome || outcome.status !== 'resolved') outcome = await item.discover();
         const status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 
         if (status === 'unavailable') {
@@ -490,6 +553,13 @@ class DownloadManager extends EventEmitter {
             this._log(
               `"${item.label}" could not download from "${lab}"; next try will use a different server.`
             );
+          } else if (lab && bound && /not return an HLS playlist|no playlist/i.test((err && err.message) || '')) {
+            item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+            const key = String(lab).toLowerCase();
+            if (!item.skipSources.includes(key)) item.skipSources.push(key);
+            this._log(
+              `"${item.label}" got an empty playlist from "${lab}"; next try will use a different server.`
+            );
           } else if (lab && bound) {
             this._log(
               `"${item.label}" capture from "${lab}" failed; retrying the same player on the next attempt.`
@@ -513,12 +583,32 @@ class DownloadManager extends EventEmitter {
           }
           throw new Error('Verification failed: ' + v.reason);
         }
+        if (belowMinHeight(v, floor)) {
+          this._dropShortFile(partPath);
+          if (!item._replacePath) this._dropShortFile(finalPath);
+          const lab = detection && detection.sourceLabel;
+          if (lab) {
+            item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+            const key = String(lab).toLowerCase();
+            if (!item.skipSources.includes(key)) item.skipSources.push(key);
+          }
+          throw new Error(`downloaded ${v.height}p, not ${floor}p`);
+        }
 
+        const previous = item._replacePath;
+        const previousHeight = item._replaceHeight;
+        if (previous && path.resolve(previous) !== path.resolve(finalPath)) {
+          this._dropShortFile(previous);
+        }
         fs.renameSync(partPath, finalPath);
         item.status = 'done';
         item.progress = 1;
         this._emit();
-        this._log(`Completed: ${path.basename(finalPath)}`);
+        this._log(
+          previousHeight
+            ? `Replaced ${path.basename(finalPath)}: removed the ${previousHeight}p file, saved ${v.height}p.`
+            : `Completed: ${path.basename(finalPath)}`
+        );
         if (typeof item.onDone === 'function') {
           try {
             item.onDone(item);
@@ -542,6 +632,30 @@ class DownloadManager extends EventEmitter {
         this._log(`Error on "${item.label}" (attempt ${item.attempts}): ${err.message}`);
         item.status = 'queued';
         this._emit();
+        const wrongRes = /downloaded \d+p, not \d+p/.test(err.message || '');
+        if (wrongRes) {
+          const max = Math.max(1, config.download.maxRetries || 6);
+          if (item.attempts >= max) {
+            item.status = 'failed';
+            this._emit();
+            this._log(
+              `Gave up on "${item.label}" after ${item.attempts} tries (${err.message}). ` +
+                'Stopped retrying so other downloads can start.'
+            );
+            return { fatal: false };
+          }
+          item.status = 'queued';
+          this._emit();
+          const wait = Math.min(
+            config.download.retryMaxDelayMs || 60000,
+            config.download.retryBaseDelayMs * Math.min(item.attempts, 20)
+          );
+          this._log(
+            `"${item.label}" ${err.message}. Back on the queue for a higher-quality copy; retrying in ${Math.round(wait / 1000)}s.`
+          );
+          await delay(wait);
+          continue;
+        }
         const rateLimited = /429|too many requests/i.test(err.message || '');
         const wait = rateLimited
           ? Math.min(90000, (config.download.rateLimitCooldownMs || 30000) * Math.min(item.attempts, 3))

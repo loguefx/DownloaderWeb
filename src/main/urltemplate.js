@@ -63,7 +63,7 @@ function toTemplate(sampleUrl) {
   //   /episodes/{slug}-s01e01-{title-slug}/
   // Series pages have no episode number at all; hash-tokenize them like FilmeHD
   // so bulk can still probe the series page and then use the real Watch hrefs.
-  if (/soap2day\.day|sflixz\.day/i.test(t)) {
+  if (/soap2day\.day|sflixz\.day|sflix\.(?:bz|ch|vg)\b/i.test(t)) {
     if (/\/episodes\//i.test(t) && /season[-_]\d+/i.test(t) && /episode[-_]\d+/i.test(t)) {
       t = t.replace(/season[-_]\d+/i, 'season-{season}').replace(/episode[-_]\d+/i, 'episode-{episode}');
       return { template: t, season };

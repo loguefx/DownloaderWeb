@@ -17,7 +17,8 @@ module.exports = {
       /\.mpd(\?|$)/i,
       /\.mp4(\?|$)/i,
       /\/hls\//i,
-      /\/playlist(?:\.m3u8)?(?:\?|$)/i,
+      // Videm /playlist/<token>. A bare /playlist/ also matches icon SVGs.
+      /\/playlist\/[A-Za-z0-9_-]{12,}/i,
       /\/master(?:\.m3u8)?(?:\?|$)/i,
       // NontonGo / EmbedFlix token progressive MP4 (no file extension).
       /\/_stream(?:\?|$)/i
@@ -59,6 +60,16 @@ module.exports = {
       dub: [/[-_/]dub([-_/.]|$)/i, /\bdubbed\b/i],
       sub: [/[-_/]sub([-_/.]|$)/i, /\bsubbed\b/i]
     }
+  },
+
+  // Optional Cloudflare solver (FlareSolverr-compatible). When solverUrl is
+  // set, a challenged page is first sent there and the clearance cookies are
+  // imported into the shared session, so the user never has to click the
+  // checkbox. Leave '' to use the built-in on-screen wait (current behaviour).
+  // e.g. solverUrl: 'http://localhost:8191/v1/request'
+  cloudflare: {
+    solverUrl: '',
+    timeoutMs: 90000
   },
 
   // Mullvad VPN monitoring.

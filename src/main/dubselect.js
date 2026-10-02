@@ -6,8 +6,10 @@ const { webContents } = require('electron');
 const config = require('./config');
 const sniffer = require('./sniffer');
 const sites = require('./sites');
-const { createDiscoverWindow, cloakForPlayback } = require('./discoverwindow');
+const findtitle = require('./sites/findtitle');
+const { createDiscoverWindow, cloakForPlayback, presentChallenge } = require('./discoverwindow');
 const hlscheck = require('./hlscheck');
+const cfsolve = require('./cfsolve');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -523,6 +525,95 @@ function isHopShell(url) {
   return /nontongo/i.test(u) || /embedflix\.win\/embed\//i.test(u);
 }
 
+// Vidapi refuses to play as a top-level page (it paints "404 — Page Not Found"
+// when window === window.top). The real players are the server-button data-src
+// values; the stream.vidapi.xyz/*-tv pages only rewrite those into another embed.
+function pagePlaylistRejected(ownerId) {
+  try {
+    const ownerWc = ownerId != null ? webContents.fromId(ownerId) : null;
+    return !!(ownerWc && ownerWc._wvdPagePlaylistRejected);
+  } catch (e) {
+    return false;
+  }
+}
+
+function isVidapiShell(url) {
+  try {
+    const host = new URL(String(url || '')).hostname.replace(/^www\./i, '');
+    return host === 'vidapi.xyz';
+  } catch (e) {
+    return false;
+  }
+}
+
+function vidapiDownstream(dataSrc) {
+  let u;
+  try {
+    u = new URL(String(dataSrc || ''));
+  } catch (e) {
+    return '';
+  }
+  const host = u.hostname.replace(/^www\./i, '');
+  if (host !== 'stream.vidapi.xyz') {
+    if (/embedmaster\.|embdmstrplayer|multiembed\.|streamingnow\.mov|nontongo/i.test(String(dataSrc || ''))) {
+      return '';
+    }
+    return /^https?:/i.test(String(dataSrc || '')) ? String(dataSrc) : '';
+  }
+  const tmdb = u.searchParams.get('tmdb') || '';
+  const season = u.searchParams.get('s') || '';
+  const episode = u.searchParams.get('e') || '';
+  if (!/^\d+$/.test(tmdb)) return '';
+  const id = season && episode ? `${tmdb}/${season}/${episode}` : tmdb;
+  const routes = [
+    [/\/xps-tv\b/i, `https://videm.xyz/embed/tv/${id}`],
+    [/\/vnest-tv\b/i, `https://cineby.hair/tv/${id}`],
+    [/\/vcr-tv\b/i, `https://vidcore.net/tv/${id}`],
+    [/\/vesy-tv\b/i, `https://player.videasy.to/tv/${id}`],
+    [/\/vsrcc-tv\b/i, `https://vidsrc.cc/v2/embed/tv/${id}`],
+    [/\/vsrc-tv\b/i, `https://vsembed.ru/embed/tv/${id}`],
+    [/\/vpls-tv\b/i, `https://peachify.top/embed/tv/${id}`]
+  ];
+  const hit = routes.find(([re]) => re.test(u.pathname));
+  return hit ? hit[1] : '';
+}
+
+async function vidapiPlayerHops(wc) {
+  const list = await evalJs(
+    wc,
+    `(() => {
+      const btns = Array.from(document.querySelectorAll('.server-btn[data-src]'));
+      const active = btns.filter((b) => b.classList.contains('active'));
+      const rest = btns.filter((b) => !b.classList.contains('active'));
+      const frame = document.getElementById('iframesrc');
+      const framed = frame ? frame.getAttribute('data-src') || '' : '';
+      return []
+        .concat(active.map((b) => b.getAttribute('data-src') || ''))
+        .concat(framed ? [framed] : [])
+        .concat(rest.map((b) => b.getAttribute('data-src') || ''))
+        .filter(Boolean);
+    })()`,
+    EVAL_MS
+  );
+  const hops = [];
+  const seen = new Set();
+  for (const src of Array.isArray(list) ? list : []) {
+    const next = vidapiDownstream(src);
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    hops.push({ player: next, referrer: src });
+  }
+  const rank = (player) => {
+    if (/videm\.xyz/i.test(player)) return 0;
+    if (/vidfast\./i.test(player)) return 1;
+    return 2;
+  };
+  hops.sort((a, b) => rank(a.player) - rank(b.player));
+  // Videm first, then the other Vidapi players. A player under 1080p is
+  // skipped by the caller so the next one still gets a chance.
+  return hops.slice(0, 4);
+}
+
 function urlsHaveInPagePlayer(urls, base) {
   return (urls || []).some((u) =>
     /nextgencloudfabric|cloudfabric|player\.embedflix|videoplayback\.php/i.test(absolutizeUrl(u, base))
@@ -631,19 +722,98 @@ async function pageIsCloudflare(wc) {
   ));
 }
 
-async function waitOutCloudflare(wc, onLog, ms = 25000) {
+// "Sorry, you have been blocked" / "Access denied" is a Cloudflare HARD
+// block, not a challenge. No checkbox exists and waiting (even 5 minutes) can
+// never turn it into a pass — vixsrc.to did exactly that and burned the whole
+// server attempt. Detect it and skip the embed immediately.
+async function pageIsHardBlocked(wc) {
+  return !!(await evalJs(
+    wc,
+    `(() => {
+      const body = document.body ? document.body.innerText : '';
+      const t = ((document.title || '') + ' ' + body).slice(0, 600);
+      if (/sorry,? you (?:have been|are) blocked|you are unable to access|access to this (?:site|page) has been denied|access denied|request blocked/i.test(t)) return true;
+      const html = (document.documentElement && document.documentElement.innerHTML || '').slice(0, 6000);
+      if (/cf-error/i.test(html) && /error 10(15|16|20|28|32|40)|blocked|denied|unavailable|too many/i.test(html)) return true;
+      return false;
+    })()`,
+    2000
+  ));
+}
+
+async function waitOutCloudflare(wc, onLog, ms = 300000, win = null) {
+  if (await pageIsHardBlocked(wc)) {
+    onLog('Cloudflare hard-blocked this page (no challenge to pass); skipping this embed immediately.');
+    return true;
+  }
   if (!(await pageIsCloudflare(wc))) return false;
-  onLog('Player page is a Cloudflare challenge; waiting for it to pass...');
+  // Optional solver first: no on-screen click needed when it is configured.
+  if (cfsolve.enabled()) {
+    let target = '';
+    try {
+      target = wc.getURL();
+    } catch (e) {}
+    if (target && (await cfsolve.trySolver(target, wc, onLog))) {
+      const until = Date.now() + 20000;
+      while (Date.now() < until) {
+        await delay(1000);
+        if (wc.isDestroyed()) return true;
+        if (!(await pageIsCloudflare(wc))) {
+          onLog('Cloudflare challenge cleared (solver).');
+          return false;
+        }
+      }
+    }
+  }
+  // A 25s cap made players like vixsrc.to die with "Cloudflare challenge did
+  // not pass" even though the checkbox was only about to be clicked. Wait up
+  // to five minutes; the periodic log doubles as progress for the discovery
+  // stall watchdog, so bulk.js does not abandon the run mid-wait.
+  onLog(
+    'Player page is a Cloudflare challenge; waiting for it to pass. Click the checkbox if one is showing.'
+  );
+  // Player windows are toolbar-type and parked off-screen, and Turnstile never
+  // finishes in a hidden window. Bring it on-screen and clickable while we
+  // wait, then re-park it for playback once the challenge is settled.
+  if (win && (!win.isDestroyed || !win.isDestroyed())) {
+    try {
+      presentChallenge(win);
+    } catch (e) {
+      // ignore
+    }
+  }
   const until = Date.now() + Math.max(1000, ms);
+  let lastLog = Date.now();
+  let settled = false;
   while (Date.now() < until && wc && !wc.isDestroyed()) {
     await delay(500);
     if (!(await pageIsCloudflare(wc))) {
       onLog('Cloudflare challenge passed.');
-      return false;
+      settled = true;
+      break;
+    }
+    if (Date.now() - lastLog > 10000) {
+      lastLog = Date.now();
+      onLog('Still waiting for the Cloudflare check to finish...');
     }
   }
-  onLog('Cloudflare challenge did not pass; skipping this embed.');
-  return true;
+  if (win && !win.isDestroyed()) {
+    try {
+      cloakForPlayback(win);
+    } catch (e) {
+      // ignore
+    }
+  }
+  if (!settled) {
+    // The vixsrc.to case: the loop exits early when the window is torn down
+    // mid-wait, and the generic line below hid that. Say which happened.
+    if (!wc || wc.isDestroyed() || (win && win.isDestroyed())) {
+      onLog('Player window closed while waiting on the Cloudflare check; skipping this embed.');
+    } else {
+      onLog('Cloudflare challenge did not pass; skipping this embed.');
+    }
+  }
+  return !settled;
 }
 
 function rankSource(src, dub) {
@@ -666,7 +836,16 @@ function orderTryList(tryList, dub) {
 // and never reaches an out-of-process iframe, so while the embed is nested in the
 // site's page that click can't land and the server looks dead. In its own window
 // the same click passes attestation and the player fetches its playlist.
-async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId, signal = null, hopDepth = 0) {
+async function resolveEmbedStandalone(
+  embedUrl,
+  referrer,
+  waitMs,
+  onLog,
+  ownerId,
+  signal = null,
+  hopDepth = 0,
+  minHeight = 0
+) {
   // Never open a new player after the run was cancelled: the caller has already
   // torn down this run's windows, so a window created now would outlive it and
   // keep decoding video alongside the next episode's discovery.
@@ -674,7 +853,10 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
   let win = null;
   let keep = false;
   try {
-    win = createDiscoverWindow(ownerId);
+    // hostHint routes the partition choice: token-CDN hosts get a unique jar
+    // (one-shot tokens), everyone else shares a per-host jar so a Cloudflare
+    // clearance won once is reused by every later player page on that host.
+    win = createDiscoverWindow(ownerId, embedUrl);
   } catch (e) {
     return null;
   }
@@ -706,15 +888,124 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
     if (wc.isDestroyed()) return null;
     if (loaded === null) onLog('Player page is slow to load; clicking it anyway.');
     else onLog('Player page loaded; waiting for its stream...');
+    // This timer starts before any later await. A hung page check used to sit
+    // until the 138s watchdog without ever reaching the media-wait cap.
+    const baseCap = Math.min(Math.max(Number(waitMs) || 0, 8000), 20000);
+    const capMs = isVidapiShell(embedUrl) ? Math.min(baseCap + 20000, 45000) : baseCap + 15000;
+    let capTimer = null;
+    const capPromise = new Promise((resolve) => {
+      capTimer = setTimeout(() => resolve('__wvd_cap__'), capMs);
+    });
+    const raced = await Promise.race([
+      capPromise,
+      (async () => {
+    const sniffedPage = ownerId != null ? sniffer.best(ownerId) : null;
+    const cachedPage = ownerId != null ? hlscheck.cachedPlaylist(ownerId, null) : null;
+    const earlyPage =
+      sniffedPage && sniffedPage.url && /netocdn\.[^/?#]+\/proxy\?url=/i.test(sniffedPage.url)
+        ? sniffedPage
+        : cachedPage && cachedPage.text && /netocdn\./i.test(cachedPage.base || '')
+          ? {
+              url: cachedPage.base,
+              type: 'hls',
+              headers: {},
+              webContentsId: ownerId,
+              playlistText: cachedPage.text,
+              playlistBase: cachedPage.base
+            }
+          : null;
+    let pageRejected = false;
     try {
-      await hlscheck.playPlayerVideo(wc, null);
+      const ownerWc = ownerId != null ? webContents.fromId(ownerId) : null;
+      pageRejected = !!(ownerWc && ownerWc._wvdPagePlaylistRejected);
     } catch (e) {
-      // ignore
+      pageRejected = false;
     }
+    if (!pageRejected && earlyPage && earlyPage.url && /netocdn\./i.test(earlyPage.url)) {
+      onLog('Episode page already loaded a playlist; using that.');
+      earlyPage.playerWebContentsId = ownerId;
+      earlyPage.embedUrl = earlyPage.embedUrl || embedUrl;
+      earlyPage.fromEpisodePage = true;
+      const cached = hlscheck.cachedPlaylist(ownerId, earlyPage.url);
+      if (cached && cached.text) {
+        earlyPage.playlistText = cached.text;
+        earlyPage.playlistBase = cached.base || earlyPage.url;
+      }
+      return earlyPage;
+    }
+    // Vidapi's own document is a dead shell at the top level. Its server list
+    // already names the real player (videm.xyz for the active server), so open
+    // that instead of waiting out the fake 404.
+    if (isVidapiShell(embedUrl) && hopDepth < 4 && !wc.isDestroyed()) {
+      const hops = await vidapiPlayerHops(wc);
+      if (!hops.length) {
+        onLog('Vidapi page had no server list; it is still the top-level 404 shell.');
+      }
+      for (const hop of hops) {
+        if (signal && signal.aborted) return null;
+        onLog(`Vidapi opens ${hop.player}`);
+        // Videm mints /_stream after a sources race. That often lands just
+        // after the 20s standalone floor, with the episode title already set
+        // and video.readyState still 0.
+        const hopWait = /videm\.xyz/i.test(hop.player) ? Math.min(Math.max(waitMs, 12000), 15000) : waitMs;
+        const nested = await resolveEmbedStandalone(
+          hop.player,
+          hop.referrer || embedUrl,
+          hopWait,
+          onLog,
+          ownerId,
+          signal,
+          hopDepth + 1,
+          minHeight
+        );
+        if (nested && minHeight) {
+          const qual = await hlscheck.preferMinHeight(nested, minHeight);
+          if (!qual.ok) {
+            onLog(
+              qual.height
+                ? `${hop.player} is ${qual.height}p, not ${minHeight}p; trying the next player.`
+                : `${hop.player} is not confirmed ${minHeight}p; trying the next player.`
+            );
+            if (typeof nested.releasePlayer === 'function') {
+              try {
+                nested.releasePlayer();
+              } catch (e) {
+                // ignore
+              }
+            }
+            continue;
+          }
+          onLog(`${hop.player} is ${qual.height}p.`);
+        }
+        if (nested) return nested;
+      }
+      if (hops.length) {
+        onLog('Vidapi servers produced no stream.');
+        return null;
+      }
+    }
+    // Listen before the play click. Videm's playlist 403 arrives while that
+    // click is still running, and a listener attached afterwards never sees it,
+    // so the 45s Videm budget used to run out with no new log line.
+    const mediaListen = new AbortController();
+    const stopMediaListen = () => {
+      try {
+        mediaListen.abort();
+      } catch (e) {
+        // ignore
+      }
+    };
+    if (signal) {
+      if (signal.aborted) stopMediaListen();
+      else signal.addEventListener('abort', stopMediaListen, { once: true });
+    }
+    const mediaWait = waitForMedia(id, waitMs, MEDIA_GRACE_MS, mediaListen.signal);
+    const playWait = Promise.race([hlscheck.playPlayerVideo(wc, null), delay(8000)]).catch(() => {});
     // NontonGo and EmbedFlix are shells: the real player is a nested iframe.
     // nextgencloudfabric 404s if opened as its own page, so hop only to
     // player.embedflix / videoplayback and wait for that iframe in-place.
     if (isHopShell(embedUrl) && hopDepth < 4 && !wc.isDestroyed()) {
+      await playWait;
       const hopDeadline = Date.now() + Math.max(waitMs, 22000);
       let hop = null;
       let lastNote = '';
@@ -754,23 +1045,45 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
           onLog,
           ownerId,
           signal,
-          hopDepth + 1
+          hopDepth + 1,
+          minHeight
         );
-        if (nested) return nested;
+        if (nested) {
+          stopMediaListen();
+          return nested;
+        }
         onLog('Nested hop gave no stream; waiting on this player page instead.');
       }
       if (!hop && !inPage) {
         onLog('Player shell never showed a nested player iframe.');
-        if (/nontongo/i.test(String(embedUrl || ''))) return null;
+        if (/nontongo/i.test(String(embedUrl || ''))) {
+          stopMediaListen();
+          return null;
+        }
       }
     }
     if (isRealPlayerPage(embedUrl)) {
       onLog('Waiting on the NontonGo player for a progressive MP4 (/_stream)...');
     }
-    if (await waitOutCloudflare(wc, onLog)) return null;
+    if (await waitOutCloudflare(wc, onLog, 300000, win)) {
+      stopMediaListen();
+      return null;
+    }
     const stopNudging = nudgePlayer(wc, id, waitMs, signal);
-    const arrived = await waitForMedia(id, waitMs, MEDIA_GRACE_MS, signal);
+    // waitForMedia's own timer has failed to resolve (a throw after it marked
+    // itself done), and the episode then sat until the 138s stall. This cap
+    // always logs and moves on.
+    const capMs = Math.min(Math.max(Number(waitMs) || 0, 8000), 20000);
+    let arrived = await Promise.race([
+      mediaWait,
+      delay(capMs).then(() => 'wvd-cap')
+    ]);
     stopNudging();
+    if (arrived === 'wvd-cap') {
+      onLog(`No stream after ${Math.round(capMs / 1000)}s; leaving this player.`);
+      stopMediaListen();
+      arrived = null;
+    }
     if (!arrived) {
       const gone = sniffer.droppedMedia(id);
       if (gone.length) onLog(`Player page stream is not on the CDN (HTTP ${gone[0].status}).`);
@@ -786,7 +1099,8 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
         );
       }
       try {
-        const perf = await wc.executeJavaScript(
+        const perf = await evalJs(
+          wc,
           `(() => {
             const res = performance.getEntriesByType('resource').map((e) => e.name).slice(-24);
             const ifr = Array.from(document.querySelectorAll('iframe')).map((f) => f.src || '').slice(0, 8);
@@ -801,7 +1115,7 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
               res: res.map((n) => String(n).slice(0, 140))
             };
           })()`,
-          true
+          4000
         );
         const blocked = /just a moment|attention required/i.test((perf && perf.title) || '');
         onLog(
@@ -815,8 +1129,54 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
               ? `; iframes=${perf.ifr.filter(Boolean).map((u) => String(u).slice(0, 70)).join(' | ')}`
               : '')
         );
+        const pageStream = ownerId != null ? sniffer.best(ownerId) : null;
+        if (!pagePlaylistRejected(ownerId) && pageStream && pageStream.url && /netocdn\.[^/?#]+\/proxy\?url=/i.test(pageStream.url)) {
+          onLog('Episode page already loaded a playlist; using that.');
+          pageStream.playerWebContentsId = ownerId;
+          pageStream.embedUrl = pageStream.embedUrl || embedUrl;
+          pageStream.fromEpisodePage = true;
+          const cached = hlscheck.cachedPlaylist(ownerId, pageStream.url);
+          if (cached && cached.text) {
+            pageStream.playlistText = cached.text;
+            pageStream.playlistBase = cached.base || pageStream.url;
+          }
+          stopMediaListen();
+          return pageStream;
+        }
+        const nestedUrl = ((perf && perf.ifr) || []).find((u) =>
+          /vidspark\.|vidsrc\.|vidplay\./i.test(String(u || ''))
+        );
+        if (nestedUrl && hopDepth < 4) {
+          onLog(`Opening nested player ${nestedUrl}`);
+          stopMediaListen();
+          const nested = await resolveEmbedStandalone(
+            nestedUrl,
+            embedUrl || referrer,
+            Math.min(waitMs, 20000),
+            onLog,
+            ownerId,
+            signal,
+            hopDepth + 1,
+            minHeight
+          );
+          if (nested) return nested;
+        }
       } catch (e) {
         // ignore
+      }
+      const pageStream = ownerId != null ? sniffer.best(ownerId) : null;
+      if (!pagePlaylistRejected(ownerId) && pageStream && pageStream.url && /netocdn\.[^/?#]+\/proxy\?url=/i.test(pageStream.url)) {
+        onLog('Episode page already loaded a playlist; using that.');
+        pageStream.playerWebContentsId = ownerId;
+        pageStream.embedUrl = pageStream.embedUrl || embedUrl;
+        pageStream.fromEpisodePage = true;
+        const cached = hlscheck.cachedPlaylist(ownerId, pageStream.url);
+        if (cached && cached.text) {
+          pageStream.playlistText = cached.text;
+          pageStream.playlistBase = cached.base || pageStream.url;
+        }
+        stopMediaListen();
+        return pageStream;
       }
       return null;
     }
@@ -841,6 +1201,14 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
       };
     }
     return best;
+      })()
+    ]);
+    if (capTimer) clearTimeout(capTimer);
+    if (raced === '__wvd_cap__') {
+      onLog(`No stream after ${Math.round(capMs / 1000)}s; leaving this player.`);
+      return null;
+    }
+    return raced;
   } catch (e) {
     onLog(`Player page failed to load: ${e && e.message}`);
     return null;
@@ -862,6 +1230,32 @@ async function resolveEmbedStandalone(embedUrl, referrer, waitMs, onLog, ownerId
   }
 }
 
+// Videm's play control is #bigplay. A coordinate click misses it while the
+// window is parked off-screen, so press the button from the page itself.
+async function clickEmbeddedPlay(wc) {
+  if (!wc || wc.isDestroyed()) return;
+  try {
+    await wc.executeJavaScript(
+      `(() => {
+        const sels = ['#bigplay', '#bPlay', '.vjs-big-play-button', '.jw-icon-playback', '[aria-label="Play"]', '[title="Play"]'];
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          if (!el) continue;
+          try { el.click(); } catch (e) {}
+        }
+        const v = document.querySelector('video');
+        if (!v) return;
+        v.muted = true;
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+      })()`,
+      true
+    );
+  } catch (e) {
+    // ignore
+  }
+}
+
 // BYFMS and DGHG draw a "click play to verify you're human" overlay a second or
 // two after their player boots, so a single early click lands on nothing and the
 // server looks dead. Keep nudging until a stream appears or the window closes.
@@ -873,6 +1267,7 @@ function nudgePlayer(wc, webContentsId, windowMs, signal = null) {
       if (signal && signal.aborted) return;
       if (wc.isDestroyed() || sniffer.best(webContentsId)) return;
       await clickPlayerArea(wc);
+      await clickEmbeddedPlay(wc);
       sniffer.forEachRelated(webContentsId, (other) => {
         if (other !== wc) clickPlayerArea(other);
       });
@@ -895,7 +1290,13 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   const cancelled = () => !!(signal && signal.aborted);
   const profile = sites.resolve(url || '');
   const dub = sites.dubConfig(profile);
+  const minHeight = profile.minHeight || 0;
   if (profile.id !== 'generic') onLog(`Using site profile: ${profile.name}`);
+  try {
+    await hlscheck.installPlayerCdpTap(wc);
+  } catch (e) {
+    // The episode page can still be scanned if the debugger tap does not attach.
+  }
 
   await delay(dub.pageSettleMs);
   if (cancelled()) return { status: 'failed', reason: 'Discovery cancelled' };
@@ -1028,6 +1429,37 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     }
   }
 
+  // Remember any TMDB/IMDB id the page's server URLs carry, keyed by the
+  // episode title. The cross-site 1080p walker (Vidsrc primary) runs AFTER
+  // this window has navigated away from this page, so without this the id is
+  // lost from the DOM and the id-keyed adapters cannot target the episode.
+  try {
+    const pageRef = findtitle.episodeRefFromUrl(wc.getURL());
+    if (pageRef.title && pageRef.season && pageRef.episode) {
+      const pageSe = { season: String(pageRef.season), episode: String(pageRef.episode) };
+      const all = (scan.dubSources || []).concat(scan.subSources || []);
+      for (const s of all) {
+        const ids = findtitle.idFromPlayerUrl(s.playerUrl);
+        if (!ids.tmdb && !ids.imdb) continue;
+        const uSe = findtitle.seasonEpisodeFromUrl(s.playerUrl);
+        // Player URL names a different S#E# than the page -> not this episode.
+        // (compare numerically: slugs arrive zero-padded, "01" vs "1")
+        if (
+          uSe.season &&
+          (parseInt(uSe.season, 10) !== parseInt(pageSe.season, 10) ||
+            parseInt(uSe.episode, 10) !== parseInt(pageSe.episode, 10))
+        ) {
+          continue;
+        }
+        if (ids.tmdb) findtitle.rememberMediaId(pageRef.title, ids.tmdb);
+        if (ids.imdb) findtitle.rememberMediaId(pageRef.title, ids.imdb);
+        break;
+      }
+    }
+  } catch (e) {
+    // never block discovery on the id memory
+  }
+
   const reqAttr = wantSub ? 'sub' : 'dub';
   const otherAttr = wantSub ? 'dub' : 'sub';
   const primary = (wantSub ? scan.subSources : scan.dubSources).map((s) => ({ ...s, attr: reqAttr, from: MODE }));
@@ -1060,6 +1492,106 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   }
 
   if (!tryList.length) {
+    // Relay/embed pages (Vidsrc and friends) have NO server tabs: the page
+    // itself is the player. They need real time - Cloudflare challenge, gate
+    // token fetch, nested iframe to a rotating player host, hls.js start -
+    // and the scan above gave up seconds before the first playlist arrived
+    // ("No video sources found on the page" at ~7s while the relay needs
+    // 30-60s). Wait the challenge out, then give the page a real chance to
+    // start streaming before declaring it failed.
+    const win = wc.getOwnerBrowserWindow ? wc.getOwnerBrowserWindow() : null;
+    try {
+      if (await waitOutCloudflare(wc, onLog, 300000, win)) {
+        return { status: 'failed', reason: 'Cloudflare hard-blocked this page' };
+      }
+    } catch (e) {
+      onLog(`Cloudflare wait error: ${e.message || e}`);
+    }
+    if (cancelled()) return { status: 'failed', reason: 'Discovery cancelled' };
+    if (wc.isDestroyed()) return { status: 'failed', reason: 'Discovery window closed' };
+    onLog('No server tabs on this page - treating it as a player/relay and waiting for its stream...');
+    const pageWait = Math.max(dub.sourceWaitMs || 0, 30000);
+    const stopNudging = nudgePlayer(wc, id, pageWait, signal);
+    let arrived = null;
+    try {
+      arrived = await waitForMedia(id, pageWait, MEDIA_GRACE_MS, signal);
+    } finally {
+      stopNudging();
+    }
+    if (arrived) {
+      // Token CDNs (netocdn/vidfast-style) cannot be fetched from Node; keep
+      // the player's own copy of the playlist, mirroring the server loop.
+      if (arrived.type === 'hls' || /\.m3u8/i.test(arrived.url || '')) {
+        const bound = hlscheck.isPlayerBoundCdn(arrived.url, arrived.embedUrl || '');
+        if (bound) {
+          onLog('Relay stream is a token CDN; Node cannot fetch its playlist/segments. Keeping the live player.');
+          await delay(400);
+          const pid = arrived.playerWebContentsId || id;
+          const until = Date.now() + 6000;
+          let cached = hlscheck.cachedPlaylist(pid, arrived.url);
+          while (!cached && Date.now() < until) {
+            await delay(200);
+            cached = hlscheck.cachedPlaylist(pid, arrived.url);
+          }
+          if (cached) {
+            try {
+              const loaded = await hlscheck.loadMediaPlaylist(
+                arrived.url,
+                arrived.headers || {},
+                signal,
+                pid
+              );
+              arrived.playlistText = loaded.text;
+              arrived.playlistBase = loaded.base;
+              arrived.url = loaded.base;
+              onLog(`Captured relay ${hlscheck.describeMediaPlaylist(loaded.base, loaded.text)}.`);
+            } catch (e) {
+              arrived.playlistText = cached.text;
+              arrived.playlistBase = cached.base;
+              onLog('Captured relay playlist from the player debugger.');
+            }
+          }
+        }
+      }
+      const s = sniffer.best(id) || arrived;
+      if (arrived.embedUrl && !s.embedUrl) s.embedUrl = arrived.embedUrl;
+      const det = wantSub
+        ? resolveSub(sniffer.bestForMode(id, 'sub', hints, false))
+        : await resolveDub(s, 'DUB');
+      if (det) {
+        if (arrived.embedUrl && !det.embedUrl) det.embedUrl = arrived.embedUrl;
+        det.sourceLabel = 'relay';
+        if (arrived.playlistText) {
+          det.playlistText = arrived.playlistText;
+          det.playlistBase = arrived.playlistBase;
+        }
+        det.playerWebContentsId = arrived.playerWebContentsId || id;
+        const downloadable = await hlscheck.streamIsDownloadable(det, { signal, onLog });
+        if (!downloadable) {
+          onLog('Relay playlist is not downloadable from this app.');
+          return { status: 'failed', reason: 'No video sources found on the page' };
+        }
+        if (minHeight) {
+          const qual = await hlscheck.preferMinHeight(det, minHeight);
+          if (!qual.ok) {
+            onLog(
+              qual.height
+                ? `Relay stream is ${qual.height}p, not ${minHeight}p.`
+                : `Relay stream is not confirmed ${minHeight}p.`
+            );
+            return {
+              status: 'failed',
+              reason: qual.height
+                ? `Relay stream is ${qual.height}p, not ${minHeight}p`
+                : `No ${minHeight}p stream on this site`
+            };
+          }
+          onLog(`Relay stream is ${qual.height}p.`);
+        }
+        onLog(`Using ${MODE} stream from the relay page: ${det.url}`);
+        return finalize(det, id, wantSub, onLog);
+      }
+    }
     return { status: 'failed', reason: 'No video sources found on the page' };
   }
 
@@ -1106,10 +1638,44 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
 
   let sawStream = false;
   let primaryGotStream = false;
+  let tooSmall = 0;
   // Streams the CDN answered with 404/410 on the requested-audio row. The site
   // lists the server, but the file isn't published - that's "not out yet", not a
   // transient timeout, so it belongs on the waiting list instead of retrying now.
   let primaryGone = 0;
+  const pageCached = hlscheck.cachedPlaylist(id, null);
+  if (pageCached && pageCached.text && /netocdn\./i.test(pageCached.base || '') && /#EXTINF:/i.test(pageCached.text)) {
+    onLog('Episode page already loaded a playlist; checking its resolution.');
+    const det = {
+      url: pageCached.base,
+      type: 'hls',
+      headers: {},
+      webContentsId: id,
+      playerWebContentsId: id,
+      playlistText: pageCached.text,
+      playlistBase: pageCached.base,
+      fromEpisodePage: true,
+      embedUrl: pageCached.base,
+      sourceLabel: 'episode-page'
+    };
+    const qual = minHeight ? await hlscheck.preferMinHeight(det, minHeight) : { ok: true, height: 0 };
+    if (qual.ok) {
+      if (qual.height) onLog(`Episode page playlist is ${qual.height}p.`);
+      onLog(`Using ${MODE} stream from the episode page: ${det.url}`);
+      return finalize(det, id, wantSub, onLog);
+    }
+    onLog(
+      qual.height
+        ? `Episode page playlist is ${qual.height}p, not ${minHeight}p.`
+        : `Episode page playlist is not confirmed ${minHeight}p.`
+    );
+    hlscheck.dropCachedPlaylist(id, det.url);
+    try {
+      wc._wvdPagePlaylistRejected = true;
+    } catch (e) {
+      // ignore
+    }
+  }
   for (const [attempt, src] of tryList.entries()) {
     if (wc.isDestroyed()) {
       return { status: 'failed', reason: 'Discovery window closed' };
@@ -1209,7 +1775,9 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
           : Math.max(dub.sourceWaitMs, STANDALONE_MIN_WAIT_MS),
         onLog,
         id,
-        signal
+        signal,
+        0,
+        minHeight
       );
       if (direct) {
         if (embedUrl) direct.embedUrl = embedUrl;
@@ -1255,7 +1823,59 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
         }
       } else {
         onLog(`Checking whether "${src.label || src.index}" playlist is complete...`);
-        const peek = await hlscheck.bodyReachable(arrived.url, arrived.headers, signal);
+        const pidEarly = arrived.playerWebContentsId || id;
+        const cachedEarly =
+          (arrived.playlistText && {
+            text: arrived.playlistText,
+            base: arrived.playlistBase || arrived.url
+          }) ||
+          hlscheck.cachedPlaylist(pidEarly, arrived.url) ||
+          hlscheck.cachedPlaylist(pidEarly, null);
+        let peek;
+        if (
+          cachedEarly &&
+          cachedEarly.text &&
+          (/netocdn\./i.test(arrived.url || '') || arrived.fromEpisodePage)
+        ) {
+          arrived.playlistText = cachedEarly.text;
+          arrived.playlistBase = cachedEarly.base || arrived.url;
+          onLog('Using the playlist the episode page already loaded.');
+          peek = { ok: true, status: 200, reason: 'player-copy' };
+        } else {
+          peek = await hlscheck.bodyReachable(arrived.url, arrived.headers, signal);
+        }
+        // Mullvad's exit often gets HTTP 403 from Node while the player page
+        // already holds the playlist. Keep that copy instead of skipping.
+        if (!peek.ok && (peek.status === 401 || peek.status === 403 || peek.status === 502)) {
+          const pid = arrived.playerWebContentsId || id;
+          const cached =
+            hlscheck.cachedPlaylist(pid, arrived.url) || hlscheck.cachedPlaylist(pid, null);
+          if (cached && cached.text) {
+            arrived.playlistText = cached.text;
+            arrived.playlistBase = cached.base || arrived.url;
+            if (cached.base) arrived.url = cached.base;
+            onLog(
+              `Node was refused (HTTP ${peek.status}); using the playlist the player already loaded.`
+            );
+            peek = { ok: true, status: peek.status, reason: 'player-copy' };
+          } else if (arrived.fromEpisodePage && !hlscheck.isOneShotHls(arrived.url)) {
+            try {
+              const loaded = await hlscheck.loadMediaPlaylist(
+                arrived.url,
+                arrived.headers || {},
+                signal,
+                arrived.playerWebContentsId || id
+              );
+              arrived.playlistText = loaded.text;
+              arrived.playlistBase = loaded.base;
+              if (loaded.base) arrived.url = loaded.base;
+              onLog('Node was refused; using the playlist the episode page already loaded.');
+              peek = { ok: true, status: peek.status, reason: 'player-copy' };
+            } catch (e) {
+              // The page copy was not readable. Fall through and try the next server.
+            }
+          }
+        }
         if (!peek.ok) {
           let host = '';
           try {
@@ -1271,7 +1891,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
           );
           if (isPrimary) primaryGone += 1;
           arrived = null;
-        } else {
+        } else if (peek.reason !== 'player-copy') {
           try {
             const loaded = await hlscheck.loadMediaPlaylist(
               arrived.url,
@@ -1335,6 +1955,37 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
         }
         continue;
       }
+      if (minHeight) {
+        const qual = await hlscheck.preferMinHeight(det, minHeight);
+        if (!qual.ok) {
+          tooSmall += 1;
+          onLog(
+            qual.height
+              ? `"${src.label || src.index}" is ${qual.height}p, not ${minHeight}p; trying next.`
+              : `"${src.label || src.index}" is not confirmed ${minHeight}p; trying next.`
+          );
+          if (arrived && arrived.url) sniffer.forget(id, arrived.url);
+          if (det.url) sniffer.forget(id, det.url);
+          hlscheck.dropCachedPlaylist(arrived.playerWebContentsId || id, (det && det.url) || (arrived && arrived.url));
+          if (/netocdn\./i.test((det && det.url) || (arrived && arrived.url) || '')) {
+            try {
+              const ownerWc = webContents.fromId(id);
+              if (ownerWc) ownerWc._wvdPagePlaylistRejected = true;
+            } catch (e) {
+              // ignore
+            }
+          }
+          if (typeof arrived.releasePlayer === 'function') {
+            try {
+              arrived.releasePlayer();
+            } catch (e) {
+              // ignore
+            }
+          }
+          continue;
+        }
+        onLog(`"${src.label || src.index}" is ${qual.height}p.`);
+      }
       sawStream = true;
       if (isPrimary) primaryGotStream = true;
       onLog(`Using ${MODE} stream from "${src.label || src.index}": ${det.url}`);
@@ -1367,6 +2018,11 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
       `Every ${MODE} server's stream 404s on the CDN - ${MODE} is listed but not published yet; adding to the waiting list.`
     );
     return { status: 'unavailable', reason: `${MODE} not released yet` };
+  }
+
+  if (minHeight && tooSmall > 0 && !primaryGotStream) {
+    onLog(`No ${minHeight}p stream on this site.`);
+    return { status: 'failed', reason: `No ${minHeight}p stream on this site` };
   }
 
   if (primary.length > 0 && !primaryGotStream && !dubUnplayable) {
@@ -1425,15 +2081,26 @@ function waitForMedia(webContentsId, timeoutMs, graceMs = MEDIA_GRACE_MS, signal
   return new Promise((resolve) => {
     let done = false;
     let graceTimer = null;
+    let goneTimer = null;
+    let refusedPoll = null;
+    const refusedUrls = new Set();
     const settle = () => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
+      clearTimeout(goneTimer);
+      clearInterval(refusedPoll);
       sniffer.removeListener('detected', onDetected);
       sniffer.removeListener('media-error', onGone);
       if (signal) signal.removeEventListener('abort', settle);
-      resolve(sniffer.best(webContentsId));
+      let found = null;
+      try {
+        found = sniffer.best(webContentsId);
+      } catch (e) {
+        found = null;
+      }
+      resolve(found);
     };
     // Grace expired: only stop if we still hold a live stream. A playlist that
     // 404s is dropped again, and players usually fail over to another CDN edge,
@@ -1451,21 +2118,42 @@ function waitForMedia(webContentsId, timeoutMs, graceMs = MEDIA_GRACE_MS, signal
         arm();
       }
     };
-    // A 404/410 means this playlist is gone. Give the player a short window to
-    // fail over to another edge, then stop instead of sitting out the full wait.
+    // A 404/410 means this playlist is gone. Give the player one short window
+    // to fail over to another edge. Videm retries the same forbidden URL many
+    // times; resetting this timer on every retry held the server until the
+    // 138s stall. A second refusal of the same URL means it is not failing over.
     const onGone = (e) => {
-      if (done || !sniffer.covers(webContentsId, e.webContentsId) || !e.dropped) return;
-      if (!sniffer.best(webContentsId)) {
-        clearTimeout(graceTimer);
-        graceTimer = setTimeout(() => {
-          if (!sniffer.best(webContentsId)) settle();
-        }, 2500);
+      if (done || !e || !e.dropped || !sniffer.covers(webContentsId, e.webContentsId)) return;
+      const url = String(e.url || '');
+      if (url && refusedUrls.has(url)) {
+        if (!sniffer.best(webContentsId)) settle();
+        return;
       }
+      if (url) refusedUrls.add(url);
+      if (goneTimer) return;
+      goneTimer = setTimeout(() => {
+        goneTimer = null;
+        if (!sniffer.best(webContentsId)) settle();
+      }, 2500);
     };
     if (sniffer.best(webContentsId)) arm();
     const timer = setTimeout(settle, timeoutMs);
+    const started = Date.now();
+    // The 403 is often attributed to a webContents this wait does not cover,
+    // so the media-error listener never runs and the server sits until the stall.
+    refusedPoll = setInterval(() => {
+      if (done) return;
+      if (sniffer.playlistRefusedSince(started) && !sniffer.best(webContentsId)) settle();
+    }, 400);
     sniffer.on('detected', onDetected);
     sniffer.on('media-error', onGone);
+    // The playlist can already be refused (Videm HTTP 403) before this wait
+    // starts. The error event is gone by then, so notice the stored drop now
+    // instead of sitting out the rest of the player budget.
+    const alreadyRefused = sniffer.droppedMedia(webContentsId).some(
+      (d) => d && (d.status === 401 || d.status === 403 || d.status === 502)
+    );
+    if (alreadyRefused && !sniffer.best(webContentsId)) onGone({ webContentsId, dropped: true });
     // Registered last: settle() clears `timer`, so it must exist by now.
     if (signal) {
       if (signal.aborted) settle();

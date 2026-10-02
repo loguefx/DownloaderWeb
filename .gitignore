@@ -4,5 +4,6 @@ dist/
 .DS_Store
 queue-manifest.json
 .vs/
+.vs_full.html
 .idea/
 *.user

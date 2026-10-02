@@ -17,6 +17,14 @@ function pad(num, width = 2) {
   return s.length >= width ? s : '0'.repeat(width - s.length) + s;
 }
 
+// Season/episode arrive as numbers or as strings from the form, sometimes
+// already zero-padded. Normalize so "01" does not become S01E01.
+function toNumber(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const n = parseInt(value, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 // Best-effort season number from a slug like "golden-kamuy-3rd-season"
 // or Romanian "dark-sezonul-2".
 function parseSeasonFromUrl(url) {
@@ -40,21 +48,38 @@ function seriesKey(name) {
     .trim();
 }
 
-// Builds the base filename (no extension): "<Series> Season N - Episode NN".
+// Builds the base filename (no extension): "<Series> S1E1".
+//
+// Media servers (Jellyfin, Plex, Emby) key episode order off an SxEy marker.
+// The older "<Series> Season 1 - Episode 01" form is not one of the patterns
+// they match, so every episode landed unordered.
 function buildBaseName({ series, season, episode }) {
   const seriesPart = sanitize(series) || 'Video';
-  const seasonPart = season != null && season !== '' ? ` Season ${season}` : '';
-  const epPart = episode != null && episode !== '' ? ` - Episode ${pad(episode)}` : '';
-  return `${seriesPart}${seasonPart}${epPart}`;
+  const ep = toNumber(episode);
+  const se = toNumber(season);
+  if (ep == null) return se != null ? `${seriesPart} S${se}` : seriesPart;
+  // A file with no season marker is ambiguous to a media server, and these
+  // sites scope a batch to one season, so treat an absent season as the first.
+  return `${seriesPart} S${se != null ? se : 1}E${ep}`;
 }
 
 // The series folder inside the chosen download root: <root>/<Series>.
-function seriesDir(outputRoot, meta) {
+function seriesRoot(outputRoot, meta) {
   return path.join(outputRoot, sanitize(meta.series) || 'Video');
 }
 
-// Output path: <root>/<Series>/<Series> Season N - Episode NN.mp4
-// Creates the series folder and adds " (n)" on collision.
+// Where an episode is filed: <root>/<Series>/Season N. Media servers expect a
+// season folder per season, and it keeps a 200-episode show browsable. A movie
+// has no episode number, so it stays directly in <root>/<Title>.
+function seriesDir(outputRoot, meta) {
+  const base = seriesRoot(outputRoot, meta);
+  if (toNumber(meta && meta.episode) == null) return base;
+  const se = toNumber(meta && meta.season);
+  return path.join(base, `Season ${se != null ? se : 1}`);
+}
+
+// Output path: <root>/<Series>/Season N/<Series> S1E1.mp4
+// Creates the season folder and adds " (n)" on collision.
 function buildOutputPath(outputRoot, meta, ext = '.mp4') {
   const dir = seriesDir(outputRoot, meta);
   ensureDir(dir);
@@ -74,11 +99,13 @@ function expectedPath(outputRoot, meta, ext = '.mp4') {
   return path.join(seriesDir(outputRoot, meta), buildBaseName(meta) + ext);
 }
 
-// True when this episode is already on disk. Exact path first (Aniwave-style
-// "<Series> Season N - Episode NN.mp4"), then collision suffixes, then any
-// file in a same-series folder that names the same season + episode. SFlix
-// titles often bake "Season 3" / the episode slug into the series name, so
-// a later batch with a cleaner name would otherwise re-queue finished files.
+// True when this episode is already on disk. Exact path first, then collision
+// suffixes, then any file in a same-series folder that names the same season +
+// episode. SFlix titles often bake "Season 3" / the episode slug into the
+// series name, so a later batch with a cleaner name would otherwise re-queue
+// finished files. Both the current "S1E1" and the legacy
+// "Season 1 - Episode 01" spellings count, so renaming does not re-download a
+// library that was built before the switch.
 function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
   if (!outputRoot) return null;
   const exact = expectedPath(outputRoot, meta, ext);
@@ -91,19 +118,38 @@ function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
       ? parseInt(seasonRaw, 10)
       : null;
   const extRe = String(ext || '.mp4').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const seasonBit = season != null ? `season\\s*${season}\\s*-\\s*` : '';
-  const epRe = new RegExp(`${seasonBit}episode\\s*0*${ep}(?:\\s*\\(\\d+\\))?${extRe}$`, 'i');
+  const tail = `(?:\\s*\\(\\d+\\))?${extRe}$`;
+  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}`;
+  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}`;
+  const epRe = new RegExp(`(?:${legacy}|${sxe})${tail}`, 'i');
   const dirs = [];
   const addDir = (dir) => {
     if (dir && !dirs.includes(dir)) dirs.push(dir);
   };
+  // Season folder first, then the series folder itself: libraries downloaded
+  // before season folders existed keep their episodes directly in there, and
+  // those files must still count as present.
+  const addSeasonDirs = (dir) => {
+    try {
+      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (ent.isDirectory() && /^season\b/i.test(ent.name)) addDir(path.join(dir, ent.name));
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
   addDir(seriesDir(outputRoot, meta));
+  addDir(seriesRoot(outputRoot, meta));
+  addSeasonDirs(seriesRoot(outputRoot, meta));
   const want = seriesKey(meta && meta.series);
   if (want) {
     try {
       for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
         if (!ent.isDirectory()) continue;
-        if (seriesKey(ent.name) === want) addDir(path.join(outputRoot, ent.name));
+        if (seriesKey(ent.name) !== want) continue;
+        const dir = path.join(outputRoot, ent.name);
+        addDir(dir);
+        addSeasonDirs(dir);
       }
     } catch (e) {
       // ignore
@@ -158,6 +204,7 @@ module.exports = {
   pad,
   parseSeasonFromUrl,
   buildBaseName,
+  seriesRoot,
   seriesDir,
   buildOutputPath,
   expectedPath,

@@ -75,6 +75,14 @@ if (process.platform === 'linux') {
   }
 }
 
+// Linux: the renderer sandbox (user-ns seccomp path) can FATAL with
+// ESRCH on /dev/shm in some environments. main.js adds 'no-sandbox' via
+// app.commandLine.appendSwitch(), but that runs *after* the zygote is
+// spawned, so it is too late — the switch must be on the command line.
+if (process.platform === 'linux' && !args.includes('--no-sandbox')) {
+  args.push('--no-sandbox');
+}
+
 const child = spawn(electronPath, args, { stdio: 'inherit', windowsHide: false, env });
 child.on('error', (err) => {
   console.error(err);

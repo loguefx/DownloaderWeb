@@ -8,12 +8,14 @@ const { BrowserWindow, session } = require('electron');
 const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
-const { createDiscoverWindow, destroyOwned } = require('./discoverwindow');
+const { createDiscoverWindow, destroyOwned, passCloudflare } = require('./discoverwindow');
 const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
 const sites = require('./sites');
+const { episodeRefFromUrl } = require('./sites/findtitle');
 const hlscheck = require('./hlscheck');
+const { verifyFile, belowMinHeight } = require('./verify');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const range = (a, b) => {
@@ -21,6 +23,22 @@ const range = (a, b) => {
   for (let i = a; i <= b; i++) out.push(i);
   return out;
 };
+
+// A file that is already 1080p (or has no quality floor) counts as done.
+// A shorter finished file is queued again so discovery can fetch 1080p.
+async function existingKeepsEpisode(outputRoot, meta, pageUrl, onLog) {
+  const already = organizer.existingEpisodeFile(outputRoot, meta, '.mp4');
+  if (!already) return null;
+  const floor = (sites.resolve(pageUrl || '') || {}).minHeight || 0;
+  if (!floor) return already;
+  const probed = await verifyFile(already);
+  if (!belowMinHeight(probed, floor)) return already;
+  onLog(
+    `${path.basename(already)} is ${probed.height}p, not ${floor}p. Added to the download list. ` +
+      `The ${probed.height}p file will be removed when the ${floor}p copy replaces it.`
+  );
+  return null;
+}
 
 function loadWithTimeout(win, url, timeoutMs) {
   return new Promise((resolve) => {
@@ -70,6 +88,20 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
       const win = createDiscoverWindow();
       const ownerId = win.webContents.id;
       const controller = new AbortController();
+      let attempt = new AbortController();
+      const followParent = () => {
+        try {
+          attempt.abort();
+        } catch (e) {
+          // ignore
+        }
+      };
+      if (controller.signal.aborted) followParent();
+      else controller.signal.addEventListener('abort', followParent, { once: true });
+      const freshAttempt = () => {
+        attempt = new AbortController();
+        if (controller.signal.aborted) followParent();
+      };
       // Backstop so a hung page/player can never leave the queue stuck on
       // "resolving". It watches for a STALL (no reported progress) rather than
       // capping total time: dubselect budgets itself per server, and how long it
@@ -101,20 +133,158 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
       let holdWindows = false;
       try {
         win.webContents.on('did-fail-load', onFail);
-        log(`Loading ${url}`);
-        await loadWithTimeout(win, url, 30000);
+        const profile = sites.resolve(url);
+        const pages = (profile.mirrorUrls && profile.mirrorUrls(url)) || [url];
+        const triedHosts = new Set();
         const extra = typeof getOpts === 'function' ? getOpts() || {} : {};
-        const outcome = await Promise.race([
-          dubselect.selectDubAndResolve(win.webContents, url, log, mode, {
-            signal: controller.signal,
-            skipSources: extra.skipSources || []
-          }),
-          new Promise((_, reject) => {
-            onStall = () =>
-              reject(new Error(`Discovery stalled for ${Math.round(stallMs / 1000)}s with no progress`));
-            armStall();
-          })
-        ]);
+        let outcome = null;
+        // One attempt at the dubselect resolve, under the stall watchdog. The
+        // watchdog measures SILENCE, so the CF-wait loops in dubselect/discover
+        // window keep it alive by logging; a true stall aborts this attempt and
+        // the caller moves to the next site/server.
+        const runResolve = async (pageUrl) => {
+          try {
+            return await Promise.race([
+              dubselect.selectDubAndResolve(win.webContents, pageUrl, log, mode, {
+                signal: attempt.signal,
+                skipSources: extra.skipSources || []
+              }),
+              new Promise((_, reject) => {
+                onStall = () => {
+                  followParent();
+                  reject(new Error(`Discovery stalled for ${Math.round(stallMs / 1000)}s with no progress`));
+                };
+                armStall();
+              })
+            ]);
+          } catch (e) {
+            if (!/stalled/i.test((e && e.message) || '')) throw e;
+            log(`${e.message}; leaving this site and trying the same episode elsewhere.`);
+            freshAttempt();
+            return { status: 'failed', reason: e.message };
+          }
+        };
+        for (const pageUrl of pages) {
+          let host = '';
+          try {
+            host = new URL(pageUrl).host;
+          } catch (e) {
+            host = '';
+          }
+          if (host && triedHosts.has(host)) continue;
+          log(pageUrl === url ? `Loading ${pageUrl}` : `No 1080p yet; trying ${pageUrl}`);
+          await loadWithTimeout(win, pageUrl, 30000);
+          if (!(await passCloudflare(win, pageUrl, log))) {
+            outcome = { status: 'failed', reason: 'Cloudflare check did not clear' };
+            continue;
+          }
+          let landed = host;
+          try {
+            landed = new URL(win.webContents.getURL()).host;
+          } catch (e) {
+            // ignore
+          }
+          if (landed && triedHosts.has(landed)) {
+            log(`${host || pageUrl} is the same site already checked.`);
+            continue;
+          }
+          if (host) triedHosts.add(host);
+          if (landed) triedHosts.add(landed);
+          outcome = await runResolve(pageUrl);
+          if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
+        }
+        let altGuard = 0;
+        while (
+          (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
+          altGuard < 3 &&
+          profile &&
+          typeof profile.openAlternate === 'function'
+        ) {
+          const next = await profile.openAlternate(win.webContents, url, log, triedHosts, {
+            load: (page) => loadWithTimeout(win, page, 30000),
+            cloudflare: (page) => passCloudflare(win, page, log)
+          });
+          if (!next) break;
+          altGuard += 1;
+          log(`No 1080p on the last site; opening ${next}`);
+          await loadWithTimeout(win, next, 30000);
+          if (!(await passCloudflare(win, next, log))) {
+            outcome = { status: 'failed', reason: 'Cloudflare check did not clear' };
+            continue;
+          }
+          try {
+            const landed = new URL(win.webContents.getURL()).host;
+            if (landed) triedHosts.add(landed);
+          } catch (e) {
+            // ignore
+          }
+          outcome = await runResolve(next);
+        }
+        // Cross-site 1080p discovery. The catalog the user started on (all its
+        // mirrors and alternates included) has no 1080p copy, so walk the rest
+        // of the site registry in order and ask each for the same title. First
+        // site that resolves a 1080p stream wins; only that one is downloaded.
+        if (
+          (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
+          !controller.signal.aborted
+        ) {
+          const ref = episodeRefFromUrl(url);
+          if (ref.title) {
+            const want = ref.title + (ref.season ? ` S${ref.season}E${ref.episode || 1}` : '');
+            log(`No 1080p on this catalog; searching other sites for ${want}.`);
+            const hooks = {
+              wc: win.webContents,
+              load: (page) => loadWithTimeout(win, page, 30000),
+              cloudflare: (page) => passCloudflare(win, page, log)
+            };
+            // Order the fallbacks by fallbackRank (non-Cloudflare first) so the
+            // common 1080p path avoids a CF challenge. Sites without a rank are
+            // tried last (anime/region adapters). This was alphabetical before,
+            // which burned through irrelevant catalogs and hit Cloudflare early.
+            const rank = (c) => (c && c.fallbackRank != null ? c.fallbackRank : 99);
+            const cands = sites.profiles
+              .filter((c) => c && c.id !== (profile && profile.id) && typeof c.findTitle === 'function')
+              .sort((a, b) => rank(a) - rank(b));
+            for (const cand of cands) {
+              if (controller.signal.aborted) break;
+              if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
+              let pageUrl = null;
+              try {
+                pageUrl = await cand.findTitle(ref, hooks, log);
+              } catch (e) {
+                pageUrl = null;
+                log(`Search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
+              }
+              if (!pageUrl) continue;
+              let host = '';
+              try {
+                host = new URL(pageUrl).host;
+              } catch (e) {
+                host = '';
+              }
+              if (host) triedHosts.add(host);
+              log(`Found it on ${cand.name || cand.id}; loading ${pageUrl}`);
+              try {
+                await loadWithTimeout(win, pageUrl, 30000);
+              } catch (e) {
+                log(`Could not load ${pageUrl}: ${(e && e.message) || e}`);
+                continue;
+              }
+              if (!(await passCloudflare(win, pageUrl, log))) {
+                outcome = { status: 'failed', reason: 'Cloudflare check did not clear' };
+                continue;
+              }
+              try {
+                const landed = new URL(win.webContents.getURL()).host;
+                if (landed) triedHosts.add(landed);
+              } catch (e) {
+                // ignore
+              }
+              outcome = await runResolve(pageUrl);
+            }
+          }
+        }
+        if (!outcome) outcome = { status: 'failed', reason: 'No 1080p stream on this site' };
         // Token CDNs (vidfast/peakstorm/embedmaster) only serve segments while
         // the player page is still open. Destroying it here made download fail
         // in ~1s with an empty playlist / net::ERR_FAILED.
@@ -493,11 +663,24 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         episodes = range(start, endNum && !isNaN(endNum) ? endNum : det.max);
       } else if (profile && profile.inventEpisodeUrls === false) {
         const current = entry.baseUrl && /\/episodes\//i.test(entry.baseUrl) ? entry.baseUrl : null;
+        const titleUrl = entry.baseUrl || template;
         if (current) {
           const n = urltemplate.parseEpisodeFromUrl(current) || start;
           episodes = [n];
           episodeUrls[n] = current;
           onLog(`Could not detect the episode list for "${series}"; queuing only episode ${n} from the current page.`);
+        } else if (typeof profile.singleTitle === 'function' && profile.singleTitle(titleUrl)) {
+          // A movie or one-off special: no episode list to find, so the page
+          // itself is the download. Season/episode stay unset so the file is
+          // named "<Title>.mp4" the way media servers expect a movie.
+          onLog(`No episode list for "${series}" - treating it as a single title.`);
+          const one = await queueOne(
+            { url: titleUrl, series, season: null, episode: null, mode, outputRoot, group },
+            onLog
+          );
+          queued += one.queued;
+          skipped += one.skipped;
+          continue;
         } else {
           episodes = [];
           onLog(`Could not detect the episode list for "${series}"; not inventing Watch URLs.`);
@@ -523,8 +706,12 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         break;
       }
 
-      const meta = { series, season, episode: ep };
-      const already = organizer.existingEpisodeFile(outputRoot, meta, '.mp4');
+      // Prefer the season in the episode's real Watch URL. Without this a
+      // batch whose season never got detected names every file S1, so season 3
+      // would land on top of season 1 in a media server.
+      const epSeason = season != null ? season : organizer.parseSeasonFromUrl(url);
+      const meta = { series, season: epSeason, episode: ep };
+      const already = await existingKeepsEpisode(outputRoot, meta, url, onLog);
       if (already) {
         skipped += 1;
         onLog(`Already exists, skipping: ${path.basename(already)}`);
@@ -532,11 +719,11 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       }
 
       const label = organizer.buildBaseName(meta) + (mode === 'sub' ? ' [SUB]' : '');
-      const spec = { label, series, season, episode: ep, outputRoot, template, baseUrl: entry.baseUrl, mode };
+      const spec = { label, series, season: epSeason, episode: ep, outputRoot, template, baseUrl: entry.baseUrl, mode };
       const rec = {
         label,
         series,
-        season,
+        season: epSeason,
         episode: ep,
         mode,
         group,
@@ -555,17 +742,21 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
     }
   }
 
-  onLog(`Batch queued: ${queued} episode(s), ${skipped} skipped (already present).`);
+  onLog(`Batch queued: ${queued} item(s), ${skipped} skipped (already present).`);
   return { queued, skipped };
 }
 
 // One episode, same discovery path as Aniwave bulk items. Used for "Download
 // this episode" on SFlix (sniffed playlists there are usually not fetchable).
-function queueOne(entry, onLog = () => {}) {
+async function queueOne(entry, onLog = () => {}) {
   const url = String((entry && entry.url) || '').trim();
   const series = (entry && entry.series) || 'Video';
-  const season = entry && entry.season != null && entry.season !== '' ? entry.season : null;
+  const asked = entry && entry.season != null && entry.season !== '' ? entry.season : null;
   const episode = entry && entry.episode;
+  // Same reason as the batch path: fall back to the season in the Watch URL so
+  // an undetected season does not name the file S1. A movie passes season
+  // null with episode null and must stay unnumbered.
+  const season = asked != null || episode == null ? asked : organizer.parseSeasonFromUrl(url);
   const mode = entry && entry.mode === 'sub' ? 'sub' : 'dub';
   const outputRoot = entry && entry.outputRoot;
   if (!url) {
@@ -574,7 +765,7 @@ function queueOne(entry, onLog = () => {}) {
   }
   if (outputRoot) organizer.ensureDir(outputRoot);
   const meta = { series, season, episode };
-  const already = outputRoot ? organizer.existingEpisodeFile(outputRoot, meta, '.mp4') : null;
+  const already = outputRoot ? await existingKeepsEpisode(outputRoot, meta, url, onLog) : null;
   if (already) {
     onLog(`Already exists, skipping: ${path.basename(already)}`);
     return { queued: 0, skipped: 1 };
@@ -597,12 +788,13 @@ function queueOne(entry, onLog = () => {}) {
     onUnavailable: () => pending.add(spec)
   };
   rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources }));
+  const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {
-    onLog(`Queued episode: ${label}`);
+    onLog(`Queued ${noun}: ${label}`);
     return { queued: 1, skipped: 0 };
   }
-  onLog(`Episode already in the queue: ${label}`);
+  onLog(`${noun === 'episode' ? 'Episode' : 'Title'} already in the queue: ${label}`);
   return { queued: 0, skipped: 0 };
 }
 

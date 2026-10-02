@@ -117,14 +117,8 @@ function relatedTabIds(id) {
   ids.add(id);
   const mapped = ownerTabId(id);
   if (mapped != null) ids.add(mapped);
-  try {
-    const dw = require('./discoverwindow');
-    if (typeof dw.idsSharingOwner === 'function') {
-      for (const other of dw.idsSharingOwner(id)) ids.add(other);
-    }
-  } catch (e) {
-    /* ignore */
-  }
+  // Do not pull in every window from the same discovery run. That made
+  // server 2 inherit server 1's 720p segment and reject a different player.
   const win = windowOf(id);
   if (!win || isUiChromeWindow(win)) return ids;
   try {
@@ -161,6 +155,34 @@ function resolveMaybeUrl(raw, base) {
   return '';
 }
 
+// A playlist we can download. /s/<token> covers Vidfast. It must not match
+// fonts.gstatic.com/s/familly/, which is a font file in the same shape.
+function isJunkMediaUrl(url) {
+  const u = String(url || '');
+  return (
+    /\.(svg|png|jpe?g|gif|css|js|woff2?|ttf|otf)(\?|$)/i.test(u) ||
+    /fonts\.gstatic|\/cf-fonts\/|youtube_outline|gstatic\.com\/s\//i.test(u)
+  );
+}
+
+function isPlaylistUrl(url) {
+  const u = String(url || '');
+  // "/playlist/" also matches a YouTube SVG icon, and "/s/" matches font files.
+  // Those were recorded as the episode and kept a refused Videm playlist open.
+  if (!u || isJunkMediaUrl(u)) return false;
+  if (/\.m3u8(\?|$)/i.test(u)) return true;
+  if (/netocdn\.[^/?#]+\/proxy\?url=/i.test(u)) return true;
+  if (/\/playlist\/[A-Za-z0-9_-]{12,}/i.test(u)) return true;
+  if (/\/hls\/[A-Za-z0-9_-]{8,}/i.test(u)) return true;
+  return /\/s\/(?:[a-f0-9]{6,}|[A-Za-z0-9_-]{16,})\//i.test(u);
+}
+
+// A single MPEG-TS piece, not a stream we can hand to ffmpeg as the episode.
+function isBareSegment(url) {
+  const u = String(url || '');
+  return /\.ts(\?|$)/i.test(u) || /\/segment\?/i.test(u);
+}
+
 // Resolution embedded in a stream URL (e.g. ".../720/index.m3u8").
 function resOf(url) {
   const m = url.match(/(2160|1440|1080|720|480|360|240)/);
@@ -169,7 +191,7 @@ function resOf(url) {
 
 // Quality ranking: HLS master > HLS variant (by res) > mp4 > dash.
 function baseScore(d) {
-  const u = d.url.toLowerCase();
+    const u = String((d && d.url) || '').toLowerCase();
   // NontonGo / EmbedFlix progressive MP4 is the Windows-quality path. Rank it
   // above HLS so a leftover ad playlist cannot steal the download.
   if (d.type === 'mp4' && /\/_stream(?:\?|$)/i.test(u)) return 200000 + resOf(u);
@@ -214,6 +236,9 @@ class Sniffer extends EventEmitter {
     // Streams the CDN says don't exist (404/410), per tab. A dub whose playlist
     // 404s is listed on the site but not published yet.
     this._dropped = new Map();
+    // Playlist refusals across every player window. waitForMedia reads this
+    // because the request's webContents id often is not the window we waited on.
+    this._recentGone = [];
   }
 
   attach() {
@@ -230,6 +255,9 @@ class Sniffer extends EventEmitter {
     // and they spam the console. Cancel them, but remember the initiator so
     // discovery can log whether it was the player iframe or a third-party script.
     sess.webRequest.onBeforeRequest((details, cb) => {
+      // disable-devtool pauses the renderer when the player fetch hook is
+      // attached, which leaves Vidapi stuck on its top-level 404 shell.
+      if (/disable-devtool/i.test(details.url || '')) return cb({ cancel: true });
       if (!/^https?:\/\/undefined(?::\d+)?(?:[/?#]|$)/i.test(details.url || '')) return cb({});
       const tabId = ownerTabId(details.webContentsId);
       if (tabId != null) {
@@ -261,7 +289,9 @@ class Sniffer extends EventEmitter {
       const tabId = ownerTabId(details.webContentsId);
       // One-shot /s/ playlists 500 if we record (and later re-fetch) on send.
       // Wait for a 2xx in onHeadersReceived before treating them as a stream.
-      const waitForBody = /\.m3u8(\?|$)|peakstorm\.top\/s\//i.test(details.url || '');
+      // Status is not known yet. Recording these on send made a 403 playlist
+      // look like a live stream and kept discovery waiting after the CDN refused.
+      const waitForBody = /\.m3u8(\?|$)|peakstorm\.top\/s\/|\/playlist\//i.test(details.url || '');
       if (this._isMediaUrl(details.url) && !waitForBody) {
         this._record({ url: details.url, webContentsId: tabId }, details.requestHeaders || {});
       }
@@ -278,7 +308,8 @@ class Sniffer extends EventEmitter {
     sess.webRequest.onHeadersReceived((details, cb) => {
       try {
         const status = details.statusCode || 0;
-        if (/peakstorm|\.m3u8(\?|$)/i.test(String(details.url || ''))) {
+        const playlistUrl = isPlaylistUrl(details.url);
+        if (playlistUrl) {
           const cl = this._headerValue(details.responseHeaders, 'content-length');
           console.log(
             `[sniff-hls] ${status} ${cl || '?'}b wc=${details.webContentsId} ${String(details.url).slice(0, 100)}`
@@ -305,25 +336,51 @@ class Sniffer extends EventEmitter {
             }
           }
         }
-        if ((byUrl || byType) && status >= 200 && status < 300) {
+        if ((byUrl || byType || playlistUrl) && status >= 200 && status < 300) {
           const existing = this.byTab.get(tabId);
           const prev = existing && existing.get(details.url);
-          this._record(
-            { url: details.url, webContentsId: tabId, contentType: ct },
-            (prev && prev.headers) || {}
-          );
-        } else if (byUrl && status >= 400) {
-          // 404/410 means the media really is gone, so drop it. Anything else
-          // (401/403/429/5xx) usually means the CDN wants the player's headers
-          // or is rate-limiting the browser. The downloader sends those headers
-          // and retries with a cooldown, so keep the detection - discarding it
-          // made a live episode report "no DUB server produced a stream".
-          const gone = status === 404 || status === 410;
+          // A 200 with a few bytes is an error stub, not a playlist. Recording it
+          // made Vidfast look resolved and skipped the servers that can play.
+          const clRaw = this._headerValue(details.responseHeaders, 'content-length');
+          const cl = clRaw == null || clRaw === '' ? NaN : parseInt(clRaw, 10);
+          const stub =
+            /\.m3u8(\?|$)|\/s\/[A-Za-z0-9_-]{6,}/i.test(details.url || '') &&
+            Number.isFinite(cl) &&
+            cl < 16;
+          if (stub) {
+            console.log(
+              `[sniff-hls] ignoring ${cl}b stub wc=${details.webContentsId} ${String(details.url).slice(0, 100)}`
+            );
+            this.emit('media-error', {
+              webContentsId: tabId,
+              url: details.url,
+              status: status,
+              dropped: true
+            });
+          } else {
+            this._record(
+              { url: details.url, webContentsId: tabId, contentType: ct },
+              (prev && prev.headers) || {}
+            );
+          }
+        } else if (status >= 400 && (byUrl || playlistUrl)) {
+          // 404/410 means the media really is gone. A playlist 401/403/502 is
+          // also gone: Chromium already failed the request (net::ERR_FAILED,
+          // 38-byte body), so waiting out the player cannot produce a file.
+          // playlistUrl covers /playlist/<token> even when it is not a .m3u8.
+          const gone =
+            status === 404 ||
+            status === 410 ||
+            (playlistUrl && (status === 401 || status === 403 || status === 502));
           if (gone) {
             this._forget(tabId, details.url);
             if (!this._dropped.has(tabId)) this._dropped.set(tabId, []);
             const seen = this._dropped.get(tabId);
-            if (seen.length < 20) seen.push({ url: details.url, status });
+            if (seen.length < 20) seen.push({ url: details.url, status, ts: Date.now() });
+            if (playlistUrl && (status === 401 || status === 403 || status === 502)) {
+              this._recentGone.push({ url: details.url, status, ts: Date.now() });
+              if (this._recentGone.length > 40) this._recentGone.shift();
+            }
           }
           this.emit('media-error', { webContentsId: tabId, url: details.url, status, dropped: gone });
         }
@@ -677,8 +734,17 @@ class Sniffer extends EventEmitter {
     return items.sort((a, b) => b.ts - a.ts)[0];
   }
 
+  playlistRefusedSince(ts) {
+    return (this._recentGone || []).some((d) => d && d.ts >= ts);
+  }
+
   best(webContentsId) {
-    const items = this.list(webContentsId).filter((d) => ['hls', 'mp4', 'dash'].includes(d.type));
+    const items = this.list(webContentsId).filter(
+      (d) =>
+        ['hls', 'mp4', 'dash'].includes(d.type) &&
+        !isBareSegment(d.url) &&
+        !isJunkMediaUrl(d.url)
+    );
     if (!items.length) return null;
     return items.sort((a, b) => baseScore(b) - baseScore(a) || b.ts - a.ts)[0];
   }

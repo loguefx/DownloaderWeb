@@ -23,7 +23,7 @@ function verifyFile(filePath, opts = {}) {
       ffprobePath(),
       [
         '-v', 'error',
-        '-show_entries', 'format=duration,format_name:stream=codec_type',
+        '-show_entries', 'format=duration,format_name:stream=codec_type,width,height',
         '-of', 'json',
         filePath
       ],
@@ -34,7 +34,18 @@ function verifyFile(filePath, opts = {}) {
           const info = JSON.parse(stdout || '{}');
           const duration = parseFloat(info.format && info.format.duration);
           const fmt = String((info.format && info.format.format_name) || '');
-          const hasVideo = (info.streams || []).some((s) => s.codec_type === 'video');
+          let height = 0;
+          let width = 0;
+          let hasVideo = false;
+          for (const s of info.streams || []) {
+            if (s.codec_type !== 'video') continue;
+            hasVideo = true;
+            const h = parseInt(s.height, 10) || 0;
+            if (h > height) {
+              height = h;
+              width = parseInt(s.width, 10) || 0;
+            }
+          }
           if (!/mp4|isom|iso2|avc1|mp41|mp42/i.test(fmt)) {
             return resolve({ ok: false, reason: `Not an MP4 (${fmt || 'unknown'})` });
           }
@@ -46,7 +57,7 @@ function verifyFile(filePath, opts = {}) {
               reason: `Duration too short (${duration.toFixed(1)}s, need ${Math.round(need)}s)`
             });
           }
-          return resolve({ ok: true, duration, bytes: stat.size });
+          return resolve({ ok: true, duration, bytes: stat.size, height, width });
         } catch (e) {
           return resolve({ ok: false, reason: 'Could not parse ffprobe output' });
         }
@@ -67,4 +78,12 @@ function describeProbeError(err) {
   return 'ffprobe failed: ' + err.message;
 }
 
-module.exports = { verifyFile, ffprobePath };
+// True when a finished file has a measured picture shorter than the site's floor.
+// An unreadable height is not treated as the wrong resolution.
+function belowMinHeight(probed, minHeight) {
+  const min = Number(minHeight) || 0;
+  if (!min || !probed || !(probed.height > 0)) return false;
+  return probed.height < min;
+}
+
+module.exports = { verifyFile, ffprobePath, belowMinHeight };

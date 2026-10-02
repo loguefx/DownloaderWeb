@@ -17,6 +17,12 @@
   } catch (e) {
     // ignore
   }
+  // Turnstile stays on "Just a moment..." while navigator.webdriver is true.
+  try {
+    Object.defineProperty(navigator, 'webdriver', { configurable: true, get: () => false });
+  } catch (e) {
+    // ignore
+  }
 
   const keep = (url, buf) => {
     if (url && window.__wvdSeen.length < 40) window.__wvdSeen.push(String(url).slice(0, 120));

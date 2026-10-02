@@ -304,6 +304,47 @@ Built-in profiles:
 - **Enma** (`enma.lol`) — `?ep=` query, `data-type` server buttons
 - **FilmeHD** (`filmehd.to`) — season pages (`…-sezonul-N/`) with in-page
   episode buttons under Vidmoly / Vidsrc / Doodstream
+- **SFlix** (`sflix.soap2day.day`, `sflixz.day`, `ww25.soap2day.day`,
+  `sflix.bz`) — server tabs, cross-family 1080p fallback
+- **Vidsrc** (`vidsrc.sh`, `vidsrcme.ru`) — **primary 1080p source**; CF-free
+  id-keyed relay (`/embed/tv/{tmdb}-{s}-{e}`) that hands off to a rotating
+  player host; the stream is captured from its nested iframe
+- **FMovies** (`movienow.online` + mirrors), **Flixtor** (`flixtor.to`),
+  **SolarMovie** (`solarmovie.cc` + mirrors) — 123movies-family catalogs
+- **NontonGo** (`sv2.nontongo.day`) — server-rendered player, token MP4/HLS
+  from its workers CDN; the app's sniffer already ranks its `/_stream` path
+- **9anime** (`9anime.to`) — anime episodes
+
+### 1080p fallback pool
+
+When the site you started from has no 1080p copy of an episode, discovery
+walks the other profiles in `fallbackRank` order and downloads the first one
+that resolves 1080p:
+
+| rank | site | notes |
+|---|---|---|
+| 0 | Vidsrc | **primary** — CF-free, id-keyed relay; shortest path to 1080p with no checkbox |
+| 1 | FMovies | known 1080p catalog; the one Cloudflare checkbox lives here |
+| 2 | NontonGo | CF-free pages; proven quality on Windows |
+| 3 | Flixtor | CF-gated right now |
+| 4 | SolarMovie | most TLDs dead/parked |
+
+### Cloudflare handling
+
+Challenged pages are handled in two layers:
+
+1. **Session clearance** — the discovery windows share the app session, so one
+   passed check (automatic, or the on-screen checkbox) unblocks every later
+   site in that run. Hard blocks ("Sorry, you have been blocked") are detected
+   and skipped immediately instead of waiting.
+2. **Optional solver** — set `cloudflare.solverUrl` in
+   [`src/main/config.js`](src/main/config.js) to a FlareSolverr-compatible
+   endpoint (e.g. run the official
+   [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) in Docker and
+   use `http://localhost:8191/v1/request`). A challenged page is then sent to
+   the solver, its clearance cookies are imported into the app session, and
+   the page reloads clean — no checkbox click needed. Leave it `''` (default)
+   to keep the built-in on-screen wait.
 
 Global defaults live in [`src/main/config.js`](src/main/config.js):
 

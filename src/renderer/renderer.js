@@ -241,7 +241,24 @@ function pageUrlNow() {
   }
 }
 function isContentPage(url) {
-  return /\/(watch|episodes|series|seriale)\//i.test(url || '');
+  if (/\/(watch|episodes|series|seriale)\//i.test(url || '')) return true;
+  // A SFlix movie has no section prefix - it sits at /{slug}/ - so without
+  // this the bulk dialog refuses to open on a movie until the player happens
+  // to have produced a stream.
+  return isSflixUrl(url) && isSingleTitlePath(url);
+}
+function isSingleTitlePath(url) {
+  let segs;
+  try {
+    segs = new URL(String(url || '')).pathname.split('/').filter(Boolean);
+  } catch (e) {
+    return false;
+  }
+  if (segs.length >= 2) return /^movies?$/i.test(segs[0]);
+  if (segs.length !== 1) return false;
+  return !/^(series|seriale|episodes|tv|genre|country|language|quality|home|category|top-imdb|years|release-year|search|page|watch)$/i.test(
+    segs[0]
+  );
 }
 function isSflixUrl(url) {
   return /soap2day\.day|sflixz\.day|\bsflix\b/i.test(url || '');

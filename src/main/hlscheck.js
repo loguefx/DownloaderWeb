@@ -1,7 +1,9 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
@@ -38,7 +40,8 @@ const CDP_FETCH_PATTERNS = [
   { urlPattern: '*metaldisk*', requestStage: 'Response' },
   { urlPattern: '*/r2/*', requestStage: 'Response' },
   { urlPattern: '*/r6/*', requestStage: 'Response' },
-  { urlPattern: '*/vd/*', requestStage: 'Response' }
+  { urlPattern: '*/vd/*', requestStage: 'Response' },
+  { urlPattern: '*netocdn*proxy*', requestStage: 'Response' }
 ];
 const CDP_BODY_MAX = 12 * 1024 * 1024;
 const fetchBodyQueues = new WeakMap();
@@ -265,13 +268,14 @@ function bestAudioGroupId(playlist) {
   return bestId;
 }
 
-function bestVariantUri(playlist, base) {
+function bestVariantInfo(playlist, base) {
   const lines = String(playlist || '')
     .split(/\r?\n/)
     .map((l) => l.trim());
   const wantAudio = bestAudioGroupId(playlist);
   let best = null;
   let bestScore = -1;
+  let bestInfo = null;
   for (let i = 0; i < lines.length; i++) {
     if (!/#EXT-X-STREAM-INF:/i.test(lines[i])) continue;
     const next = lines.slice(i + 1).find((l) => l && !l.startsWith('#'));
@@ -282,14 +286,27 @@ function bestVariantUri(playlist, base) {
     if (score >= bestScore) {
       bestScore = score;
       best = next;
+      bestInfo = info;
     }
   }
-  const pick = best || firstUri(playlist);
+  if (!best || !bestInfo) return null;
+  let uri = best;
+  try {
+    uri = new URL(best, base).toString();
+  } catch (e) {
+    // keep the playlist-relative URI
+  }
+  return { h: bestInfo.h || 0, w: bestInfo.w || 0, uri };
+}
+
+function bestVariantUri(playlist, base) {
+  const info = bestVariantInfo(playlist, base);
+  const pick = (info && info.uri) || firstUri(playlist);
   if (!pick) return null;
   try {
     return new URL(pick, base).toString();
   } catch (e) {
-    return null;
+    return pick;
   }
 }
 
@@ -452,6 +469,19 @@ async function playlistFromPlayerHook(wc, url) {
   return null;
 }
 
+function dropCachedPlaylist(playerWebContentsId, url) {
+  const wc = liveWebContents(playerWebContentsId);
+  if (!wc || !wc._cdpPlaylists) return;
+  const want = String(url || '');
+  if (!want) {
+    wc._cdpPlaylists.clear();
+    return;
+  }
+  for (const key of [...wc._cdpPlaylists.keys()]) {
+    if (key === want || (want.length > 40 && key.includes(want.slice(0, 80)))) wc._cdpPlaylists.delete(key);
+  }
+}
+
 function cachedPlaylist(playerWebContentsId, url) {
   const wc = liveWebContents(playerWebContentsId);
   if (!wc || !wc._cdpPlaylists || !wc._cdpPlaylists.size) return null;
@@ -558,8 +588,11 @@ async function loadMediaPlaylist(url, headers, signal = null, playerWebContentsI
     text = master.body;
     base = master.url || url;
   }
+  let height = 0;
   if (isMasterPlaylist(text) || (/#EXT-X-STREAM-INF/i.test(text) && !isMediaPlaylist(text))) {
-    const variant = bestVariantUri(text, base);
+    const info = bestVariantInfo(text, base);
+    height = (info && info.h) || 0;
+    const variant = (info && info.uri) || bestVariantUri(text, base);
     if (!variant) throw new Error('Master playlist has no variants');
     const vCached = cachedPlaylist(playerWebContentsId, variant);
     if (vCached && isMediaPlaylist(vCached.text)) {
@@ -594,7 +627,7 @@ async function loadMediaPlaylist(url, headers, signal = null, playerWebContentsI
   if (isMasterPlaylist(text) || !isMediaPlaylist(text)) {
     throw new Error('Player did not yield a media playlist');
   }
-  return { text: rewritePlaylistUris(text, base), base };
+  return { text: rewritePlaylistUris(text, base), base, height };
 }
 
 async function materializePlaylist(url, headers, destPath, signal = null) {
@@ -666,7 +699,7 @@ function isTokenCdn(url, embedUrl) {
 function isPlayerBoundCdn(url, embedUrl) {
   const s = `${url || ''} ${embedUrl || ''}`;
   if (CDN_PATH_RE.test(s)) return true;
-  return /peakstorm\.|vidfast\.|ashencloud\.|ashenlion\.|orbitnorth\.|hiddenmesa\.|solidbear\.|primecomet\.|calmcanvas\.|nobleember\.|plainorbit\.|nobletrail\.|rapidtree\.|metaldisk\.|thunderpencil\.|pearlmaple\.|novaoak\./i.test(
+  return /peakstorm\.|vidfast\.|ashencloud\.|ashenlion\.|orbitnorth\.|hiddenmesa\.|solidbear\.|primecomet\.|calmcanvas\.|nobleember\.|plainorbit\.|nobletrail\.|rapidtree\.|metaldisk\.|thunderpencil\.|pearlmaple\.|novaoak\.|netocdn\./i.test(
     s
   );
 }
@@ -677,12 +710,9 @@ function isPlayerBoundCdn(url, embedUrl) {
 function isOneShotHls(url) {
   const s = String(url || '');
   if (/\/vd\/|\/r2\//i.test(s)) return false;
-  try {
-    const u = new URL(s);
-    return /peakstorm|vidfast/i.test(u.hostname) && /\/s\/[A-Za-z0-9_-]{6,}/.test(u.pathname);
-  } catch (e) {
-    return /peakstorm\.top\/(?:[a-z0-9]+\/)?s\//i.test(s);
-  }
+  // Vidfast now serves these from moon.zenoak.top (and similar), not only
+  // peakstorm. Any /s/ token dies if something other than playback fetches it.
+  return /\/s\/[A-Za-z0-9_-]{6,}/.test(s);
 }
 
 function isVodHls(text, url) {
@@ -776,16 +806,7 @@ async function streamIsDownloadable(det, { signal, onLog } = {}) {
   const hasPlayable = async () => {
     if (await hasParts()) return true;
     const cached = cachedPlaylist(det.playerWebContentsId, det.url);
-    if (cached && /#EXTINF:/i.test(cached.text)) return true;
-    try {
-      const ready = await wc.executeJavaScript(
-        `Math.max(0, ...Array.from(document.querySelectorAll('video')).map((v) => v.readyState || 0))`,
-        true
-      );
-      return Number(ready) >= 2;
-    } catch (e) {
-      return false;
-    }
+    return !!(cached && /#EXTINF:/i.test(cached.text));
   };
   if (await hasPlayable()) return true;
   const deadline = Date.now() + 12000;
@@ -800,11 +821,11 @@ async function streamIsDownloadable(det, { signal, onLog } = {}) {
     }
     if (await hasPlayable()) return true;
   }
-  // Playlist + live player is enough: the downloader captures MSE/CDP bytes
-  // while this window stays open. Bailing here skipped every Vidfast source
-  // on Linux before any segment arrived.
-  if (onLog) onLog('Token CDN playlist found; keeping the live player to capture segments during download.');
-  return true;
+  // A video element can report readyState without a single playlist byte
+  // (Vidfast answers /s/ with a 3-byte 200). That used to count as resolved
+  // and the downloader then failed with an empty capture.
+  if (onLog) onLog('Token CDN produced no playlist and no segments.');
+  return false;
 }
 
 function netHeaderPairs(headers) {
@@ -1098,7 +1119,7 @@ async function fetchViaWebContents(wc, url, opts = {}) {
     }
     else other.push(frame);
   }
-  const order = preferred.length ? preferred : other;
+  const order = [...preferred, ...other];
   for (const frame of order) {
     try {
       const buf = await runFetchScript(frame, url, opts);
@@ -2030,7 +2051,13 @@ function playerHookScript() {
 
 function isCdnMediaUrl(url) {
   const u = String(url || '');
-  return CDN_HOST_RE.test(u) || CDN_PATH_RE.test(u) || /\.m3u8|\/hls\/|\.ts(\?|$)|mp2t|video\/mp4|\/_stream/i.test(u);
+  return (
+    CDN_HOST_RE.test(u) ||
+    CDN_PATH_RE.test(u) ||
+    /netocdn\.[^/?#]+\/proxy\?url=/i.test(u) ||
+    /%2Fhls%2F|\/hls\//i.test(u) ||
+    /\.m3u8|\.ts(\?|$)|mp2t|video\/mp4|\/_stream/i.test(u)
+  );
 }
 
 function shouldCopyFetchBody(url, len) {
@@ -2074,14 +2101,11 @@ function storeCdpPart(wc, url, buf0) {
   if (!wc._cdpParts) wc._cdpParts = new Map();
   if (!wc._cdpPlaylists) wc._cdpPlaylists = new Map();
   const asText = buf.toString('utf8');
-  const playlistUrl = /\.m3u8(\?|$)|peakstorm\.top\/s\//i.test(url);
-  if (playlistUrl || looksLikePlaylist(asText)) {
+  if (looksLikePlaylist(asText)) {
     wc._cdpPlaylists.set(url, asText);
     const head = asText.slice(0, 48).replace(/\s+/g, ' ');
-    console.log(
-      `[cdp] ${looksLikePlaylist(asText) ? 'playlist' : 'm3u8-body'} ${String(url).slice(0, 72)} (${buf.length}b) ${head}`
-    );
-    if (looksLikePlaylist(asText)) return;
+    console.log(`[cdp] playlist ${String(url).slice(0, 72)} (${buf.length}b) ${head}`);
+    return;
   }
   if (looksLikeSegment(buf) || (isCdnMediaUrl(url) && buf.length >= 24 * 1024)) wc._cdpParts.set(url, buf);
 }
@@ -2090,6 +2114,7 @@ async function attachTarget(dbg, wc, t) {
   if (!t || !t.targetId) return;
   const typ = String(t.type || '');
   if (!/worker|service/i.test(typ)) return;
+  if (/youtube\.com|youtu\.be|googlevideo\.com|google\.com\/sw\.js/i.test(String(t.url || ''))) return;
   wc._cdpAttachedIds = wc._cdpAttachedIds || new Set();
   if (wc._cdpAttachedIds.has(t.targetId)) return;
   wc._cdpAttachedIds.add(t.targetId);
@@ -2271,6 +2296,12 @@ async function installPlayerCdpTap(wc) {
       const t = (params.targetInfo && params.targetInfo.type) || '';
       const u = (params.targetInfo && params.targetInfo.url) || '';
       console.log(`[cdp] attached ${t} ${String(u).slice(0, 80)} sid=${String(params.sessionId).slice(0, 8)}`);
+      // YouTube's service worker is an ad/embed side effect. Hooking it pauses
+      // the worker (waitForDebuggerOnStart) and the player never asks for video.
+      if (/youtube\.com|youtu\.be|googlevideo\.com|google\.com\/sw\.js/i.test(u)) {
+        cdpSend(dbg, 'Runtime.runIfWaitingForDebugger', {}, params.sessionId).catch(() => {});
+        return;
+      }
       rememberWorkerSession(wc, params.sessionId, params.targetInfo);
       enableCdpSession(dbg, params.sessionId, true, wc).catch(() => {});
       return;
@@ -2371,7 +2402,7 @@ async function installPlayerCdpTap(wc) {
         null;
       const url = rec && rec.url;
       const n = params.encodedDataLength || 0;
-      const interesting = /m3u8|peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|plainorbit|\/r2\/|\/vd\/|\/s\//i.test(
+      const interesting = /m3u8|peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|plainorbit|\/r2\/|\/vd\/|\/s\/|netocdn\.[^ ]*\/proxy\?url=/i.test(
         url || ''
       );
       if (!interesting) return;
@@ -3954,11 +3985,216 @@ async function bodyReachable(url, headers, signal = null) {
   ]);
 }
 
+function cachedMaxVariant(playerWebContentsId) {
+  const wc = liveWebContents(playerWebContentsId);
+  if (!wc || !wc._cdpPlaylists) return null;
+  let best = null;
+  for (const [u, text] of wc._cdpPlaylists) {
+    if (!/#EXT-X-STREAM-INF/i.test(text || '')) continue;
+    const info = bestVariantInfo(text, u);
+    if (!info) continue;
+    if (!best || info.h > best.h || (info.h === best.h && info.w > best.w)) best = info;
+  }
+  return best;
+}
+
+async function playerVideoHeight(playerWebContentsId) {
+  const wc = liveWebContents(playerWebContentsId);
+  if (!wc || wc.isDestroyed()) return 0;
+  const expr = `(() => {
+    const vids = Array.from(document.querySelectorAll('video'));
+    let best = 0;
+    for (const v of vids) best = Math.max(best, v.videoHeight || 0);
+    return best;
+  })()`;
+  let best = 0;
+  const frames = collectFrames(wc);
+  const targets = frames.length ? frames : [wc];
+  for (const frame of targets) {
+    try {
+      const h = await Promise.race([
+        frame.executeJavaScript(expr, true),
+        new Promise((resolve) => setTimeout(() => resolve(0), 1500))
+      ]);
+      best = Math.max(best, Number(h) || 0);
+    } catch (e) {
+      // ignore
+    }
+  }
+  return best;
+}
+
+function heightFromBuffer(buf) {
+  if (!buf || buf.length < 32 * 1024) return 0;
+  let probe = null;
+  try {
+    probe = require('./downloader').ffprobePath();
+  } catch (e) {
+    probe = null;
+  }
+  if (!probe) return 0;
+  const file = path.join(os.tmpdir(), `wvd-probe-${process.pid}-${Date.now()}.ts`);
+  try {
+    fs.writeFileSync(file, buf);
+    const r = spawnSync(
+      probe,
+      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height', '-of', 'csv=p=0', file],
+      { encoding: 'utf8', timeout: 8000 }
+    );
+    const h = parseInt(String((r && r.stdout) || '').trim(), 10);
+    return Number.isFinite(h) ? h : 0;
+  } catch (e) {
+    return 0;
+  } finally {
+    try {
+      fs.unlinkSync(file);
+    } catch (e) {
+      // ignore
+    }
+  }
+}
+
+async function heightFromFirstSegment(det, playerWebContentsId) {
+  const rel = firstUri(det && det.playlistText);
+  if (!rel) {
+    console.log('[discover] Playlist has no segment URL to measure.');
+    return 0;
+  }
+  let abs = rel;
+  try {
+    abs = new URL(rel, (det && (det.playlistBase || det.url)) || undefined).toString();
+  } catch (e) {
+    abs = rel;
+  }
+  try {
+    const buf = await fetchBuffer(abs, (det && det.headers) || {}, {
+      timeoutMs: 15000,
+      playerWebContentsId,
+      maxBytes: 2 * 1024 * 1024
+    });
+    const h = heightFromBuffer(buf);
+    if (h) console.log(`[discover] First segment measures ${h}p.`);
+    else console.log(`[discover] First segment was ${buf ? buf.length : 0} bytes and had no video height.`);
+    return h;
+  } catch (e) {
+    console.log(`[discover] Could not measure the first segment: ${(e && e.message) || e}`);
+    return 0;
+  }
+}
+
+// The player requests the proxy URL with type=/index.m3u8, and that response
+// is one rendition (often 720p) even when the path says master.m3u8. Dropping
+// type and reading the real master is how a 1080 variant is selected.
+async function loadNetocdnMaster(det, pid) {
+  const url = String((det && det.url) || '');
+  const text = String((det && det.playlistText) || '');
+  if (!/netocdn\.[^/?#]+\/proxy\?/i.test(url)) return null;
+  if (/#EXT-X-STREAM-INF/i.test(text)) return null;
+  let masterUrl = '';
+  let inner = '';
+  try {
+    const u = new URL(url);
+    inner = u.searchParams.get('url') || '';
+    if (!inner || !u.searchParams.has('type')) return null;
+    u.searchParams.delete('type');
+    masterUrl = u.toString();
+  } catch (e) {
+    return null;
+  }
+  let body = '';
+  try {
+    const buf = await fetchBuffer(masterUrl, (det && det.headers) || {}, {
+      timeoutMs: 12000,
+      playerWebContentsId: pid,
+      maxBytes: 250000
+    });
+    body = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf || '');
+  } catch (e) {
+    console.log(`[discover] Netocdn master was not readable (${(e && e.message) || e}).`);
+    return null;
+  }
+  if (!/#EXT-X-STREAM-INF/i.test(body)) return null;
+  const info = bestVariantInfo(body, inner);
+  if (!info || !info.uri) return null;
+  let proxied = info.uri;
+  try {
+    const u = new URL(url);
+    u.searchParams.set('url', info.uri);
+    u.searchParams.delete('type');
+    proxied = u.toString();
+  } catch (e) {
+    proxied = info.uri;
+  }
+  console.log(`[discover] Netocdn master top variant is ${info.h || 0}p.`);
+  return { h: info.h || 0, uri: proxied };
+}
+
+// SFlix only keeps a stream when a variant is at least minHeight (1080).
+// A master playlist that advertises 1080 is switched onto that variant even
+// if the player had started a smaller rendition.
+async function preferMinHeight(det, minHeight) {
+  const min = Number(minHeight) || 0;
+  if (!det || !min) return { ok: true, height: 0 };
+  const pid = det.playerWebContentsId || det.webContentsId;
+  let best = cachedMaxVariant(pid);
+  if (!best || best.h < min) {
+    const master = await loadNetocdnMaster(det, pid);
+    if (master && master.h && (!best || master.h > best.h)) best = master;
+  }
+  if (det.playlistText && /#EXT-X-STREAM-INF/i.test(det.playlistText)) {
+    const info = bestVariantInfo(det.playlistText, det.playlistBase || det.url);
+    if (info && (!best || info.h > best.h)) best = info;
+  }
+  if ((!best || best.h < min) && det.url && !isOneShotHls(det.url)) {
+    try {
+      const loaded = await loadMediaPlaylist(det.url, det.headers || {}, null, pid);
+      if (loaded && loaded.height && (!best || loaded.height > best.h)) {
+        best = { h: loaded.height, uri: loaded.base, text: loaded.text };
+      }
+    } catch (e) {
+      // measured from the player element below
+    }
+  }
+  let height = (best && best.h) || 0;
+  if (!height) height = await playerVideoHeight(pid);
+  if (!height && det.playlistText && isMediaPlaylist(det.playlistText)) {
+    height = await heightFromFirstSegment(det, pid);
+  }
+  if (!height) {
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      height = await playerVideoHeight(pid);
+      if (height) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+  if (height >= min) {
+    if (best && best.uri && best.h >= min) {
+      det.url = best.uri;
+      if (best.text && isMediaPlaylist(best.text)) {
+        det.playlistText = rewritePlaylistUris(best.text, best.uri);
+        det.playlistBase = best.uri;
+      } else if (det.playlistText && isMediaPlaylist(det.playlistText)) {
+        // The captured body is the shorter rendition the player started.
+        // Leave it off so the download fetches the taller variant.
+        det.playlistText = '';
+        det.playlistBase = best.uri;
+      }
+    }
+    det.height = height;
+    return { ok: true, height };
+  }
+  det.height = height;
+  return { ok: false, height };
+}
+
 module.exports = {
   bodyReachable,
   materializePlaylist,
   loadMediaPlaylist,
+  preferMinHeight,
   cachedPlaylist,
+  dropCachedPlaylist,
   localizePlaylist,
   captureLivePlayer,
   fetchBuffer,
@@ -3976,5 +4212,6 @@ module.exports = {
   trimMasterToBest,
   describeMediaPlaylist,
   installPlayerFetchHook,
+  installPlayerCdpTap,
   playPlayerVideo
 };
