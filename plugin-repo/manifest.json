@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.0.0.2",
+                "changelog": "Add Verify drives: engine write+read round-trip per folder, plugin MediaDownloader/Verify proxy, Settings button. Same-letter (zero pathMappings) is now the documented primary setup.",
+                "targetAbi": "12.0.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v2/MediaDownloader.12.0.0.2.zip",
+                "checksum": "86f080ad20690973ced7f124a3dc46ec",
+                "timestamp": "2026-10-02T22:33:06.698Z"
+            },
+            {
                 "version": "12.0.0.1",
                 "changelog": "Version 12.0.0.1",
                 "targetAbi": "12.0.0.0",
@@ -16,12 +24,28 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.2",
+                "changelog": "Add Verify drives: engine write+read round-trip per folder, plugin MediaDownloader/Verify proxy, Settings button. Same-letter (zero pathMappings) is now the documented primary setup.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v2/MediaDownloader.10.11.0.2.zip",
+                "checksum": "9280de11f2d5a8998a9f4890e0039bed",
+                "timestamp": "2026-10-02T22:33:06.698Z"
+            },
+            {
                 "version": "10.11.0.1",
                 "changelog": "Version 10.11.0.1",
                 "targetAbi": "10.11.0.0",
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.2",
+                "changelog": "Add Verify drives: engine write+read round-trip per folder, plugin MediaDownloader/Verify proxy, Settings button. Same-letter (zero pathMappings) is now the documented primary setup.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v2/MediaDownloader.10.10.0.2.zip",
+                "checksum": "a06d548452a075cda2244ab620b4038e",
+                "timestamp": "2026-10-02T22:33:06.698Z"
             },
             {
                 "version": "10.10.0.1",
