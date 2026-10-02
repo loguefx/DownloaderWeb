@@ -234,6 +234,31 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             return (match.Locations ?? Array.Empty<string>()).ToArray();
         }
 
+        /// <summary>
+        /// The library set to verify: the named libraries when given, otherwise
+        /// every TV/Movies/Anime virtual folder on this server. Each carries its
+        /// current locations so the engine can resolve + round-trip them.
+        /// </summary>
+        private List<JsonObject> ResolveLibraries(string[] names)
+        {
+            var folders = _libraryManager.GetVirtualFolders()
+                .Where(f => f.CollectionType == CollectionTypeOptions.tvshows
+                    || f.CollectionType == CollectionTypeOptions.movies
+                    || f.CollectionType == CollectionTypeOptions.boxsets)
+                .ToList();
+            if (names != null && names.Length > 0)
+            {
+                folders = folders.Where(f => names.Any(n => string.Equals(n, f.Name, StringComparison.OrdinalIgnoreCase))).ToList();
+            }
+            return folders
+                .Select(f => new JsonObject
+                {
+                    ["name"] = f.Name,
+                    ["locations"] = new JsonArray((f.Locations ?? Array.Empty<string>()).Select(l => (JsonNode)l).ToArray())
+                })
+                .ToList();
+        }
+
         // ------------------------------------------------------------------
         // Outbox (what the Queue screen shows while the engine is offline)
         // ------------------------------------------------------------------
@@ -358,6 +383,39 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> LibraryCheck([FromBody] JsonElement body) =>
             await ProxyAsync(() => _engine.PostAsync("api/library/check", body)).ConfigureAwait(false);
 
+        /// <summary>
+        /// Verify a library's drive folders (Settings &gt; Verify drives).
+        /// Resolves the library's current locations and asks the engine to do a
+        /// real write + read-back round-trip, so the user gets a green/red
+        /// answer that the drives really line up before trusting a download.
+        /// Optional body { "libraries": ["Anime", "TV Shows"] } narrows the set;
+        /// with no names, every TV/Movies/Anime library is checked.
+        /// </summary>
+        [HttpPost("Verify")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> Verify([FromBody] JsonElement body)
+        {
+            string[] names = null;
+            if (body.ValueKind == JsonValueKind.Object)
+            {
+                var raw = Str(body, "libraries");
+                if (raw.Length > 0)
+                {
+                    names = raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();
+                }
+            }
+
+            var libs = ResolveLibraries(names);
+            var payload = new JsonObject
+            {
+                ["libraries"] = new JsonArray(libs.Select(l => (JsonNode)l).ToArray())
+            };
+            var el = JsonSerializer.Deserialize<JsonElement>(payload.ToJsonString());
+            return await ProxyAsync(() => _engine.PostAsync("api/library/verify", el)).ConfigureAwait(false);
+        }
+
         // ------------------------------------------------------------------
         // Engine settings (Part 5 settings live in the engine's engine.json;
         // the Settings page edits them through this proxy)
@@ -418,6 +476,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
                 JsonValueKind.Number => v.GetRawText(),
                 JsonValueKind.True => "true",
                 JsonValueKind.False => "false",
+                JsonValueKind.Array => string.Join(",", v.EnumerateArray().Select(x => x.GetString() ?? string.Empty)),
                 _ => string.Empty
             };
         }

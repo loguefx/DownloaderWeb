@@ -471,6 +471,27 @@ async function libraryCheck(payload) {
   return { series, season, episodes: out };
 }
 
+// ---- drives verification (Part 5 safety net) ----
+// The plugin (Settings > Verify drives) forwards the library set it sees; the
+// engine resolves each location and does a write + read-back round-trip so the
+// user gets a green/red answer that the drives really line up before trusting
+// a download. Accepts { libraries: [{name, locations}] } or a single library.
+async function verifyDrives(payload) {
+  let libs = [];
+  if (Array.isArray(payload && payload.libraries) && payload.libraries.length) {
+    libs = payload.libraries;
+  } else if (payload && payload.library) {
+    libs = [payload.library];
+  } else if (payload && Array.isArray(payload.locations)) {
+    libs = [{ name: payload.name || '', locations: payload.locations }];
+  }
+  const out = [];
+  for (const lib of libs) {
+    out.push(await placer.verifyLibrary(lib));
+  }
+  return { verifiedAt: new Date().toISOString(), count: out.length, allOk: out.every((r) => r.ok), libraries: out };
+}
+
 module.exports = {
   health,
   title,
@@ -490,6 +511,7 @@ module.exports = {
   settingsGet,
   settingsPut,
   libraryCheck,
+  verifyDrives,
   onLog,
   stagingInfo
 };

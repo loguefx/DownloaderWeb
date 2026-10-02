@@ -183,6 +183,20 @@ async function main() {
   );
   check('ep4 missing', ep4 && ep4.status === 'missing', JSON.stringify(ep4));
 
+  // ---- 5b. service.verifyDrives (drive alignment, Part 5) -------------------
+  console.log('\n[5b] service.verifyDrives');
+  engineconfig.set({ pathMappings: [] }); // same-letter case: engine path == jellyfin path
+  const vd = await service.verifyDrives({ libraries: [{ name: 'Anime', locations: [libA, libB, DATA_DIR + '/lib/nope'] }] });
+  check('verify returns the one library', vd.count === 1 && Array.isArray(vd.libraries), JSON.stringify(vd && vd.count));
+  const vdLib = vd.libraries[0];
+  check('Anime library ok (a writable drive exists)', vdLib.ok === true, JSON.stringify(vdLib && vdLib.folders));
+  const vdA = vdLib && vdLib.folders.find((f) => f.engine === libA);
+  const vdNope = vdLib && vdLib.folders.find((f) => f.engine === DATA_DIR + '/lib/nope');
+  check('libA writable + write round-trip ok', vdA && vdA.writable === true && vdA.roundTrip && vdA.roundTrip.ok === true, JSON.stringify(vdA));
+  check('libA marker present', vdA && vdA.marker === true, JSON.stringify(vdA && vdA.marker));
+  check('missing share not writable, round-trip not run', vdNope && vdNope.writable === false && vdNope.roundTrip && vdNope.roundTrip.ok === false, JSON.stringify(vdNope));
+  engineconfig.set({ pathMappings: [{ jellyfin: '\\\\nas\\anime', engine: DATA_DIR + '/lib/anime' }] });
+
   // ---- 6. HTTP API -------------------------------------------------------------
   console.log('\n[6] HTTP API');
   // Make discovery fail fast instead of hanging on the shim.

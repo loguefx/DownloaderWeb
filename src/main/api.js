@@ -25,6 +25,7 @@
 //   GET    /api/settings
 //   PUT    /api/settings
 //   POST   /api/library/check               engine-side duplicate check (Part 6)
+//   POST   /api/library/verify              verify library drives (mount + write round-trip)
 
 const http = require('http');
 const { URL } = require('url');
@@ -274,6 +275,12 @@ async function handle(req, res, u) {
     // ---- library check (Part 6) ----
     if (req.method === 'POST' && seg === 'library' && parts[2] === 'check') {
       json(res, 200, await service.libraryCheck(await readBody(req)));
+      return;
+    }
+
+    // ---- library drives verify (Part 5 safety net) ----
+    if (req.method === 'POST' && seg === 'library' && parts[2] === 'verify') {
+      json(res, 200, await service.verifyDrives(await readBody(req)));
       return;
     }
 

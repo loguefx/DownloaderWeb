@@ -141,6 +141,22 @@
                         <div id="engineSaveResult" class="fieldDescription"></div>
                     </div>
 
+                    <!-- ================= Verify drives ================= -->
+                    <h3 class="sectionTitle">Verify drives</h3>
+                    <p class="fieldDescription">
+                        Asks the engine to check each library's drive folders: are they mounted,
+                        writable, and does a real write&nbsp;+&nbsp;read-back succeed? Run this after you
+                        mount the drives on the Windows PC (same letters as the Jellyfin server) to
+                        confirm finished files will land in the right place.
+                    </p>
+                    <div class="inputContainer">
+                        <button id="verifyBtn" is="emby-button" type="button" class="raised button-submit emby-button">
+                            <span>Verify all drives</span>
+                        </button>
+                    </div>
+                    <div id="verifyResult" class="fieldDescription"></div>
+                    <div id="verifyTable"></div>
+
                     <!-- ================= Save plugin ================= -->
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
@@ -375,6 +391,78 @@
                     });
                 }
 
+                function renderVerify(result) {
+                    const box = $('#verifyTable');
+                    const status = $('#verifyResult');
+                    box.innerHTML = '';
+                    if (!result || !Array.isArray(result.libraries) || !result.libraries.length) {
+                        status.textContent = 'No TV/Movies/Anime libraries found to verify.';
+                        status.style.color = '#c62828';
+                        return;
+                    }
+                    status.textContent = result.allOk
+                        ? 'All libraries verified - at least one drive in each is writable and a test file landed and read back.'
+                        : 'Some libraries have no writable drive yet. Check the red rows below.';
+                    status.style.color = result.allOk ? '#2e7d32' : '#c62828';
+
+                    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                    const gb = (b) => (b && b > 0) ? (b / (1024 * 1024 * 1024)).toFixed(1) + ' GB' : 'n/a';
+                    const cell = (ok, label) => '<td style="padding:3px 8px;color:' + (ok ? '#2e7d32' : '#c62828') + '">' + (ok ? '\u2713 ' : '\u2717 ') + (label || '') + '</td>';
+
+                    result.libraries.forEach((lib) => {
+                        const wrap = document.createElement('div');
+                        wrap.style.margin = '0.5em 0 1em';
+                        const head = document.createElement('div');
+                        head.style.fontWeight = '600';
+                        head.style.marginBottom = '.25em';
+                        head.innerHTML = esc(lib.name) + ' &nbsp; <span style="color:' + (lib.ok ? '#2e7d32' : '#c62828') + '">' + (lib.ok ? 'OK' : 'NEEDS ATTENTION') + '</span>';
+                        wrap.appendChild(head);
+
+                        const table = document.createElement('table');
+                        table.style.width = '100%';
+                        table.style.borderCollapse = 'collapse';
+                        table.style.fontSize = '0.9em';
+                        table.innerHTML = '<tr style="text-align:left;color:#9aa0a6">' +
+                            '<th style="padding:3px 8px">Jellyfin path</th>' +
+                            '<th style="padding:3px 8px">Engine path</th>' +
+                            '<th style="padding:3px 8px">Mounted</th>' +
+                            '<th style="padding:3px 8px">Writable</th>' +
+                            '<th style="padding:3px 8px">Marker</th>' +
+                            '<th style="padding:3px 8px">Write test</th>' +
+                            '<th style="padding:3px 8px">Free</th></tr>';
+                        (lib.folders || []).forEach((f) => {
+                            const rt = f.roundTrip || {};
+                            const tr = document.createElement('tr');
+                            tr.innerHTML =
+                                '<td style="padding:3px 8px">' + esc(f.jellyfin) + '</td>' +
+                                '<td style="padding:3px 8px">' + esc(f.engine) + '</td>' +
+                                cell(!!f.isDir, f.isDir ? 'dir' : (f.exists ? 'not a dir' : 'missing')) +
+                                cell(!!f.writable, f.writable ? '' : (f.reason || 'no')) +
+                                cell(!!f.marker, '') +
+                                cell(!!rt.ok, rt.ok ? 'ok' : (rt.error || 'n/a')) +
+                                '<td style="padding:3px 8px">' + gb(f.freeBytes) + '</td>';
+                            table.appendChild(tr);
+                        });
+                        wrap.appendChild(table);
+                        box.appendChild(wrap);
+                    });
+                }
+
+                function runVerify() {
+                    const status = $('#verifyResult');
+                    const btn = $('#verifyBtn');
+                    status.textContent = 'Verifying drives on the engine\u2026';
+                    status.style.color = '';
+                    $('#verifyTable').innerHTML = '';
+                    btn.disabled = true;
+                    return apiPost('MediaDownloader/Verify', {}).then((data) => {
+                        renderVerify(data);
+                    }).catch((err) => {
+                        status.textContent = 'Verify failed (engine offline?): ' + ((err && err.message) || err);
+                        status.style.color = '#c62828';
+                    }).then(() => { btn.disabled = false; });
+                }
+
                 // ---- wire up ----
                 $('#reserveBytes').addEventListener('input', updateReserveGb);
                 $('#testConnBtn').addEventListener('click', () => { testConnection(); });
@@ -385,6 +473,7 @@
                     renderPathMappings();
                 });
                 $('#saveEngineBtn').addEventListener('click', () => { saveEngine(); });
+                $('#verifyBtn').addEventListener('click', () => { runVerify(); });
 
                 $('#configForm').addEventListener('submit', function (event) {
                     collectPluginConfig();

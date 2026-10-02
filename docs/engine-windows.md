@@ -45,9 +45,12 @@ Jellyfin server (Linux)                Windows PC (behind Mullvad)
 
 - A **Windows** PC that stays on (the "engine" machine), with Mullvad installed
   and a working tunnel to wherever the sites live.
-- The NAS library folders reachable from that PC as **drive letters** (e.g.
-  `Z:\anime`, `Y:\tv`) — mapped network drives or a real mount. They must be
-  writable and present at the moment a file is placed.
+- The NAS library folders reachable from that PC. **Easiest: map them with the
+  *same drive letters* Jellyfin uses** (e.g. Jellyfin's Anime = `A:\Anime`,
+  `T:\Anime`, `S:\Anime` → mount those shares as `A:`, `T:`, `S:` on the PC).
+  When the letters match, the path strings are identical and you need **zero
+  `pathMappings`**. They must be writable and present at the moment a file is
+  placed.
 - [Node.js](https://nodejs.org/) 18+ (developed on Node 22).
 - `npm install` run **on that Windows machine** so the Windows
   `ffmpeg-static` / `ffprobe-static` binaries are pulled.
@@ -98,10 +101,12 @@ The engine config is created on first run at:
 
 - **`apiKey`** — the Bearer key for the HTTP API. Copy it into the Jellyfin
   plugin later. Keep a backup; losing it means the plugin can't reach the engine.
-- **`pathMappings`** — translate a **Jellyfin path** to the **engine drive path**.
-  Jellyfin may see the NAS as `\\nas\anime` while the engine PC mounts the same
-  share as `Z:\anime`. Jobs and reports use Jellyfin paths; the engine converts
-  only when it touches the disk. The longest matching prefix wins.
+- **`pathMappings`** — usually **empty** (`[]`). Only set these if the engine
+  sees the drives under *different* names than Jellyfin (e.g. Jellyfin reports
+  `\\nas\anime` but the PC mounts that share as `Z:\anime`). Each entry
+  translates a Jellyfin path prefix to an engine path prefix; the longest
+  matching prefix wins. If the PC uses the **same letters** as Jellyfin
+  (`A:\Anime`, …), leave this `[]` — the paths already match.
 - **`jellyfin`** — `baseUrl` + an API key (Jellyfin → Dashboard → API Keys).
   Used for the **per-folder refresh** (`POST /Library/Media/Updated`) so only the
   folder that just gained a file is rescanned. Leave blank to skip the refresh.
@@ -155,6 +160,28 @@ at its mount point: if `Z:` is gone, `Z:\anime` has no marker and is not chosen.
 
 Make sure the share is mapped and writable before you queue a job. A folder that
 is not mounted simply gets skipped and the file retries (see `NO_SPACE` below).
+
+## Verifying the drives (Settings → Verify drives)
+
+The fastest way to be sure the drives really line up before you trust a download
+is the plugin's **Verify drives** button on the Settings page. It asks the engine
+to check every TV/Movies/Anime library and reports, per folder:
+
+- the **Jellyfin path** and the **engine path** it resolves to,
+- whether it's a **mounted** directory, **writable**, and **marker-signed**,
+- a real **write + read-back** of a tiny file into that folder — this is the
+  proof a finished file will actually land here (it catches a dropped or
+  mismatched share that a plain "is it mounted" check would miss),
+- free space.
+
+A green **OK** per library means at least one drive is writable and the round-
+trip succeeded. A red **NEEDS ATTENTION** row tells you exactly which share is
+missing, not a directory, not writable, or failed the write test. Run it right
+after you mount the drives on the Windows PC.
+
+Under the hood it is `POST /api/library/verify` (engine) proxied by
+`MediaDownloader/Verify` (plugin). The probe file is created and removed in the
+same call, so nothing is left behind on the drive.
 
 ## Driving it with curl
 

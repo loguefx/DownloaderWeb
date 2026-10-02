@@ -143,6 +143,77 @@ function pickFolder(lib, meta, sizeBytes, opts = {}) {
   return { folder: withRoom[0].folder, free: withRoom[0].free }; // library order
 }
 
+// Verify a library's drive folders without downloading anything.
+//
+// For every location this reports: the engine path it resolves to, whether it
+// is a mounted, writable directory carrying the marker, and a real
+// write + read-back round-trip of a tiny file. That round-trip is the proof a
+// finished file will actually land here (it catches a dropped/mismatched share
+// that a plain "is it mounted" check would miss).
+//
+// Returns { name, ok, folders: [...] }; `ok` is true when at least one folder
+// is writable AND the round-trip succeeded.
+async function verifyLibrary(lib, opts = {}) {
+  const cfg = engineconfig.get();
+  const doRoundTrip = opts.roundTrip !== false;
+  const probeName = '.mediadownloader-verify-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+  const locations = (lib && lib.locations) || [];
+  const folders = [];
+  let anyOk = false;
+
+  for (const loc of locations) {
+    const enginePath = toEnginePath(loc, cfg.pathMappings);
+    const ready = folderReady(enginePath);
+    const entry = {
+      jellyfin: loc,
+      engine: enginePath,
+      exists: false,
+      isDir: false,
+      writable: false,
+      marker: false,
+      freeBytes: 0,
+      totalBytes: 0,
+      roundTrip: { ok: false, path: null, error: doRoundTrip ? null : 'skipped' },
+      reason: ready.reason || null
+    };
+    try {
+      const st = fs.statSync(enginePath);
+      entry.exists = true;
+      entry.isDir = st.isDirectory();
+    } catch (e) {
+      // not mounted / not present: leave exists=false
+    }
+    entry.writable = ready.ready;
+    try {
+      entry.marker = fs.existsSync(path.join(enginePath, MARKER));
+    } catch (e) {
+      // ignore
+    }
+    entry.freeBytes = freeBytes(enginePath);
+    entry.totalBytes = totalBytes(enginePath);
+
+    if (doRoundTrip && ready.ready) {
+      const probe = path.join(enginePath, probeName);
+      let ok = false;
+      let err = null;
+      try {
+        fs.writeFileSync(probe, 'webvideodownloader-verify');
+        const back = fs.readFileSync(probe, 'utf8');
+        ok = back === 'webvideodownloader-verify';
+      } catch (e) {
+        err = e.code || e.message;
+      } finally {
+        try { fs.unlinkSync(probe); } catch (e) { /* already gone */ }
+      }
+      entry.roundTrip = { ok, path: probe, error: ok ? null : err };
+      if (ok) anyOk = true;
+    }
+    folders.push(entry);
+  }
+
+  return { name: (lib && lib.name) || '', ok: anyOk, folders };
+}
+
 function noSpaceError(lib) {
   const err = new Error(
     `${(lib && lib.name) || 'Library'} is full - add a drive in Jellyfin`
@@ -259,5 +330,6 @@ module.exports = {
   ensureMarkers,
   pickFolder,
   placeItem,
+  verifyLibrary,
   refreshJellyfin
 };
