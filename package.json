@@ -11,6 +11,7 @@
     "test:library": "node scripts/test-library.js",
     "test:engine": "node scripts/test-engine-smoke.js",
     "test:plugin": "node scripts/test-plugin-outbox.js",
+    "build:plugin-zips": "node scripts/build-plugin-zips.js",
     "postinstall": "node scripts/postinstall.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",

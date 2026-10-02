@@ -15,9 +15,11 @@ and driving it with `curl`.
 > staging + drive picking, and the duplicate check are implemented. The
 > Jellyfin **plugin** now has its skeleton (build order step 6): the Settings +
 > Overview pages, the engine proxy, and the Part 4 outbox that delivers jobs
-> exactly-once when the engine is offline then back. The search/choose-episode
-> pages, quality check, keep-watching, and notifications (steps 7–12) are still
-> to come.
+> exactly-once when the engine is offline then back. The plugin
+> **multi-targets Jellyfin 10.10 / 10.11 / 12** from one source (see
+> [Building the plugin](#building-the-plugin--jellyfin-1010--1011--12)). The
+> search/choose-episode pages, quality check, keep-watching, and notifications
+> (steps 7–12) are still to come.
 
 ## How it fits together
 
@@ -297,16 +299,93 @@ worker. It verifies the Part 4 guarantee end to end:
 | **re-send** an accepted `jobId` | engine ignores the duplicate → queued **exactly once** |
 
 The driver then inspects the engine's own queue to confirm the delivered job
-appears exactly once and the rejected job never did. It needs the .NET 8 SDK
-(defaults to `~/.dotnet/dotnet`; override with `$DOTNET`).
+appears exactly once and the rejected job never did.
+
+```bash
+node scripts/test-plugin-outbox.js            # net8.0  (Jellyfin 10.10) — default
+TFM=net9.0 node scripts/test-plugin-outbox.js # net9.0  (Jellyfin 10.11)
+TFM=net10.0 node scripts/test-plugin-outbox.js # net10.0 (Jellyfin 12)
+```
+
+It builds and runs the C# harness for that target, so the .NET SDK must
+support the TFM (SDK ≥ 10.0.100 covers all three). *Running* a target also
+needs that target's runtimes — `Microsoft.NETCore.App` **and**
+`Microsoft.AspNetCore.App` for the matching major (the plugin references ASP.NET
+Core transitively): 8.x for net8.0, 9.x for net9.0, 10.x for net10.0.
+The `dotnet` binary defaults to `~/.dotnet/dotnet`; override with `$DOTNET`.
 
 The smoke test runs under plain Node (it fakes the `electron` module), so it
 works on any OS without starting the app.
+
+## Building the plugin — Jellyfin 10.10 / 10.11 / 12
+
+The plugin source in `Jellyfin.Plugin.MediaDownloader/` **multi-targets** the
+three current Jellyfin lines from one codebase:
+
+| Target | Jellyfin line | NuGet packages |
+|---|---|---|
+| `net8.0` | 10.10 (LTS) | `Jellyfin.Controller` / `Jellyfin.Model` `10.10.*` |
+| `net9.0` | 10.11 | `Jellyfin.Controller` / `Jellyfin.Model` `10.11.*` |
+| `net10.0` | 12 | `Jellyfin.Controller` / `Jellyfin.Model` `12.0.0` |
+
+The references carry `<ExcludeAssets>runtime</ExcludeAssets>` (as the official
+plugin template requires): the **server** supplies those assemblies at load
+time, and bundling the server's own dlls into the plugin folder is what makes
+a plugin show as *NotSupported*. The test harness adds its own direct
+references, so `npm run test:plugin` is unaffected.
+
+### Packaging the installable zips
+
+```bash
+export PATH="$HOME/.dotnet:$PATH"   # if dotnet is not on PATH
+npm run build:plugin-zips
+# → dist/plugins/MediaDownloader.10.10.zip
+#   dist/plugins/MediaDownloader.10.11.zip
+#   dist/plugins/MediaDownloader.12.zip
+```
+
+Each zip contains exactly what a server loads — a `MediaDownloader/` folder
+with the plugin dll and a `meta.json` manifest (name, GUID, `targetAbi`,
+version). Needs the .NET SDK ≥ 10.0.100 to build all three targets.
+
+### Installing on the Jellyfin server (NAS)
+
+1. Copy the zip for **your server's line** to the NAS (e.g. `scp` it over).
+2. Extract it into the server's `plugins/` directory so the folder sits next
+to the other plugin folders:
+
+   ```bash
+   # Linux NAS (Debian-style install)
+   sudo unzip MediaDownloader.10.11.zip -d /var/lib/jellyfin/plugins/
+   # → /var/lib/jellyfin/plugins/MediaDownloader/Jellyfin.Plugin.MediaDownloader.dll
+   ```
+
+   (Windows server: `%ProgramData%\Jellyfin\Server\plugins\MediaDownloader\`.)
+3. Restart Jellyfin. The plugin appears under **Dashboard → Plugins**
+   ("Media Downloader", version 1.0.0.0 — the assembly version).
+4. Open its settings page and set the **Engine URL**
+   (`http://<windows-pc-ip>:7878`) and the engine's `apiKey` (from
+   `engine.json`).
+
+Which zip to use:
+
+- Jellyfin **10.10** server → `MediaDownloader.10.10.zip`
+- Jellyfin **10.11** server → `MediaDownloader.10.11.zip`
+- Jellyfin **12** server → `MediaDownloader.12.zip`
+
+A 10.x build will **not** load on a 12 server (and vice versa): the server
+marks such assemblies *NotSupported* ("references an incompatible version of
+one of the shared libraries"). Pick by server version, not by preference.
+
+> The `dotnet pack` output (a multi-target `.nupkg`) is for a NuGet feed / CI,
+> not for the server: the documented manual path is the folder in `plugins/`
+> (the 10.11/12 dashboards install from repositories, not from local files).
 
 ## Troubleshooting
 
 | Symptom | First things to check |
 |---|---|
+| Plugin shows **NotSupported** in Dashboard → Plugins | wrong generation's zip for the server (10.x dll on a 12 server or vice versa), or the plugin folder contains Jellyfin's own dlls — reinstall the matching `MediaDownloader.<line>.zip` into a clean `plugins/MediaDownloader/` |
 | `401 unauthorized` on every call | `Authorization: Bearer <apiKey>` — key from `engine.json` |
 | Jobs sit at `queued`, log says "VPN disconnected" | Mullvad tunnel is down; the engine is holding (correct behavior) |
 | `Library is full - add a drive in Jellyfin` | raise `reserveBytes` lower, or add/mount another library folder |
