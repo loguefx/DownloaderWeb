@@ -8,7 +8,7 @@
     server):
       net8.0  -> Jellyfin 10.10   (Jellyfin.Controller 10.10.*)
       net9.0  -> Jellyfin 10.11   (Jellyfin.Controller 10.11.*)
-      net10.0 -> Jellyfin 12.0    (Jellyfin.Controller 12.0.0)
+      net10.0 -> Jellyfin 12.1    (Jellyfin.Controller 12.1.*)
     The 12.x API is a superset-compatible line; the code compiles for all
     three without #ifdefs.
   -->
@@ -47,10 +47,10 @@
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
-    <PackageReference Include="Jellyfin.Controller" Version="12.0.0">
+    <PackageReference Include="Jellyfin.Controller" Version="12.1.*">
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
-    <PackageReference Include="Jellyfin.Model" Version="12.0.0">
+    <PackageReference Include="Jellyfin.Model" Version="12.1.*">
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
   </ItemGroup>

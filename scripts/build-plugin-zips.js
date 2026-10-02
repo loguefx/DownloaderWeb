@@ -9,7 +9,7 @@
  *
  *   net8.0  -> 10.10 line -> 10.10.0.<build>
  *   net9.0  -> 10.11 line -> 10.11.0.<build>
- *   net10.0 -> 12 line    -> 12.0.0.<build>
+ *   net10.0 -> 12.1 line  -> 12.1.0.<build>
  *
  * The assembly version is stamped to match (so the version shown in the
  * dashboard equals the catalog version), and the bundled meta.json carries the
@@ -53,7 +53,7 @@ const CATEGORY = 'General';
 const TARGETS = [
   { tfm: 'net8.0', abi: '10.10.0', targetAbi: '10.10.0.0' },
   { tfm: 'net9.0', abi: '10.11.0', targetAbi: '10.11.0.0' },
-  { tfm: 'net10.0', abi: '12.0.0', targetAbi: '12.0.0.0' },
+  { tfm: 'net10.0', abi: '12.1.0', targetAbi: '12.1.0.0' },
 ];
 
 function run(cmd, args, opts = {}) {

@@ -106,7 +106,7 @@ async function main() {
 
   // ---- build + run the C# plugin harness -----------------------------------
   const dotnet = process.env.DOTNET || path.join(os.homedir(), '.dotnet', 'dotnet');
-  const tfm = process.env.TFM || 'net8.0'; // net8.0=10.10  net9.0=10.11  net10.0=12.0
+  const tfm = process.env.TFM || 'net8.0'; // net8.0=10.10  net9.0=10.11  net10.0=12.1
   const testsDir = path.join(REPO, 'Jellyfin.Plugin.MediaDownloader.Tests');
   const dll = path.join(testsDir, 'bin', 'Debug', tfm, 'Jellyfin.Plugin.MediaDownloader.Tests.dll');
 
