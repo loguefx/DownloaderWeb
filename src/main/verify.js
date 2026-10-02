@@ -29,7 +29,15 @@ function verifyFile(filePath, opts = {}) {
       ],
       { timeout: 30000, windowsHide: true },
       (err, stdout) => {
-        if (err) return resolve({ ok: false, reason: describeProbeError(err) });
+        // Two distinct results:
+        //   probeOk - ffprobe saw a video stream with a positive duration,
+        //             regardless of container. That is "readable", which is all
+        //             that matters for an EXISTING library file (Jellyfin
+        //             libraries are full of .mkv).
+        //   ok      - probeOk AND an MP4 container AND a sane duration. That is
+        //             what the engine's own downloads must pass.
+        const fail = (reason) => resolve({ ok: false, probeOk: false, height: 0, width: 0, duration: 0, bytes: stat.size, reason });
+        if (err) return fail(describeProbeError(err));
         try {
           const info = JSON.parse(stdout || '{}');
           const duration = parseFloat(info.format && info.format.duration);
@@ -46,20 +54,25 @@ function verifyFile(filePath, opts = {}) {
               width = parseInt(s.width, 10) || 0;
             }
           }
-          if (!/mp4|isom|iso2|avc1|mp41|mp42/i.test(fmt)) {
-            return resolve({ ok: false, reason: `Not an MP4 (${fmt || 'unknown'})` });
-          }
-          if (!hasVideo) return resolve({ ok: false, reason: 'No video stream' });
+          if (!hasVideo) return fail('No video stream');
+          if (!(duration > 0)) return fail('Duration is not positive');
+          const isMp4 = /mp4|isom|iso2|avc1|mp41|mp42/i.test(fmt);
           const need = opts.minDuration > 20 ? opts.minDuration * 0.9 : 20;
           if (!(duration > need)) {
-            return resolve({
-              ok: false,
-              reason: `Duration too short (${duration.toFixed(1)}s, need ${Math.round(need)}s)`
-            });
+            // Probe-able but too short: readable, yet not a complete file.
+            return resolve({ ok: false, probeOk: true, height, width, duration, bytes: stat.size, reason: `Duration too short (${duration.toFixed(1)}s, need ${Math.round(need)}s)` });
           }
-          return resolve({ ok: true, duration, bytes: stat.size, height, width });
+          return resolve({
+            ok: isMp4,
+            probeOk: true,
+            duration,
+            bytes: stat.size,
+            height,
+            width,
+            reason: isMp4 ? '' : `Container is not MP4 (${fmt || 'unknown'}); readable, but not engine output`
+          });
         } catch (e) {
-          return resolve({ ok: false, reason: 'Could not parse ffprobe output' });
+          return fail('Could not parse ffprobe output');
         }
       }
     );

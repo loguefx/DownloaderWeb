@@ -4,6 +4,7 @@ const fs = require('fs');
 const organizer = require('./organizer');
 const urltemplate = require('./urltemplate');
 const manager = require('./queue');
+const vpn = require('./vpn');
 const pending = require('./pending');
 const schedule = require('./schedule');
 const bulk = require('./bulk');
@@ -32,8 +33,10 @@ class Watcher {
   }
 
   // One scheduled pass: retry pending dubs, then pull new episodes for any
-  // scheduled series.
+  // scheduled series. Both go online (episode detection, discovery), so the
+  // whole pass holds until Mullvad is confirmed up (Part 3).
   async tick() {
+    await vpn.waitUntilConnected();
     this.checkNow();
     await this.checkSchedules();
   }

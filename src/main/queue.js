@@ -7,6 +7,7 @@ const { EventEmitter } = require('events');
 const config = require('./config');
 const vpn = require('./vpn');
 const organizer = require('./organizer');
+const library = require('./library');
 const { download } = require('./downloader');
 const { verifyFile, belowMinHeight } = require('./verify');
 const hlscheck = require('./hlscheck');
@@ -169,13 +170,15 @@ class DownloadManager extends EventEmitter {
     }));
   }
 
-  // Once every episode of a series-batch is done, drop the whole group from the
-  // queue so the next queued series becomes the focus. Groups with episodes
-  // still waiting/queued/failed are kept.
+  // Once every episode of a series-batch has reached a terminal state, drop
+  // the whole group from the queue so the next queued series becomes the
+  // focus. Groups with episodes still waiting/queued/failed are kept. "skipped"
+  // (already in the library, left untouched) counts as terminal.
   _pruneGroupIfComplete(group) {
     if (!group) return;
     const groupItems = this.items.filter((it) => it.group === group);
-    if (!groupItems.length || !groupItems.every((it) => it.status === 'done')) return;
+    const terminal = (it) => it.status === 'done' || it.status === 'skipped';
+    if (!groupItems.length || !groupItems.every(terminal)) return;
     const name = groupItems[0].series || groupItems[0].label || 'Series';
     this.items = this.items.filter((it) => it.group !== group);
     this._log(`Series complete: ${name} (${groupItems.length} episode(s)) - removed from queue.`);
@@ -287,11 +290,21 @@ class DownloadManager extends EventEmitter {
       });
   }
 
-  // Blocks while paused or VPN is down, but bails immediately if the queue was
-  // stopped or this item was removed (so Stop/Clear can tear a parked worker
-  // down instead of leaving it stuck waiting).
+  // Blocks while paused, VPN is down, or the library is in read-only mode, but
+  // bails immediately if the queue was stopped or this item was removed (so
+  // Stop/Clear can tear a parked worker down instead of leaving it stuck
+  // waiting).
   async _gate(item) {
-    while ((this._paused || this._vpnDown) && !this._stopRequested && this.items.includes(item)) {
+    let readOnlyNoted = false;
+    while (
+      (this._paused || this._vpnDown || library.isReadOnly()) &&
+      !this._stopRequested &&
+      this.items.includes(item)
+    ) {
+      if (library.isReadOnly() && !readOnlyNoted) {
+        readOnlyNoted = true;
+        this._log('Library is in read-only mode; downloads are held until it is turned off.');
+      }
       await new Promise((resolve) => this._pauseWaiters.push(resolve));
     }
   }
@@ -309,6 +322,8 @@ class DownloadManager extends EventEmitter {
     return (profile && profile.minHeight) || 0;
   }
 
+  // Only ever called on the .part file of a failed/low-quality download.
+  // Library files at finalPath are never dropped here (Part 11 rule).
   _dropShortFile(filePath) {
     try {
       if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
@@ -348,7 +363,9 @@ class DownloadManager extends EventEmitter {
         item.finalPath = finalPath;
         organizer.cleanupCaptureJunk(path.dirname(finalPath));
         const partPath = finalPath + '.part';
-        const found = organizer.existingEpisodeFile(item.outputRoot, meta, '.mp4') || '';
+        // Any video container in the library counts as present (.mkv and
+        // friends are the normal Jellyfin layout).
+        const found = organizer.existingEpisodeFile(item.outputRoot, meta) || '';
         // A .part is an aborted remux until proven otherwise. verifyFile with no
         // minDuration only asks for 20s and 64KB, so promoting one on that basis
         // renamed truncated files to .mp4 and reported them Completed. Only trust
@@ -357,7 +374,7 @@ class DownloadManager extends EventEmitter {
         const floor = this._minHeight(item);
         if (found) {
           const already = await verifyFile(found, expected ? { minDuration: expected } : {});
-          if (already.ok && !belowMinHeight(already, floor)) {
+          if (already.probeOk && !belowMinHeight(already, floor)) {
             item.finalPath = found;
             item.status = 'done';
             item.progress = 1;
@@ -376,18 +393,50 @@ class DownloadManager extends EventEmitter {
             this._pruneGroupIfComplete(item.group);
             return { fatal: false };
           }
-          if (already.ok && belowMinHeight(already, floor)) {
+          if (already.probeOk && belowMinHeight(already, floor)) {
+            // Low quality. Only a file the engine itself placed may be
+            // replaced; anything else is a library file we must never touch.
+            if (!library.isOurs(found)) {
+              library.audit('skipped-foreign', found, `${already.height}p below the ${floor}p floor, but not engine-owned`);
+              this._log(
+                `"${path.basename(found)}" is ${already.height}p (below ${floor}p) but was not placed by this engine; ` +
+                  `it is left untouched. Use the quality check to replace it by hand.`
+              );
+              item.status = 'skipped';
+              item.error = 'existing file is not engine-owned; not replaced';
+              this._emit();
+              this._pruneGroupIfComplete(item.group);
+              return { fatal: false };
+            }
             item._replacePath = found;
             item._replaceHeight = already.height;
             this._log(
               `"${item.label}" is ${already.height}p, not ${floor}p. On the download list; ` +
-                `that file will be removed when the ${floor}p copy replaces it.`
+                `the old file goes to the trash folder when the ${floor}p copy replaces it.`
             );
+          }
+          if (!already.probeOk) {
+            // "Can't read" (NAS asleep, network blip, ffprobe timeout) is NOT
+            // "bad": hold this episode and retry later instead of downloading
+            // over a file we cannot inspect. Never replaced.
+            this._log(
+              `Existing "${path.basename(found)}" could not be verified (${already.reason}); ` +
+                `holding "${item.label}" without re-downloading.`
+            );
+            item.status = 'queued';
+            item.error = `existing file unreadable: ${already.reason}`;
+            this._emit();
+            const wait = Math.min(
+              config.download.retryMaxDelayMs || 60000,
+              (config.download.retryBaseDelayMs || 2000) * 3
+            );
+            await delay(wait);
+            continue;
           }
         } else if (expected > 0 && fs.existsSync(partPath)) {
           const already = await verifyFile(partPath, { minDuration: expected });
           if (already.ok && !belowMinHeight(already, floor)) {
-            fs.renameSync(partPath, finalPath);
+            await library.safePlace({ partPath, finalPath, replacePath: null });
             item.status = 'done';
             item.progress = 1;
             item.bytes = already.bytes || item.bytes;
@@ -452,6 +501,15 @@ class DownloadManager extends EventEmitter {
           // Timeouts / empty players are NOT "dub missing". DUB buttons were on
           // the page; the stream just didn't arrive this try.
           this._releaseDownloadSlot(item);
+          // Mullvad dropped mid-discovery (its windows were torn down): this is
+          // an abort, not a failure. Hold the item without counting a retry;
+          // _gate below parks the worker until the tunnel is back.
+          if (!vpn.isConnected()) {
+            item.status = 'queued';
+            this._emit();
+            this._log(`Mullvad is down; holding "${item.label}" without counting a retry.`);
+            continue;
+          }
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;
           item.error = reason;
@@ -584,8 +642,9 @@ class DownloadManager extends EventEmitter {
           throw new Error('Verification failed: ' + v.reason);
         }
         if (belowMinHeight(v, floor)) {
+          // Only the .part we just wrote is ever dropped here. A file already
+          // at finalPath belongs to the library: it stays untouched.
           this._dropShortFile(partPath);
-          if (!item._replacePath) this._dropShortFile(finalPath);
           const lab = detection && detection.sourceLabel;
           if (lab) {
             item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
@@ -597,10 +656,14 @@ class DownloadManager extends EventEmitter {
 
         const previous = item._replacePath;
         const previousHeight = item._replaceHeight;
-        if (previous && path.resolve(previous) !== path.resolve(finalPath)) {
-          this._dropShortFile(previous);
-        }
-        fs.renameSync(partPath, finalPath);
+        // Never a raw renameSync: safePlace refuses to overwrite a file that is
+        // not this job's recorded replacement target, moves the old file to the
+        // trash (never deletes it), and copies across drives atomically.
+        await library.safePlace({
+          partPath,
+          finalPath,
+          replacePath: previous || null
+        });
         item.status = 'done';
         item.progress = 1;
         this._emit();

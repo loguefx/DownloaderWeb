@@ -19,6 +19,12 @@ const { app, BrowserWindow, ipcMain, dialog, session } = require('electron');
 const config = require('./config');
 const sniffer = require('./sniffer');
 const vpn = require('./vpn');
+const discoverwindow = require('./discoverwindow');
+
+// --engine: headless service mode (Jellyfin build plan Part 1).
+// No main window; the HTTP API in src/main/api.js is the control surface,
+// the VPN requirement is mandatory, and the queue + watcher still run.
+const engineMode = process.argv.slice(1).includes('--engine');
 const manager = require('./queue');
 const bulk = require('./bulk');
 const organizer = require('./organizer');
@@ -173,7 +179,19 @@ function send(channel, payload) {
 
 function wireEvents() {
   sniffer.on('detected', (d) => send('sniffer:detected', d));
-  vpn.on('status', (s) => send('vpn:status', s));
+  vpn.on('status', (s) => {
+    send('vpn:status', s);
+    if (!s.connected) {
+      // Part 3: tear down in-flight discovery/player windows the moment the
+      // tunnel drops so pages abort instead of timing out one by one. The
+      // queue treats the resulting failure as a hold (no retry consumed).
+      try {
+        discoverwindow.destroyAll();
+      } catch (e) {
+        // ignore
+      }
+    }
+  });
   manager.on('update', (items) => send('queue:update', items));
   manager.on('log', (msg) => send('queue:log', { ts: Date.now(), msg }));
   manager.on('stopped', (info) => send('queue:stopped', info));
@@ -352,10 +370,15 @@ app.whenReady().then(() => {
   pending.load();
   schedule.load();
   sniffer.attach();
-  vpn.start();
+  // In engine mode the VPN is mandatory no matter what config says (Part 3).
+  vpn.start(engineMode ? { forced: true } : {});
   wireEvents();
   wireIpc();
-  createWindow();
+  if (engineMode) {
+    console.log('[engine] engine mode: no UI window; waiting for the HTTP API to start.');
+  } else {
+    createWindow();
+  }
   if (linuxBrowser) {
     try {
       const st = fs.statfsSync('/dev/shm');
@@ -384,7 +407,7 @@ app.whenReady().then(() => {
     // them here would drop the episode URL and leave the short copy in place.
     if (!floor) {
       try {
-        if (organizer.existingEpisodeFile(rec.outputRoot, meta, '.mp4')) return { skip: true };
+        if (organizer.existingEpisodeFile(rec.outputRoot, meta)) return { skip: true };
       } catch (e) {
         // fall through and re-queue
       }

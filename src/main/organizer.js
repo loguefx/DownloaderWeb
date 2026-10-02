@@ -42,10 +42,29 @@ function parseSeasonFromUrl(url) {
 
 function seriesKey(name) {
   return sanitize(name)
+    // Jellyfin layouts: "Show (2019)" and "[tmdbid-123456] Show" are the same
+    // series as "Show", so those tokens never take part in the match.
+    .replace(/\s*\(\s*\[?\s*tmdbid[-\s]*\d+\s*\]?\s*\)/gi, ' ')
+    .replace(/\s*\[\s*tmdbid[-\s]*\d+\s*\]/gi, ' ')
+    .replace(/\s*\(\s*\[?\s*(?:tmdb|tvdb|imdb)[-\s]*[A-Za-z0-9]+\s*\]?\s*\)/gi, ' ')
+    .replace(/\s*\(\d{4}\)/g, ' ')
     .toLowerCase()
     .replace(/\s+season\s*\d+\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Containers the engine recognizes as video in a library. The engine still
+// WRITES .mp4; it must also SEE .mkv/.avi/.m4v/.ts so a Jellyfin-style
+// library counts as "in library".
+const VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.m4v', '.ts'];
+
+function extAlternation(ext) {
+  const list = ext == null ? VIDEO_EXTS : Array.isArray(ext) ? ext : [ext];
+  return list
+    .map((e) => String(e || '').replace(/^\./, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .filter(Boolean)
+    .join('|');
 }
 
 // Builds the base filename (no extension): "<Series> S1E1".
@@ -106,9 +125,13 @@ function expectedPath(outputRoot, meta, ext = '.mp4') {
 // finished files. Both the current "S1E1" and the legacy
 // "Season 1 - Episode 01" spellings count, so renaming does not re-download a
 // library that was built before the switch.
-function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
+//
+// Jellyfin build plan Part 11: match .mkv/.avi/.m4v/.ts as well as .mp4, find
+// SxxEyy anywhere in the file name, ignore "(year)" / "[tmdbid-…]" in folder
+// names, and treat "S01E01-E02" two-part files as BOTH episodes.
+function existingEpisodeFile(outputRoot, meta, ext = null) {
   if (!outputRoot) return null;
-  const exact = expectedPath(outputRoot, meta, ext);
+  const exact = expectedPath(outputRoot, meta, '.mp4');
   if (fs.existsSync(exact)) return exact;
   const ep = parseInt(meta && meta.episode, 10);
   if (!(ep > 0)) return null;
@@ -117,11 +140,20 @@ function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
     seasonRaw != null && String(seasonRaw).trim() !== '' && !isNaN(parseInt(seasonRaw, 10))
       ? parseInt(seasonRaw, 10)
       : null;
-  const extRe = String(ext || '.mp4').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const tail = `(?:\\s*\\(\\d+\\))?${extRe}$`;
-  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}`;
-  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}`;
-  const epRe = new RegExp(`(?:${legacy}|${sxe})${tail}`, 'i');
+  const extAlt = extAlternation(ext);
+  // Two independent tests: the S/E marker may appear ANYWHERE in the name
+  // (Jellyfin's "Show - S02E05 - Title" layout), and the file must end in a
+  // video extension, optionally with a " (n)" collision suffix.
+  const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlt})$`, 'i');
+  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}(?!\\d)`;
+  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}(?!\\d)`;
+  const nameRe = new RegExp(`(?:${legacy}|${sxe})`, 'i');
+  // "S01E01-E02" (or "S1E1 - E2"): one file covering a range of episodes.
+  // Captured and compared numerically so EVERY episode of the range counts.
+  const rangeRe = new RegExp(
+    `s0*${season != null ? season : '\\d{1,2}'}e(\\d{1,3})(?!\\d)\\s*-\\s*e(\\d{1,3})(?!\\d)`,
+    'i'
+  );
   const dirs = [];
   const addDir = (dir) => {
     if (dir && !dirs.includes(dir)) dirs.push(dir);
@@ -163,7 +195,15 @@ function existingEpisodeFile(outputRoot, meta, ext = '.mp4') {
       continue;
     }
     for (const f of files) {
-      if (epRe.test(f)) return path.join(dir, f);
+      if (!extRe.test(f)) continue;
+      if (nameRe.test(f)) return path.join(dir, f);
+      const rm = f.match(rangeRe);
+      if (rm) {
+        let a = parseInt(rm[1], 10);
+        let b = parseInt(rm[2], 10);
+        if (a > b) [a, b] = [b, a];
+        if (ep >= a && ep <= b) return path.join(dir, f);
+      }
     }
   }
   return null;
@@ -210,5 +250,6 @@ module.exports = {
   expectedPath,
   existingEpisodeFile,
   ensureDir,
-  cleanupCaptureJunk
+  cleanupCaptureJunk,
+  VIDEO_EXTS
 };

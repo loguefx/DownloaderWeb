@@ -8,6 +8,8 @@ const { BrowserWindow, session } = require('electron');
 const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
+const vpn = require('./vpn');
+const library = require('./library');
 const { createDiscoverWindow, destroyOwned, passCloudflare } = require('./discoverwindow');
 const urltemplate = require('./urltemplate');
 const manager = require('./queue');
@@ -26,16 +28,37 @@ const range = (a, b) => {
 
 // A file that is already 1080p (or has no quality floor) counts as done.
 // A shorter finished file is queued again so discovery can fetch 1080p.
+//
+// Part 11 rules:
+//   - unreadable (NAS asleep, network blip) is treated as PRESENT so the
+//     engine never downloads over a file it cannot inspect;
+//   - a low-quality file the engine did not place is never queued for
+//     replacement; it is listed for the manual quality check instead.
 async function existingKeepsEpisode(outputRoot, meta, pageUrl, onLog) {
-  const already = organizer.existingEpisodeFile(outputRoot, meta, '.mp4');
+  const already = organizer.existingEpisodeFile(outputRoot, meta);
   if (!already) return null;
   const floor = (sites.resolve(pageUrl || '') || {}).minHeight || 0;
   if (!floor) return already;
   const probed = await verifyFile(already);
+  if (!probed.probeOk) {
+    onLog(
+      `${path.basename(already)} could not be verified (${probed.reason}); ` +
+        `treating it as present so it is not re-downloaded over it.`
+    );
+    return already;
+  }
   if (!belowMinHeight(probed, floor)) return already;
+  if (!library.isOurs(already)) {
+    library.audit('skipped-foreign', already, `${probed.height}p below the ${floor}p floor, but not engine-owned`);
+    onLog(
+      `${path.basename(already)} is ${probed.height}p (below ${floor}p) but was not placed by this engine; ` +
+        `it is left untouched. Use the quality check to replace it by hand.`
+    );
+    return already;
+  }
   onLog(
     `${path.basename(already)} is ${probed.height}p, not ${floor}p. Added to the download list. ` +
-      `The ${probed.height}p file will be removed when the ${floor}p copy replaces it.`
+      `The old file goes to the trash folder when the ${floor}p copy replaces it.`
   );
   return null;
 }
@@ -85,6 +108,10 @@ async function withDiscoverGate(fn) {
 function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({})) {
   return async () =>
     withDiscoverGate(async () => {
+      // Part 3: no outside request without a confirmed tunnel. Jobs accepted
+      // while Mullvad is down stay queued (queue._gate holds them); this is the
+      // discovery-side half of the same guarantee.
+      await vpn.waitUntilConnected();
       const win = createDiscoverWindow();
       const ownerId = win.webContents.id;
       const controller = new AbortController();
@@ -335,6 +362,9 @@ function fetchPageHtml(url, redirectsLeft = 3) {
       resolve(v);
     };
     const run = async () => {
+      // Defense in depth: this fetches remote HTML, so it needs the tunnel
+      // even though its callers already gate on the VPN.
+      await vpn.waitUntilConnected();
       let cookieHeader = '';
       try {
         const ses = session.fromPartition(config.sessionPartition);
@@ -470,6 +500,9 @@ function episodeScanScript() {
 // back to the aired-episode count from the info box. Site profiles may supply
 // a custom episodeScan script (e.g. FilmeHD in-page episode buttons).
 async function detectEpisodes(url, onLog = () => {}, opts = {}) {
+  // Part 3: episode detection goes online (page HTML, live DOM scans). Never
+  // run it without a confirmed tunnel; the caller holds until it is back.
+  await vpn.waitUntilConnected();
   const profile = sites.resolve(url);
   const scanJs =
     typeof profile.episodeScan === 'function'
