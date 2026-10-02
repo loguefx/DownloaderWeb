@@ -718,7 +718,7 @@ api.queueSnapshot().then(renderQueue);
 
 // True whenever something is queued/downloading - drives the "Queue ..." labels.
 let queueActive = false;
-const ACTIVE_STATUSES = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready'];
+const ACTIVE_STATUSES = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready', 'placing'];
 
 function updateBulkLabels() {
   const b1 = $('#btn-bulk-detected');

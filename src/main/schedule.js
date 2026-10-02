@@ -51,6 +51,8 @@ class ScheduleStore extends EventEmitter {
       existing.outputRoot = spec.outputRoot || existing.outputRoot;
       existing.template = spec.template || existing.template;
       existing.baseUrl = spec.baseUrl || existing.baseUrl;
+      if (spec.library != null) existing.library = spec.library;
+      if (spec.minHeight != null) existing.minHeight = Number(spec.minHeight) || 0;
       this._save();
       return false;
     }
@@ -62,6 +64,10 @@ class ScheduleStore extends EventEmitter {
       template: spec.template || null,
       baseUrl: spec.baseUrl || null,
       outputRoot: spec.outputRoot,
+      // Engine (Part 5): new episodes for a watched series must land in the
+      // library, not be stranded in staging.
+      library: spec.library || null,
+      minHeight: Number(spec.minHeight) || 0,
       addedAt: Date.now(),
       lastChecked: null
     });

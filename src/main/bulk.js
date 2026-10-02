@@ -752,7 +752,18 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       }
 
       const label = organizer.buildBaseName(meta) + (mode === 'sub' ? ' [SUB]' : '');
-      const spec = { label, series, season: epSeason, episode: ep, outputRoot, template, baseUrl: entry.baseUrl, mode };
+      const spec = {
+        label,
+        series,
+        season: epSeason,
+        episode: ep,
+        outputRoot,
+        template,
+        baseUrl: entry.baseUrl,
+        mode,
+        library: opts.library || null,
+        minHeight: Number(opts.minHeight) || 0
+      };
       const rec = {
         label,
         series,
@@ -762,6 +773,9 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         group,
         outputRoot,
         stopRunOnFail,
+        library: opts.library || null,
+        minHeight: Number(opts.minHeight) || 0,
+        jobId: opts.jobId || null,
         url,
         template,
         baseUrl: entry.baseUrl,
@@ -804,7 +818,17 @@ async function queueOne(entry, onLog = () => {}) {
     return { queued: 0, skipped: 1 };
   }
   const label = organizer.buildBaseName(meta) + (mode === 'sub' ? ' [SUB]' : '');
-  const spec = { label, series, season, episode, outputRoot, baseUrl: url, mode };
+  const spec = {
+    label,
+    series,
+    season,
+    episode,
+    outputRoot,
+    baseUrl: url,
+    mode,
+    library: (entry && entry.library) || null,
+    minHeight: Number((entry && entry.minHeight) || 0)
+  };
   const rec = {
     label,
     series,
@@ -814,6 +838,9 @@ async function queueOne(entry, onLog = () => {}) {
     group: (entry && entry.group) || `single-${Date.now().toString(36)}`,
     outputRoot,
     stopRunOnFail: false,
+    library: (entry && entry.library) || null,
+    minHeight: Number((entry && entry.minHeight) || 0),
+    jobId: (entry && entry.jobId) || null,
     url,
     baseUrl: url,
     key: pending.constructor.key(spec),

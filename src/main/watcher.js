@@ -60,7 +60,13 @@ class Watcher {
         mode: s.mode || 'dub'
       };
       try {
-        await bulk.startBatch([entry], s.outputRoot, this.onLog, { stopRunOnFail: false });
+        // Engine (Part 5): watched series keep their library + quality floor
+        // so new episodes get placed like the original job did.
+        await bulk.startBatch([entry], s.outputRoot, this.onLog, {
+          stopRunOnFail: false,
+          library: s.library || null,
+          minHeight: s.minHeight || 0
+        });
       } catch (e) {
         this.onLog(`Schedule check failed for "${s.series}": ${e.message}`);
       }
@@ -103,6 +109,8 @@ class Watcher {
         episode: spec.episode,
         outputRoot: spec.outputRoot,
         stopRunOnFail: false, // watcher must never nuke the queue
+        library: spec.library || null,
+        minHeight: spec.minHeight || 0,
         key: spec.key,
         discover: bulk.makeDiscover(url, this.onLog, spec.mode || 'dub'),
         onUnavailable: () => pending.markChecked(spec.key),

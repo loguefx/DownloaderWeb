@@ -55,6 +55,9 @@ class PendingStore extends EventEmitter {
       template: spec.template || null,
       baseUrl: spec.baseUrl || null,
       mode: spec.mode || 'dub',
+      // Engine (Part 5): re-queued episodes must still land in the library.
+      library: spec.library || null,
+      minHeight: Number(spec.minHeight) || 0,
       addedAt: Date.now(),
       lastChecked: null
     });

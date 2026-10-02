@@ -292,6 +292,38 @@ wipe a disk.
 5. Click **Start bulk download**. Progress, status, and a live activity log appear
    in the sidebar.
 
+## Windows engine (Jellyfin integration)
+
+The app can also run **headless** as a download engine on a dedicated Windows PC
+(behind Mullvad), controlled over a small HTTP API: the Jellyfin plugin (a later
+step of the integration) queues movies / series / anime by pasted source URL, and
+the engine downloads them, verifies them, and places the finished files onto the
+**NAS library folders** — the same folders Jellyfin scans. It only ever replaces
+files it placed itself, moves old files to a 30-day trash folder, and makes no
+outside request unless Mullvad is confirmed up.
+
+```bash
+npm run start:engine        # headless mode: HTTP API on port 7878, no UI window
+```
+
+The API key is generated in `%APPDATA%\webvideodownloader\engine.json` (Windows)
+or `~/.config/webvideodownloader/engine.json` (Linux) on first run. Quick start
+from the Jellyfin machine:
+
+```bash
+KEY=$(jq -r .apiKey ~/.config/webvideodownloader/engine.json)   # or read engine.json on the engine PC
+curl -s -H "Authorization: Bearer $KEY" http://<engine-pc>:7878/api/health
+curl -s -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"jobId":"1","sourceUrl":"https://site/watch/show/ep-1","title":"Show","minHeight":1080,\
+       "library":{"name":"Anime","locations":["\\\\nas\\anime"]},"scope":"full"}' \
+  http://<engine-pc>:7878/api/jobs
+```
+
+See [`docs/engine-windows.md`](docs/engine-windows.md) for the full setup (Mullvad
+settings, firewall, path mappings, scheduled-task install scripts, `curl` reference)
+and [`Jellyfin_Integration/Build plan.md`](Jellyfin_Integration/Build%20plan.md) for
+the design of the whole integration.
+
 ## Multiple sites & expanding over time
 
 Each site is a small adapter object. The fallback `generic` profile uses pure

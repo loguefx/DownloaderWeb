@@ -8,6 +8,7 @@ const config = require('./config');
 const vpn = require('./vpn');
 const organizer = require('./organizer');
 const library = require('./library');
+const placer = require('./placer');
 const { download } = require('./downloader');
 const { verifyFile, belowMinHeight } = require('./verify');
 const hlscheck = require('./hlscheck');
@@ -59,7 +60,7 @@ class DownloadManager extends EventEmitter {
   // ---- public API ----
 
   add(item) {
-    const ACTIVE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready'];
+    const ACTIVE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready', 'placing'];
     // Dedupe by key (used by the watcher): skip if an equivalent item is already
     // active; replace any stale (waiting/failed/done) one so it can retry.
     if (item.key) {
@@ -87,6 +88,11 @@ class DownloadManager extends EventEmitter {
         group: null, // series-batch id (for grouping + auto-removal in the UI)
         mode: null,
         episode: null,
+        // Engine (Part 5): the library this job's finished files belong in,
+        // plus the quality floor and the plugin's jobId for traceability.
+        library: null,
+        minHeight: 0,
+        jobId: null,
         // Fields needed to rebuild this item after an app restart.
         url: null,
         template: null,
@@ -332,6 +338,73 @@ class DownloadManager extends EventEmitter {
     }
   }
 
+  // Every "done" exit goes through here (Jellyfin build plan Part 5).
+  // Engine jobs carry a library: the finished file still sits in staging and
+  // must be placed onto a library drive first. NO_SPACE leaves the file in
+  // staging and re-queues the item (the next pass re-places it, no re-download)
+  // when a drive has room. Desktop jobs (no library) behave exactly as before.
+  async _settle(item, finishedPath, bytes, note) {
+    item.finalPath = finishedPath;
+    if (bytes) item.bytes = bytes;
+    if (typeof item.onDone === 'function') {
+      try {
+        item.onDone(item);
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (!item.library) {
+      item.status = 'done';
+      item.progress = 1;
+      this._emit();
+      this._log(note || `Completed: ${path.basename(finishedPath)}`);
+      this._pruneGroupIfComplete(item.group);
+      return { fatal: false };
+    }
+    item.status = 'placing';
+    this._emit();
+    this._log(`Placing ${path.basename(finishedPath)} onto "${item.library.name || 'the library'}"...`);
+    let result;
+    try {
+      result = await placer.placeItem(item, finishedPath);
+    } catch (err) {
+      if (err && err.code === 'NO_SPACE') {
+        if (this._stopRequested) {
+          item.status = 'cancelled';
+          this._emit();
+          this._pruneGroupIfComplete(item.group);
+          return { fatal: false };
+        }
+        // The file stays in staging; the next pass finds it and re-places it.
+        item.status = 'queued';
+        item.error = err.message;
+        this._emit();
+        this._log(
+          `${err.message}. "${item.label}" stays in staging and will be placed once a drive has room.`
+        );
+        const wait = Math.min(
+          config.download.retryMaxDelayMs || 60000,
+          (config.download.retryBaseDelayMs || 2000) * 3
+        );
+        await delay(wait);
+        return { retry: true };
+      }
+      throw err;
+    }
+    item.finalPath = (result && result.finalPath) || finishedPath;
+    item.status = 'done';
+    item.progress = 1;
+    this._emit();
+    this._log(
+      result && result.existing
+        ? `Completed: "${item.label}" was already in the library; the staging copy was dropped.`
+        : (note || `Completed: ${path.basename(item.finalPath)}`) +
+            ` (placed on ${path.dirname(item.finalPath)})`
+    );
+    this._pruneGroupIfComplete(item.group);
+    return { fatal: false };
+  }
+
   async _process(item) {
     while (true) {
       if (this._stopRequested) {
@@ -375,23 +448,14 @@ class DownloadManager extends EventEmitter {
         if (found) {
           const already = await verifyFile(found, expected ? { minDuration: expected } : {});
           if (already.probeOk && !belowMinHeight(already, floor)) {
-            item.finalPath = found;
-            item.status = 'done';
-            item.progress = 1;
-            item.bytes = already.bytes || item.bytes;
-            this._emit();
-            this._log(
+            const settled = await this._settle(
+              item,
+              found,
+              already.bytes || item.bytes,
               `Completed: ${path.basename(found)} (kept a finished file from a previous attempt)`
             );
-            if (typeof item.onDone === 'function') {
-              try {
-                item.onDone(item);
-              } catch (e) {
-                // ignore
-              }
-            }
-            this._pruneGroupIfComplete(item.group);
-            return { fatal: false };
+            if (settled.retry) continue;
+            return settled;
           }
           if (already.probeOk && belowMinHeight(already, floor)) {
             // Low quality. Only a file the engine itself placed may be
@@ -437,22 +501,14 @@ class DownloadManager extends EventEmitter {
           const already = await verifyFile(partPath, { minDuration: expected });
           if (already.ok && !belowMinHeight(already, floor)) {
             await library.safePlace({ partPath, finalPath, replacePath: null });
-            item.status = 'done';
-            item.progress = 1;
-            item.bytes = already.bytes || item.bytes;
-            this._emit();
-            this._log(
+            const settled = await this._settle(
+              item,
+              finalPath,
+              already.bytes || item.bytes,
               `Completed: ${path.basename(finalPath)} (kept a finished file from a previous attempt)`
             );
-            if (typeof item.onDone === 'function') {
-              try {
-                item.onDone(item);
-              } catch (e) {
-                // ignore
-              }
-            }
-            this._pruneGroupIfComplete(item.group);
-            return { fatal: false };
+            if (settled.retry) continue;
+            return settled;
           }
         }
 
@@ -664,23 +720,16 @@ class DownloadManager extends EventEmitter {
           finalPath,
           replacePath: previous || null
         });
-        item.status = 'done';
-        item.progress = 1;
-        this._emit();
-        this._log(
+        const settled = await this._settle(
+          item,
+          finalPath,
+          v.bytes || item.bytes,
           previousHeight
             ? `Replaced ${path.basename(finalPath)}: removed the ${previousHeight}p file, saved ${v.height}p.`
             : `Completed: ${path.basename(finalPath)}`
         );
-        if (typeof item.onDone === 'function') {
-          try {
-            item.onDone(item);
-          } catch (e) {
-            // ignore
-          }
-        }
-        this._pruneGroupIfComplete(item.group);
-        return { fatal: false };
+        if (settled.retry) continue;
+        return settled;
       } catch (err) {
         if (err.name === 'AbortError') {
           // Paused (VPN/user): keep partial and the download slot so a
@@ -763,7 +812,7 @@ class DownloadManager extends EventEmitter {
     try {
       // Persist everything still in flight so a restart can resume it. Completed
       // and cancelled items are dropped (done files stay on disk).
-      const RESUMABLE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'waiting', 'failed', 'ready'];
+      const RESUMABLE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'waiting', 'failed', 'ready', 'placing'];
       const data = this.items
         .filter((it) => RESUMABLE.includes(it.status) && it.url)
         .map((it) => ({
@@ -779,6 +828,9 @@ class DownloadManager extends EventEmitter {
           baseUrl: it.baseUrl,
           key: it.key,
           stopRunOnFail: it.stopRunOnFail,
+          library: it.library || null,
+          minHeight: it.minHeight || 0,
+          jobId: it.jobId || null,
           status: it.status,
           attempts: it.attempts || 0,
           skipSources: Array.isArray(it.skipSources) ? it.skipSources : [],
@@ -831,6 +883,9 @@ class DownloadManager extends EventEmitter {
             baseUrl: rec.baseUrl || rec.url,
             key: rec.key,
             stopRunOnFail: rec.stopRunOnFail,
+            library: rec.library || null,
+            minHeight: Number(rec.minHeight) || 0,
+            jobId: rec.jobId || null,
             skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],
             expectedDuration: rec.expectedDuration || 0,
             // Carrying the old count over meant a restored item that already sat

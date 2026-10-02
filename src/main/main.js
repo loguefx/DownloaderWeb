@@ -435,6 +435,22 @@ app.whenReady().then(() => {
   // Start the daily watcher for pending dubbed episodes.
   watcher.start(onLog);
 
+  // Engine mode: once the queue + watcher are up, open the HTTP API (Part 1).
+  if (engineMode) {
+    require('./api')
+      .start()
+      .then(({ port }) => {
+        console.log(
+          `[engine] ready: API listening on port ${port}. ` +
+            `The API key is in engine.json under the app data folder (see README).`
+        );
+      })
+      .catch((e) => {
+        console.error('[engine] API failed to start: ' + e.message);
+        process.exit(1);
+      });
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
