@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -8,6 +9,8 @@ using Jellyfin.Plugin.MediaDownloader.Configuration;
 using Jellyfin.Plugin.MediaDownloader.Engine;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Model.Serialization;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -64,6 +67,16 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
         {
             if (cond) { _passed++; Console.WriteLine("PASS  " + name); }
             else { _failed++; Console.WriteLine("FAIL  " + name + (extra != null ? "  -- " + extra : "")); }
+        }
+
+        // Set the plugin's static Instance (private setter) to simulate
+        // Jellyfin's load ordering relative to service registration.
+        private static void SetInstance(MediaDownloaderPlugin instance)
+        {
+            var prop = typeof(MediaDownloaderPlugin).GetProperty("Instance",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic);
+            prop.SetValue(null, instance);
         }
 
         private static async Task<bool> WaitFor(Func<bool> pred, int timeoutMs = 15000)
@@ -171,6 +184,60 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
             {
                 try { await worker.StopAsync(CancellationToken.None); } catch { }
                 (worker as IDisposable)?.Dispose();
+            }
+
+            // ---- E: DI wiring (the real Jellyfin startup path) ----------------
+            // Reproduces the production crash: RegisterServices runs before the
+            // plugin instance exists, then the hosted service is built. The old
+            // code captured the (null) Instance and NRE'd in the Outbox factory.
+            // The fix resolves it lazily with an IApplicationPaths fallback, so
+            // BOTH orderings below must succeed.
+            {
+                var diRoot = Path.Combine(Path.GetTempPath(), "wvd-plugin-di-" + Guid.NewGuid().ToString("N"));
+                var diPaths = new FakeApplicationPaths(diRoot);
+                var expectedDir = Path.Combine(diPaths.PluginsPath, "Media Downloader");
+
+                // E1: the plugin instance exists by the time the hosted service is built.
+                SetInstance(null);
+                var coll = new ServiceCollection();
+                coll.AddSingleton<IApplicationPaths>(diPaths);
+                coll.AddSingleton<ILogger<OutboxWorker>>(NullLogger<OutboxWorker>.Instance);
+                new PluginServiceRegistrator().RegisterServices(coll, null);
+                var provider = coll.BuildServiceProvider();
+                new MediaDownloaderPlugin(diPaths, new FakeXmlSerializer()); // Jellyfin loads it
+                bool e1Threw = false;
+                bool e1Found = false;
+                try
+                {
+                    // The production path: Jellyfin's Host resolves IEnumerable<IHostedService>
+                    // at startup (AddHostedService registers IHostedService, not the concrete
+                    // type) - the original NRE happened while building exactly this collection.
+                    foreach (var svc in provider.GetRequiredService<IEnumerable<IHostedService>>())
+                    {
+                        if (svc is OutboxWorker) { e1Found = true; break; }
+                    }
+                }
+                catch (Exception ex) { e1Threw = true; Console.WriteLine("   E1 exception: " + ex.GetType().Name + ": " + ex.Message); }
+                Check("E1: hosted service resolves (no NRE at startup)", !e1Threw && e1Found);
+                provider.Dispose();
+
+                // E2: instance never set -> data folder must come from IApplicationPaths.
+                SetInstance(null);
+                Directory.CreateDirectory(expectedDir);
+                var coll2 = new ServiceCollection();
+                coll2.AddSingleton<IApplicationPaths>(diPaths);
+                coll2.AddSingleton<ILogger<OutboxWorker>>(NullLogger<OutboxWorker>.Instance);
+                new PluginServiceRegistrator().RegisterServices(coll2, null);
+                var provider2 = coll2.BuildServiceProvider();
+                var outbox2 = provider2.GetRequiredService<Outbox>();
+                outbox2.Add("di-probe", Parse("{}"), "probe");
+                Check("E2: outbox resolves without a plugin instance", outbox2 != null);
+                Check("E2: outbox.json lands under <plugins>/Media Downloader",
+                    File.Exists(Path.Combine(expectedDir, "outbox.json")), expectedDir);
+                provider2.Dispose();
+
+                // Restore a valid instance for anything that runs after this section.
+                new MediaDownloaderPlugin(paths, new FakeXmlSerializer());
             }
 
             Console.WriteLine("HARNESS " + _passed + " passed, " + _failed + " failed");

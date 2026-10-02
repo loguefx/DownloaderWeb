@@ -51,11 +51,23 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
             _plugin = plugin;
         }
 
+        /// <summary>
+        /// Resolve the plugin lazily: it may not be set at construction time
+        /// (service registration runs before the plugin instance exists), but is
+        /// always set by request time. Keeps a null constructor arg from NREing.
+        /// </summary>
+        private MediaDownloaderPlugin Plugin => _plugin ?? MediaDownloaderPlugin.Instance;
+
         private Uri BaseUri
         {
             get
             {
-                var url = (_plugin.Configuration.EngineUrl ?? string.Empty).Trim().TrimEnd('/');
+                var plugin = Plugin;
+                if (plugin == null)
+                {
+                    throw new EngineApiException(0, "Plugin is not initialised yet - please retry.");
+                }
+                var url = (plugin.Configuration.EngineUrl ?? string.Empty).Trim().TrimEnd('/');
                 if (string.IsNullOrEmpty(url))
                 {
                     throw new EngineApiException(0, "Engine URL is not set - open Settings and enter the engine address.");
@@ -78,7 +90,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
             HttpMethod method, string path, JsonElement? body = null, CancellationToken ct = default)
         {
             var request = new HttpRequestMessage(method, new Uri(BaseUri, path));
-            var key = (_plugin.Configuration.EngineApiKey ?? string.Empty).Trim();
+            var key = (Plugin?.Configuration.EngineApiKey ?? string.Empty).Trim();
             if (!string.IsNullOrEmpty(key))
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
