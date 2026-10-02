@@ -1,26 +1,32 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Build the installable plugin package for each supported Jellyfin line.
+ * Build the plugin for each supported Jellyfin line, versioned per line.
  *
- * The plugin multi-targets net8.0 (10.10) / net9.0 (10.11) / net10.0 (12);
- * this script builds each target in Release and packages exactly what a
- * server needs to load it: the plugin dll + a meta.json manifest, in a
- * folder named "MediaDownloader".
+ * Versioning follows the Jellyfin plugin-catalog convention: the version is
+ * "<targetAbi>.<build>" (e.g. 10.11.0.2), so one repository manifest can serve
+ * every server line and the catalog picks the highest compatible version:
  *
- * Output:
- *   dist/plugins/MediaDownloader.10.10.zip
- *   dist/plugins/MediaDownloader.10.11.zip
- *   dist/plugins/MediaDownloader.12.zip
+ *   net8.0  -> 10.10 line -> 10.10.0.<build>
+ *   net9.0  -> 10.11 line -> 10.11.0.<build>
+ *   net10.0 -> 12 line    -> 12.0.0.<build>
  *
- * Install (per jellyfin.org docs): put the unzipped folder into the server's
- * plugins/ directory (e.g. /var/lib/jellyfin/plugins/MediaDownloader/ or
- * %ProgramData%\Jellyfin\Server\plugins\MediaDownloader\) and restart
- * Jellyfin. Pick the zip that matches the server's major line — a 10.x build
- * will not load on a 12 server and vice versa.
+ * The assembly version is stamped to match (so the version shown in the
+ * dashboard equals the catalog version), and the bundled meta.json carries the
+ * same version + targetAbi + autoUpdate=true.
+ *
+ * Zip layout: files at the ZIP ROOT (dll + meta.json), no top-level folder —
+ * that is exactly what the server's catalog installer expects
+ * (InstallationManager extracts into plugins/<name>/) and matches the
+ * official catalog zips. For manual installs, create the folder first and
+ * extract the contents into it.
+ *
+ * Output: dist/plugins/MediaDownloader.<version>.zip
  *
  * Needs the .NET SDK (>= 10.0.100 to build all three targets). Defaults to
- * ~/.dotnet/dotnet; override with $DOTNET.
+ * ~/.dotnet/dotnet; override with $DOTNET. Build number: $BUILD (default 1).
+ *
+ * `npm run build:plugin-zips -- 2` or `BUILD=2 npm run build:plugin-zips`
  */
 
 const { spawnSync } = require('child_process');
@@ -33,22 +39,21 @@ const dotnet = process.env.DOTNET || path.join(os.homedir(), '.dotnet', 'dotnet'
 
 const PLUGIN_DIR = path.join(REPO, 'Jellyfin.Plugin.MediaDownloader');
 const DLL_NAME = 'Jellyfin.Plugin.MediaDownloader.dll';
-const FOLDER = 'MediaDownloader';
 const PLUGIN_GUID = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273'; // Plugin.cs
-const PLUGIN_VERSION = '1.0.0.0'; // AssemblyVersion in the csproj
 const NAME = 'Media Downloader';
 const OVERVIEW = 'Queues movies, series and anime for the DownloaderWeb engine and shows its health and queue.';
 const DESCRIPTION =
   'Browser-side bridge between Jellyfin and the DownloaderWeb engine: the ' +
   'plugin keeps the engine key server-side, queues download jobs exactly once ' +
   '(outbox), and surfaces engine health/queue in the dashboard.';
+const OWNER = 'loguefx';
+const CATEGORY = 'General';
 
-// One row per server line. targetAbi gates the server's "supported" check
-// (server version >= targetAbi); the dll itself must match the line.
+// One row per server line: TFM, the ABI base used for versioning + gating.
 const TARGETS = [
-  { tfm: 'net8.0', line: '10.10', targetAbi: '10.10.0.0' },
-  { tfm: 'net9.0', line: '10.11', targetAbi: '10.11.0.0' },
-  { tfm: 'net10.0', line: '12', targetAbi: '12.0.0.0' },
+  { tfm: 'net8.0', abi: '10.10.0', targetAbi: '10.10.0.0' },
+  { tfm: 'net9.0', abi: '10.11.0', targetAbi: '10.11.0.0' },
+  { tfm: 'net10.0', abi: '12.0.0', targetAbi: '12.0.0.0' },
 ];
 
 function run(cmd, args, opts = {}) {
@@ -63,44 +68,43 @@ function run(cmd, args, opts = {}) {
 }
 
 /**
- * Zip <dir> (with its top-level folder as the zip root) into <out.zip>,
- * using whichever of zip / python3 / 7z is available.
+ * Zip the files in <dir> (root-level entries) into <out.zip> using whichever
+ * of zip / python3 / 7z is available.
  */
-function makeZip(dir, outZip) {
+function makeZip(dir, files, outZip) {
   if (spawnSync('zip', ['-v'], { stdio: 'ignore' }).status === 0) {
-    run('zip', ['-q', '-r', outZip, path.basename(dir)], { cwd: path.dirname(dir) });
+    run('zip', ['-q', outZip, ...files], { cwd: dir });
     return;
   }
   if (spawnSync('python3', ['--version'], { stdio: 'ignore' }).status === 0) {
-    // python zipfile: cwd = parent of dir so the zip root is the folder name.
-    run('python3', ['-m', 'zipfile', '-c', outZip, path.basename(dir)], { cwd: path.dirname(dir) });
+    run('python3', ['-m', 'zipfile', '-c', outZip, ...files], { cwd: dir });
     return;
   }
   if (spawnSync('7z', ['i'], { stdio: 'ignore' }).status === 0) {
-    run('7z', ['a', '-r', outZip, path.basename(dir)], { cwd: path.dirname(dir) });
+    run('7z', ['a', outZip, ...files], { cwd: dir });
     return;
   }
   console.error('No zip tool found (tried zip, python3, 7z).');
   process.exit(1);
 }
 
-function metaJson({ targetAbi }) {
+function metaJson({ version, targetAbi }) {
   // Property names are the server's [JsonPropertyName] values
   // (MediaBrowser.Common.Plugins.PluginManifest); camelCase.
   return JSON.stringify(
     {
-      category: 'General',
-      changelog: 'Initial release.',
+      category: CATEGORY,
+      changelog: '',
       description: DESCRIPTION,
       guid: PLUGIN_GUID,
       name: NAME,
       overview: OVERVIEW,
-      owner: 'loguefx',
+      owner: OWNER,
       targetAbi,
       timestamp: new Date().toISOString(),
-      version: PLUGIN_VERSION,
+      version,
       status: 0, // Active
-      autoUpdate: false,
+      autoUpdate: true,
       imagePath: null,
       assemblies: [DLL_NAME],
     },
@@ -109,15 +113,30 @@ function metaJson({ targetAbi }) {
   ) + '\n';
 }
 
-function main() {
+/**
+ * Build + stage + zip every target. Returns [{ tfm, abi, version, targetAbi, zip }].
+ */
+function buildZips({ build = '1', changelog = '' } = {}) {
+  if (!/^\d+$/.test(build)) {
+    console.error('BUILD must be a positive integer (e.g. 2).');
+    process.exit(1);
+  }
   const outRoot = path.join(REPO, 'dist', 'plugins');
   fs.mkdirSync(outRoot, { recursive: true });
+  const built = [];
 
-  for (const { tfm, line, targetAbi } of TARGETS) {
-    console.log(`\n=== ${line} (${tfm}) ===`);
+  for (const { tfm, abi, targetAbi } of TARGETS) {
+    const version = `${abi}.${build}`;
+    console.log(`\n=== ${abi} line (${tfm}) -> ${version} ===`);
 
-    console.log('[build] dotnet build -c Release -f ' + tfm);
-    run(dotnet, ['build', PLUGIN_DIR, '-c', 'Release', '-f', tfm, '-v', 'q', '--nologo']);
+    console.log('[build] dotnet build -c Release -f ' + tfm + ' -p:Version=' + version);
+    run(dotnet, [
+      'build', PLUGIN_DIR,
+      '-c', 'Release', '-f', tfm, '-v', 'q', '--nologo',
+      '-p:Version=' + version,
+      '-p:AssemblyVersion=' + version,
+      '-p:FileVersion=' + version,
+    ]);
 
     const srcDll = path.join(PLUGIN_DIR, 'bin', 'Release', tfm, DLL_NAME);
     if (!fs.existsSync(srcDll)) {
@@ -125,25 +144,29 @@ function main() {
       process.exit(1);
     }
 
-    // Stage: dist/plugins-build/<line>/MediaDownloader/{dll,meta.json}
-    const staged = path.join(REPO, 'dist', 'plugins-build', line, FOLDER);
-    fs.rmSync(path.join(REPO, 'dist', 'plugins-build', line), { recursive: true, force: true });
+    // Stage with ROOT-LEVEL entries (no top folder): dist/plugins-build/<version>/...
+    const staged = path.join(REPO, 'dist', 'plugins-build', version);
+    fs.rmSync(staged, { recursive: true, force: true });
     fs.mkdirSync(staged, { recursive: true });
     fs.copyFileSync(srcDll, path.join(staged, DLL_NAME));
-    fs.writeFileSync(path.join(staged, 'meta.json'), metaJson({ targetAbi }));
+    fs.writeFileSync(path.join(staged, 'meta.json'), metaJson({ version, targetAbi }));
 
-    const outZip = path.join(outRoot, `MediaDownloader.${line}.zip`);
+    const outZip = path.join(outRoot, `MediaDownloader.${version}.zip`);
     fs.rmSync(outZip, { force: true });
-    makeZip(staged, outZip);
+    makeZip(staged, [DLL_NAME, 'meta.json'], outZip);
     console.log(`[ok] ${path.relative(REPO, outZip)}`);
+    built.push({ tfm, abi, version, targetAbi, zip: outZip, changelog });
   }
 
   console.log('\nAll plugin zips built.');
-  console.log('Install: extract the matching zip into the Jellyfin server plugins/');
-  console.log('directory so the MediaDownloader/ folder sits next to the other plugin');
-  console.log('folders, then restart the server. Match the line to your server:');
-  console.log('  10.10 -> MediaDownloader.10.10.zip   10.11 -> MediaDownloader.10.11.zip');
-  console.log('  12    -> MediaDownloader.12.zip');
+  return built;
 }
 
-main();
+if (require.main === module) {
+  const build = process.argv[2] || process.env.BUILD || '1';
+  buildZips({ build });
+  console.log('Install (manual): mkdir the plugin folder, unzip the contents into it, restart Jellyfin.');
+  console.log('Or add the plugin repository in the dashboard for automatic updates (see docs/engine-windows.md).');
+}
+
+module.exports = { buildZips, TARGETS, NAME, OVERVIEW, DESCRIPTION, OWNER, CATEGORY, PLUGIN_GUID, DLL_NAME };

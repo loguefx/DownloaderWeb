@@ -334,52 +334,120 @@ time, and bundling the server's own dlls into the plugin folder is what makes
 a plugin show as *NotSupported*. The test harness adds its own direct
 references, so `npm run test:plugin` is unaffected.
 
-### Packaging the installable zips
+### Versioning
+
+Following the Jellyfin plugin-catalog convention, each line is versioned
+`<targetAbi>.<build>`:
+
+| Line | Build 1 | Build 2 | … |
+|---|---|---|---|
+| 10.10 | `10.10.0.1` | `10.10.0.2` | … |
+| 10.11 | `10.11.0.1` | `10.11.0.2` | … |
+| 12 | `12.0.0.1` | `12.0.0.2` | … |
+
+The **assembly version** is stamped to match (so the version the dashboard
+shows equals the catalog version), and the bundled `meta.json` carries the
+same `version` + `targetAbi`.
+
+### Packaging the installable zips (local)
 
 ```bash
 export PATH="$HOME/.dotnet:$PATH"   # if dotnet is not on PATH
-npm run build:plugin-zips
-# → dist/plugins/MediaDownloader.10.10.zip
-#   dist/plugins/MediaDownloader.10.11.zip
-#   dist/plugins/MediaDownloader.12.zip
+npm run build:plugin-zips -- 1      # build number (default 1)
+# → dist/plugins/MediaDownloader.10.10.0.1.zip
+#   dist/plugins/MediaDownloader.10.11.0.1.zip
+#   dist/plugins/MediaDownloader.12.0.0.1.zip
 ```
 
-Each zip contains exactly what a server loads — a `MediaDownloader/` folder
-with the plugin dll and a `meta.json` manifest (name, GUID, `targetAbi`,
-version). Needs the .NET SDK ≥ 10.0.100 to build all three targets.
+Each zip has the **root-level layout** the server's catalog installer expects
+(files at the zip root, no top folder — same as the official catalog zips):
 
-### Installing on the Jellyfin server (NAS)
+```
+Jellyfin.Plugin.MediaDownloader.dll
+meta.json        (name, guid, targetAbi, version, autoUpdate=true)
+```
+
+Needs the .NET SDK ≥ 10.0.100 to build all three targets.
+
+### Installing on the Jellyfin server (NAS) — manual
 
 1. Copy the zip for **your server's line** to the NAS (e.g. `scp` it over).
-2. Extract it into the server's `plugins/` directory so the folder sits next
-to the other plugin folders:
+2. Create the plugin folder and extract the zip's **contents** into it:
 
    ```bash
    # Linux NAS (Debian-style install)
-   sudo unzip MediaDownloader.10.11.zip -d /var/lib/jellyfin/plugins/
-   # → /var/lib/jellyfin/plugins/MediaDownloader/Jellyfin.Plugin.MediaDownloader.dll
+   sudo mkdir -p /var/lib/jellyfin/plugins/MediaDownloader
+   sudo unzip MediaDownloader.10.11.0.1.zip -d /var/lib/jellyfin/plugins/MediaDownloader/
    ```
 
    (Windows server: `%ProgramData%\Jellyfin\Server\plugins\MediaDownloader\`.)
-3. Restart Jellyfin. The plugin appears under **Dashboard → Plugins**
-   ("Media Downloader", version 1.0.0.0 — the assembly version).
+3. Restart Jellyfin. The plugin appears under **Dashboard → Plugins** as
+   "Media Downloader" with the version you built (e.g. `10.11.0.1`).
 4. Open its settings page and set the **Engine URL**
    (`http://<windows-pc-ip>:7878`) and the engine's `apiKey` (from
    `engine.json`).
 
 Which zip to use:
 
-- Jellyfin **10.10** server → `MediaDownloader.10.10.zip`
-- Jellyfin **10.11** server → `MediaDownloader.10.11.zip`
-- Jellyfin **12** server → `MediaDownloader.12.zip`
+- Jellyfin **10.10** server → `MediaDownloader.10.10.0.*.zip`
+- Jellyfin **10.11** server → `MediaDownloader.10.11.0.*.zip`
+- Jellyfin **12** server → `MediaDownloader.12.0.0.*.zip`
 
 A 10.x build will **not** load on a 12 server (and vice versa): the server
-marks such assemblies *NotSupported* ("references an incompatible version of
-one of the shared libraries"). Pick by server version, not by preference.
+marks such assemblies *NotSupported*. Pick by server version, not by
+preference.
 
-> The `dotnet pack` output (a multi-target `.nupkg`) is for a NuGet feed / CI,
-> not for the server: the documented manual path is the folder in `plugins/`
-> (the 10.11/12 dashboards install from repositories, not from local files).
+### Automatic updates — the plugin repository (recommended)
+
+Instead of copying zips by hand, add our repo as a third-party plugin
+repository and the server installs/updates the plugin itself.
+
+**Publish a release** (any machine with the .NET SDK + the GitHub token):
+
+```bash
+npm run publish:plugin -- 1          # build number 1
+# later:
+BUILD=2 CHANGELOG="fix outbox retry" npm run publish:plugin
+```
+
+This builds all three lines, uploads the zips to the GitHub release
+(`v<build>`), (re)writes `plugin-repo/manifest.json`, and commits + pushes it.
+
+**Add the repository in Jellyfin** (once):
+
+- Dashboard → **Plugins** → **Add repository** (third-party)
+- Name: `Media Downloader`
+- URL: `https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/manifest.json`
+
+Then **Media Downloader** shows up in the plugin list for your server's line —
+install it from there. After that:
+
+- the server checks for updates automatically (at startup and on its scheduled
+  interval) and installs a newer `<line>.<build>` when we publish one — the
+  `autoUpdate` flag is on by default after a repo install;
+- each server only sees its own line (versions are filtered by `targetAbi`),
+  so a 10.11 server never gets the 12 build;
+- updating replaces the plugin folder and keeps your settings (the config XML
+  survives by design).
+
+### Uninstalling / clean re-test
+
+Uninstall from Dashboard → Plugins → **Uninstall**:
+
+- the plugin's **folder is removed for real** — immediately on Linux,
+  on the next server restart on Windows (the running dll is locked until
+  restart, so Jellyfin marks it *delete-on-startup* and removes it then);
+- the server asks for a restart — do it, that's when the folder goes away on
+  Windows;
+- **your settings survive** (kept in `config/plugins/<guid>.xml`, standard
+  Jellyfin behavior — you don't re-enter the engine URL/key after a
+  reinstall). For a fully clean re-test, also delete that file:
+
+  ```bash
+  sudo rm /var/lib/jellyfin/plugins/configurations/c86748fd475a4cf0bae083b0c8bc9273.xml
+  ```
+  (path varies by install; it's under the config dir's `plugins`/`configurations`
+  subfolder, named after the plugin GUID).
 
 ## Troubleshooting
 
