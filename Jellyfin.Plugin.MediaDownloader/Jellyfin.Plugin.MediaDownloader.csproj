@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Media Downloader - Jellyfin plugin (Jellyfin_Integration/Build plan, Part 2 + Part 4).
+
+    Targets Jellyfin 10.10 (latest stable, .NET 8). The downloaded
+    jellyfin-plugin-intros-master starter targets the 12.0 RC line (net10.0),
+    which only installs on nightly servers; switch TargetFramework + package
+    versions to match a 12-RC server if that is what you run.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Jellyfin.Plugin.MediaDownloader</RootNamespace>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="10.10.*" />
+    <PackageReference Include="Jellyfin.Model" Version="10.10.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Web\settings.html" />
+    <None Remove="Web\overview.html" />
+    <EmbeddedResource Include="Web\settings.html" />
+    <EmbeddedResource Include="Web\overview.html" />
+  </ItemGroup>
+
+</Project>

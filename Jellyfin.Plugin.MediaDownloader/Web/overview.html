@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Media Downloader</title>
+</head>
+<body>
+    <div id="overviewPage" data-role="page" class="page type-interior pluginPage"
+         data-require="emby-button,emby-select">
+        <div data-role="content">
+            <div class="content-primary">
+                <div id="banner" class="detailBody" style="padding:.8em 1em;border-radius:.5em;margin-bottom:1em;font-weight:600;"></div>
+
+                <div class="inputContainer">
+                    <button id="refreshBtn" is="emby-button" type="button" class="raised button-submit emby-button">
+                        <span>&#8635; Refresh</span>
+                    </button>
+                    <button id="pauseBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
+                        <span>Pause queue</span>
+                    </button>
+                    <button id="resumeBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
+                        <span>Resume</span>
+                    </button>
+                    <button id="stopBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
+                        <span>Stop all</span>
+                    </button>
+                    <span class="fieldDescription" style="margin-left:.8em;align-self:center;">
+                        Connection &amp; engine settings: open the <strong>Media Downloader</strong> page in the dashboard sidebar.
+                    </span>
+                </div>
+
+                <h3 class="sectionTitle">Engine queue</h3>
+                <table class="detailTable">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="detailTableHeaderCell">queued</th>
+                            <th scope="col" class="detailTableHeaderCell">downloading</th>
+                            <th scope="col" class="detailTableHeaderCell">verifying</th>
+                            <th scope="col" class="detailTableHeaderCell">placing</th>
+                            <th scope="col" class="detailTableHeaderCell">waiting</th>
+                            <th scope="col" class="detailTableHeaderCell">failed</th>
+                            <th scope="col" class="detailTableHeaderCell">done</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr id="queueRow">
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                            <td class="detailTableBodyCell">-</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3 class="sectionTitle">Outbox (delivered when the engine is back)</h3>
+                <p class="fieldDescription">
+                    Jobs queued while the engine was offline. Delivered exactly once - the
+                    engine ignores a job id it has already accepted.
+                </p>
+                <div class="inputContainer">
+                    <button id="purgeSentBtn" is="emby-button" type="button" class="raised button-submit emby-button">
+                        <span>Purge delivered</span>
+                    </button>
+                    <button id="purgeRejectedBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
+                        <span>Purge rejected</span>
+                    </button>
+                </div>
+                <table class="detailTable">
+                    <thead>
+                        <tr>
+                            <th scope="col" class="detailTableHeaderCell">title</th>
+                            <th scope="col" class="detailTableHeaderCell">state</th>
+                            <th scope="col" class="detailTableHeaderCell">attempts</th>
+                            <th scope="col" class="detailTableHeaderCell">queued</th>
+                            <th scope="col" class="detailTableHeaderCell"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="outboxBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            (() => {
+                const pluginGuid = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
+                const $ = (sel) => document.querySelector(sel);
+
+                function apiGet(path) {
+                    return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path) });
+                }
+                function apiPost(path, data) {
+                    return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path), data: data || {}, contentType: 'application/json' });
+                }
+                function apiDelete(path) {
+                    return ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl(path) });
+                }
+
+                function setBanner(kind, text) {
+                    const b = $('#banner');
+                    b.textContent = text;
+                    if (kind === 'ok') {
+                        b.style.background = '#e8f5e9';
+                        b.style.color = '#1b5e20';
+                        b.style.borderLeft = '6px solid #2e7d32';
+                    } else if (kind === 'warn') {
+                        b.style.background = '#fff8e1';
+                        b.style.color = '#7a5b00';
+                        b.style.borderLeft = '6px solid #f9a825';
+                    } else {
+                        b.style.background = '#ffebee';
+                        b.style.color = '#8e1b1b';
+                        b.style.borderLeft = '6px solid #c62828';
+                    }
+                }
+
+                function loadQueue(q) {
+                    if (!q) return;
+                    const cells = [q.queued, q.downloading, q.verifying, q.placing, q.waiting, q.failed, q.done];
+                    const row = $('#queueRow').querySelectorAll('td');
+                    cells.forEach((c, i) => { row[i].textContent = c != null ? c : '-'; });
+                }
+
+                function loadOutbox(items) {
+                    const body = $('#outboxBody');
+                    body.innerHTML = '';
+                    if (!items || !items.length) {
+                        const tr = document.createElement('tr');
+                        const td = document.createElement('td');
+                        td.colSpan = 5;
+                        td.className = 'detailTableBodyCell';
+                        td.textContent = 'Empty - nothing is waiting.';
+                        td.style.textAlign = 'center';
+                        td.style.color = '#888';
+                        tr.appendChild(td);
+                        body.appendChild(tr);
+                        return;
+                    }
+                    items.forEach((e) => {
+                        const tr = document.createElement('tr');
+                        tr.className = 'detailTableBodyRow';
+
+                        const tdTitle = document.createElement('td');
+                        tdTitle.className = 'detailTableBodyCell';
+                        tdTitle.textContent = e.title || e.jobId;
+                        tr.appendChild(tdTitle);
+
+                        const tdState = document.createElement('td');
+                        tdState.className = 'detailTableBodyCell';
+                        tdState.textContent = e.state;
+                        if (e.state === 'waiting-to-send') tdState.style.color = '#f9a825';
+                        else if (e.state === 'sent') tdState.style.color = '#2e7d32';
+                        else if (e.state === 'rejected') tdState.style.color = '#c62828';
+                        tr.appendChild(tdState);
+
+                        const tdAtt = document.createElement('td');
+                        tdAtt.className = 'detailTableBodyCell';
+                        tdAtt.textContent = e.attempts != null ? e.attempts : 0;
+                        tr.appendChild(tdAtt);
+
+                        const tdAt = document.createElement('td');
+                        tdAt.className = 'detailTableBodyCell';
+                        tdAt.textContent = e.createdAt ? new Date(e.createdAt).toLocaleString() : '-';
+                        tr.appendChild(tdAt);
+
+                        const tdAct = document.createElement('td');
+                        tdAct.className = 'detailTableBodyCell';
+                        const btn = document.createElement('button');
+                        btn.is = 'emby-button';
+                        btn.type = 'button';
+                        btn.className = 'raised button-submit emby-button';
+                        btn.textContent = 'Remove';
+                        btn.addEventListener('click', () => {
+                            apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(e.jobId)).then(refresh).catch(() => alert('Remove failed'));
+                        });
+                        tdAct.appendChild(btn);
+                        tr.appendChild(tdAct);
+
+                        body.appendChild(tr);
+                    });
+                }
+
+                function refresh() {
+                    // Health drives the banner + outbox counts.
+                    return apiGet('MediaDownloader/Health').then((h) => {
+                        const out = h.outbox || { waiting: 0, sent: 0, rejected: 0 };
+                        if (h.engine === 'online') {
+                            const vpn = h.health && h.health.vpn ? h.health.vpn : {};
+                            const q = h.health && h.health.queue ? h.health.queue : {};
+                            if (vpn.connected === false) {
+                                setBanner('warn', 'Engine online but VPN is DOWN - downloads are on hold (' + (q.waiting != null ? q.waiting : 0) + ' waiting, ' + out.waiting + ' in outbox).');
+                            } else {
+                                setBanner('ok', 'Engine online and VPN up. Outbox: ' + out.waiting + ' waiting, ' + out.sent + ' delivered, ' + out.rejected + ' rejected.');
+                            }
+                            loadQueue(q);
+                        } else {
+                            setBanner('bad', 'Engine is OFFLINE - ' + out.waiting + ' job(s) waiting in the outbox. They will be delivered when it comes back.');
+                            // Queue counts unknown; leave as-is.
+                        }
+                        return apiGet('MediaDownloader/Outbox');
+                    }).then((o) => {
+                        loadOutbox(o.items);
+                    }).catch((err) => {
+                        setBanner('bad', 'Could not reach the plugin: ' + ((err && err.message) || err));
+                    });
+                }
+
+                $('#refreshBtn').addEventListener('click', refresh);
+                $('#pauseBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/pause').then(refresh).catch(() => alert('Engine offline - control not available.')));
+                $('#resumeBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/resume').then(refresh).catch(() => alert('Engine offline - control not available.')));
+                $('#stopBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/stop').then(refresh).catch(() => alert('Engine offline - control not available.')));
+                $('#purgeSentBtn').addEventListener('click', () => {
+                    if (!confirm('Remove all delivered (sent) jobs from the outbox?')) return;
+                    apiPost('MediaDownloader/Outbox/purge', { state: 'sent' }).then(refresh).catch(() => alert('Purge failed'));
+                });
+                $('#purgeRejectedBtn').addEventListener('click', () => {
+                    if (!confirm('Remove all rejected jobs from the outbox?')) return;
+                    apiPost('MediaDownloader/Outbox/purge', { state: 'rejected' }).then(refresh).catch(() => alert('Purge failed'));
+                });
+
+                document.querySelector('#overviewPage').addEventListener('pageshow', () => refresh());
+            })();
+        </script>
+    </div>
+</body>
+</html>

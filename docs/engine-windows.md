@@ -13,8 +13,11 @@ and driving it with `curl`.
 
 > **Status:** engine safety (VPN gating + library safety), the HTTP API,
 > staging + drive picking, and the duplicate check are implemented. The
-> Jellyfin **plugin**, the search page, and notifications are still to come
-> (build order steps 6–12).
+> Jellyfin **plugin** now has its skeleton (build order step 6): the Settings +
+> Overview pages, the engine proxy, and the Part 4 outbox that delivers jobs
+> exactly-once when the engine is offline then back. The search/choose-episode
+> pages, quality check, keep-watching, and notifications (steps 7–12) are still
+> to come.
 
 ## How it fits together
 
@@ -274,9 +277,28 @@ steps and not yet implemented.
 Run the test suites any time:
 
 ```bash
-node scripts/test-library.js       # Part 11: library safety (37 checks)
-node scripts/test-engine-smoke.js # Phase 3: config, placer, NO_SPACE, HTTP API (39 checks)
+node scripts/test-library.js        # Part 11: library safety (37 checks)
+node scripts/test-engine-smoke.js   # Phase 3: config, placer, NO_SPACE, HTTP API (39 checks)
+node scripts/test-plugin-outbox.js  # Part 4: plugin outbox <-> REAL engine (exactly-once)
 ```
+
+### Testing the plugin against the real engine
+
+`scripts/test-plugin-outbox.js` boots the **actual** engine HTTP API under plain
+Node, then runs the C# harness
+(`Jellyfin.Plugin.MediaDownloader.Tests/`) that drives the plugin's outbox
+worker. It verifies the Part 4 guarantee end to end:
+
+| Scenario | Expected |
+|---|---|
+| engine **offline**, job queued | stays `waiting-to-send` (not lost) |
+| engine **online** | delivered, marked `sent` |
+| engine **4xx** (bad job) | marked `rejected` with the engine's message, not retried |
+| **re-send** an accepted `jobId` | engine ignores the duplicate → queued **exactly once** |
+
+The driver then inspects the engine's own queue to confirm the delivered job
+appears exactly once and the rejected job never did. It needs the .NET 8 SDK
+(defaults to `~/.dotnet/dotnet`; override with `$DOTNET`).
 
 The smoke test runs under plain Node (it fakes the `electron` module), so it
 works on any OS without starting the app.

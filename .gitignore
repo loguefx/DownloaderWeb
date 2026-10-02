@@ -7,3 +7,9 @@ queue-manifest.json
 .vs_full.html
 .idea/
 *.user
+
+# .NET (Jellyfin plugin + test harness) build output
+bin/
+obj/
+*.sln
+.vscode/

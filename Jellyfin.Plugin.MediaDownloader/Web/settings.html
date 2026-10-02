@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Media Downloader</title>
+</head>
+<body>
+    <div id="configPage" data-role="page" class="page type-interior pluginPage"
+         data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <p>
+                    This plugin forwards download requests to the
+                    <strong>Media Downloader engine</strong> (the headless app running on
+                    the Windows PC behind the VPN). The engine URL and key below live only
+                    on this Jellyfin server - your browser never talks to the engine
+                    directly.
+                </p>
+
+                <form id="configForm">
+                    <!-- ================= Connection ================= -->
+                    <h3 class="sectionTitle">Connection</h3>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="engineUrl">Engine URL</label>
+                        <input id="engineUrl" is="emby-input" type="text"
+                               placeholder="http://192.168.1.20:7878"
+                               autocomplete="off" spellcheck="false" />
+                        <div class="fieldDescription">
+                            Base URL of the engine HTTP API (the Windows PC). Port 7878 by default.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="engineApiKey">Engine API key</label>
+                        <input id="engineApiKey" is="emby-input" type="password"
+                               placeholder="40-character key from engine.json"
+                               autocomplete="off" spellcheck="false" />
+                        <div class="fieldDescription">
+                            The <code>apiKey</code> from the engine's
+                            <code>engine.json</code>. Sent to the engine as a Bearer token; never shown to the browser.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <button id="testConnBtn" is="emby-button" type="button"
+                                class="raised button-submit block emby-button">
+                            <span>Test connection</span>
+                        </button>
+                        <div id="testConnResult" class="fieldDescription"></div>
+                    </div>
+
+                    <!-- ================= Libraries & defaults ================= -->
+                    <h3 class="sectionTitle">Libraries &amp; defaults</h3>
+                    <p class="fieldDescription">
+                        Pick which Jellyfin library each kind is filed into. A job is
+                        delivered to that library's <em>current</em> drive folders, so
+                        adding a drive in Jellyfin is all that is needed.
+                    </p>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="tvLibrary">TV shows library</label>
+                        <select id="tvLibrary" is="emby-select"></select>
+                        <div class="fieldDescription">Default target for TV series.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="moviesLibrary">Movies library</label>
+                        <select id="moviesLibrary" is="emby-select"></select>
+                        <div class="fieldDescription">Default target for movies.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="animeLibrary">Anime library</label>
+                        <select id="animeLibrary" is="emby-select"></select>
+                        <div class="fieldDescription">
+                            Default target for anime (leave "Same as TV" to reuse the TV library).
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="defaultMinHeight">Minimum height (px)</label>
+                        <input id="defaultMinHeight" is="emby-input" type="number" min="480" step="1" value="1080" />
+                        <div class="fieldDescription">Quality floor requested for new jobs (e.g. 1080).</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="defaultMode">Default mode</label>
+                        <select id="defaultMode" is="emby-select">
+                            <option value="dub">Dubbed</option>
+                            <option value="sub">Subtitled</option>
+                        </select>
+                        <div class="fieldDescription">Preferred audio for new jobs.</div>
+                    </div>
+
+                    <!-- ================= Engine settings (proxied) ================= -->
+                    <h3 class="sectionTitle">Engine (on the Windows PC)</h3>
+                    <p class="fieldDescription">
+                        These live in the engine's own <code>engine.json</code> (the single
+                        source of truth). They are read and written through the engine while
+                        it is online.
+                    </p>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="reserveBytes">Free-space reserve</label>
+                        <input id="reserveBytes" is="emby-input" type="number" min="0" step="1073741824" value="53687091200" />
+                        <span id="reserveGb" class="fieldDescription"></span>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="fillMode">Fill mode</label>
+                        <select id="fillMode" is="emby-select">
+                            <option value="order">Order (fill folders as listed)</option>
+                            <option value="spread">Spread (use the most free space)</option>
+                        </select>
+                        <div class="fieldDescription">How the engine chooses which drive to place a file on.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="readOnly" type="checkbox" is="emby-checkbox" />
+                            <span>Read-only mode (hold all downloads)</span>
+                        </label>
+                        <div class="fieldDescription">Temporarily pause all engine placement.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="jellyfinBaseUrl">Jellyfin refresh URL (engine &rarr; server)</label>
+                        <input id="jellyfinBaseUrl" is="emby-input" type="text" placeholder="http://jellyfin.lan:8096" spellcheck="false" />
+                        <div class="fieldDescription">
+                            Lets the engine trigger a per-folder refresh after placing a file. Optional.
+                        </div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="jellyfinApiKey">Jellyfin API key (engine &rarr; server)</label>
+                        <input id="jellyfinApiKey" is="emby-input" type="password" placeholder="leave blank to keep current" autocomplete="off" spellcheck="false" />
+                        <div class="fieldDescription">A Jellyfin API key with library rights. Optional.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused">Path mappings (Jellyfin path &rarr; engine drive)</label>
+                        <div id="pathMappings"></div>
+                        <div class="fieldDescription">
+                            Translate a Jellyfin/NAS path to the engine PC's drive. Longest prefix wins.
+                        </div>
+                        <button id="addMappingBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-top:.5em;">
+                            <span>+ Add mapping</span>
+                        </button>
+                    </div>
+                    <div class="inputContainer">
+                        <button id="saveEngineBtn" is="emby-button" type="button" class="raised button-submit block emby-button">
+                            <span>Save engine settings</span>
+                        </button>
+                        <div id="engineSaveResult" class="fieldDescription"></div>
+                    </div>
+
+                    <!-- ================= Save plugin ================= -->
+                    <div>
+                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+                            <span>Save</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script type="text/javascript">
+            (() => {
+                const pluginGuid = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
+
+                let config = {
+                    EngineUrl: '',
+                    EngineApiKey: '',
+                    TvLibrary: '',
+                    MoviesLibrary: '',
+                    AnimeLibrary: '',
+                    DefaultMinHeight: 1080,
+                    DefaultMode: 'dub'
+                };
+                let engineSettings = null; // cached engine config
+                let libraries = [];
+
+                const $ = (sel) => document.querySelector(sel);
+                const bytesToGb = (b) => (b / (1024 * 1024 * 1024)).toFixed(1);
+
+                function apiGet(path) {
+                    const url = ApiClient.getUrl(path);
+                    return ApiClient.ajax({ type: 'GET', url });
+                }
+
+                function apiPost(path, data) {
+                    const url = ApiClient.getUrl(path);
+                    return ApiClient.ajax({ type: 'POST', url, data: data || {}, contentType: 'application/json' });
+                }
+
+                function apiPut(path, data) {
+                    const url = ApiClient.getUrl(path);
+                    return ApiClient.ajax({ type: 'PUT', url, data: data || {}, contentType: 'application/json' });
+                }
+
+                function fillLibrarySelects() {
+                    const selects = [$('#tvLibrary'), $('#moviesLibrary'), $('#animeLibrary')];
+                    selects.forEach((sel) => {
+                        sel.innerHTML = '';
+                        const none = document.createElement('option');
+                        none.value = '';
+                        none.textContent = '(none)';
+                        sel.appendChild(none);
+                        libraries.forEach((lib) => {
+                            const opt = document.createElement('option');
+                            opt.value = lib.name;
+                            opt.textContent = lib.name + '  [' + lib.collectionType + ']';
+                            sel.appendChild(opt);
+                        });
+                    });
+                    // "Same as TV" option for anime
+                    const animeSel = $('#animeLibrary');
+                    const same = document.createElement('option');
+                    same.value = 'same-as-tv';
+                    same.textContent = 'Same as TV';
+                    animeSel.appendChild(same);
+                }
+
+                function renderPathMappings() {
+                const box = $('#pathMappings');
+                    box.innerHTML = '';
+                    const list = (engineSettings && engineSettings.pathMappings) || [];
+                    list.forEach((m, i) => {
+                        const row = document.createElement('div');
+                        row.className = 'flex align-center';
+                        row.style.marginBottom = '.3em';
+                        const left = document.createElement('input');
+                        left.type = 'text';
+                        left.is = 'emby-input';
+                        left.placeholder = 'Jellyfin path, e.g. \\\\nas\\anime';
+                        left.value = m.jellyfin || '';
+                        left.style.width = '46%';
+                        left.addEventListener('change', () => { list[i].jellyfin = left.value; });
+                        const arrow = document.createElement('span');
+                        arrow.textContent = '  \u2192  ';
+                        arrow.style.minWidth = '2.5em';
+                        arrow.style.textAlign = 'center';
+                        const right = document.createElement('input');
+                        right.type = 'text';
+                        right.is = 'emby-input';
+                        right.placeholder = 'Engine drive, e.g. Z:\\anime';
+                        right.value = m.engine || '';
+                        right.style.width = '46%';
+                        right.addEventListener('change', () => { list[i].engine = right.value; });
+                        const del = document.createElement('button');
+                        del.is = 'emby-button';
+                        del.type = 'button';
+                        del.className = 'raised button-submit emby-button';
+                        del.style.marginLeft = '.4em';
+                        del.textContent = '\u2212';
+                        del.addEventListener('click', () => { list.splice(i, 1); renderPathMappings(); });
+                        row.appendChild(left);
+                        row.appendChild(arrow);
+                        row.appendChild(right);
+                        row.appendChild(del);
+                        box.appendChild(row);
+                    });
+                }
+
+                function loadEngineSettings() {
+                    return apiGet('MediaDownloader/EngineSettings').then((data) => {
+                        engineSettings = data;
+                        $('#reserveBytes').value = data.reserveBytes != null ? data.reserveBytes : 0;
+                        updateReserveGb();
+                        $('#fillMode').value = data.fillMode || 'order';
+                        $('#readOnly').checked = !!data.readOnly;
+                        $('#jellyfinBaseUrl').value = (data.jellyfin && data.jellyfin.baseUrl) || '';
+                        $('#jellyfinApiKey').value = '';
+                        renderPathMappings();
+                        return engineSettings;
+                    }).catch(() => {
+                        engineSettings = { reserveBytes: 53687091200, fillMode: 'order', pathMappings: [], readOnly: false, jellyfin: { baseUrl: '', apiKey: '' } };
+                        renderPathMappings();
+                        return null;
+                    });
+                }
+
+                function updateReserveGb() {
+                    const v = Number($('#reserveBytes').value) || 0;
+                    $('#reserveGb').textContent = v > 0 ? '= ' + bytesToGb(v) + ' GB' : '';
+                }
+
+                function loadPage() {
+                    Dashboard.showLoadingMsg();
+                    fillLibrarySelects();
+                    updateReserveGb();
+                    Promise.all([
+                        ApiClient.getPluginConfiguration(pluginGuid),
+                        apiGet('MediaDownloader/Libraries').catch(() => ({ libraries: [] })),
+                        loadEngineSettings()
+                    ]).then(([cfg, libs]) => {
+                        config = cfg || config;
+                        libraries = (libs && libs.libraries) || [];
+                        fillLibrarySelects();
+                        $('#engineUrl').value = config.EngineUrl || '';
+                        $('#engineApiKey').value = config.EngineApiKey || '';
+                        $('#tvLibrary').value = config.TvLibrary || '';
+                        $('#moviesLibrary').value = config.MoviesLibrary || '';
+                        $('#animeLibrary').value = config.AnimeLibrary || '';
+                        $('#defaultMinHeight').value = config.DefaultMinHeight != null ? config.DefaultMinHeight : 1080;
+                        $('#defaultMode').value = config.DefaultMode || 'dub';
+                        Dashboard.hideLoadingMsg();
+                    }).catch((err) => {
+                        Dashboard.hideLoadingMsg();
+                        console.error('Media Downloader: failed to load settings', err);
+                    });
+                }
+
+                function testConnection() {
+                    const result = $('#testConnResult');
+                    result.textContent = 'Testing\u2026';
+                    result.style.color = '';
+                    // Save the current URL/key first so the test uses them.
+                    config.EngineUrl = $('#engineUrl').value.trim();
+                    config.EngineApiKey = $('#engineApiKey').value.trim();
+                    return ApiClient.updatePluginConfiguration(pluginGuid, config).then(() => {
+                        return apiGet('MediaDownloader/Health');
+                    }).then((h) => {
+                        if (h.engine === 'online') {
+                            const q = h.health && h.health.queue ? h.health.queue : {};
+                            const vpn = h.health && h.health.vpn ? h.health.vpn : {};
+                            result.textContent = 'Online. VPN ' + (vpn.connected ? 'up' : 'DOWN') +
+                                ', queue ' + (q.total != null ? q.total : 0) +
+                                ', outbox waiting ' + (h.outbox ? h.outbox.waiting : 0) + '.';
+                            result.style.color = '#2e7d32';
+                        } else {
+                            result.textContent = 'Offline: ' + (h.error || 'engine unreachable');
+                            result.style.color = '#c62828';
+                        }
+                    }).catch((err) => {
+                        result.textContent = 'Test failed: ' + ((err && err.message) || err);
+                        result.style.color = '#c62828';
+                    });
+                }
+
+                function collectPluginConfig() {
+                    config.EngineUrl = $('#engineUrl').value.trim();
+                    config.EngineApiKey = $('#engineApiKey').value.trim();
+                    config.TvLibrary = $('#tvLibrary').value;
+                    config.MoviesLibrary = $('#moviesLibrary').value;
+                    const animeVal = $('#animeLibrary').value;
+                    config.AnimeLibrary = (animeVal === 'same-as-tv' || animeVal === '') ? '' : animeVal;
+                    config.DefaultMinHeight = Number($('#defaultMinHeight').value) || 1080;
+                    config.DefaultMode = $('#defaultMode').value;
+                    return config;
+                }
+
+                function collectEngineConfig() {
+                    const mappings = [];
+                    const box = $('#pathMappings');
+                    const rows = box.querySelectorAll('div');
+                    rows.forEach((row) => {
+                        const inputs = row.querySelectorAll('input');
+                        if (inputs.length >= 2) {
+                            const j = inputs[0].value.trim();
+                            const e = inputs[1].value.trim();
+                            if (j || e) mappings.push({ jellyfin: j, engine: e });
+                        }
+                    });
+                    return {
+                        reserveBytes: Number($('#reserveBytes').value) || 0,
+                        fillMode: $('#fillMode').value,
+                        readOnly: $('#readOnly').checked,
+                        jellyfin: {
+                            baseUrl: $('#jellyfinBaseUrl').value.trim(),
+                            apiKey: $('#jellyfinApiKey').value.trim()
+                        },
+                        pathMappings: mappings
+                    };
+                }
+
+                function saveEngine() {
+                    const result = $('#engineSaveResult');
+                    result.textContent = 'Saving to engine\u2026';
+                    result.style.color = '';
+                    return apiPut('MediaDownloader/EngineSettings', collectEngineConfig()).then((data) => {
+                        engineSettings = data;
+                        result.textContent = 'Engine settings saved.';
+                        result.style.color = '#2e7d32';
+                    }).catch((err) => {
+                        result.textContent = 'Could not save engine settings (is it online?): ' + ((err && err.message) || err);
+                        result.style.color = '#c62828';
+                    });
+                }
+
+                // ---- wire up ----
+                $('#reserveBytes').addEventListener('input', updateReserveGb);
+                $('#testConnBtn').addEventListener('click', () => { testConnection(); });
+                $('#addMappingBtn').addEventListener('click', () => {
+                    if (!engineSettings) engineSettings = { pathMappings: [] };
+                    if (!Array.isArray(engineSettings.pathMappings)) engineSettings.pathMappings = [];
+                    engineSettings.pathMappings.push({ jellyfin: '', engine: '' });
+                    renderPathMappings();
+                });
+                $('#saveEngineBtn').addEventListener('click', () => { saveEngine(); });
+
+                $('#configForm').addEventListener('submit', function (event) {
+                    collectPluginConfig();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.updatePluginConfiguration(pluginGuid, config).then(function (result) {
+                        Dashboard.processPluginConfigurationUpdateResult(result);
+                    }).catch((err) => {
+                        Dashboard.hideLoadingMsg();
+                        alert('Save failed: ' + ((err && err.message) || err));
+                    });
+                    event.preventDefault();
+                    return false;
+                });
+
+                document.querySelector('#configPage').addEventListener('pageshow', () => loadPage());
+            })();
+        </script>
+    </div>
+</body>
+</html>

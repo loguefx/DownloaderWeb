@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Integration harness (build plan Part 4): drives the plugin's outbox
+    worker against the REAL engine HTTP API (started by
+    scripts/test-plugin-outbox.js under plain Node). Verifies the
+    exactly-once delivery states: offline -> waiting-to-send, online -> sent,
+    engine 4xx -> rejected, and re-delivery of an accepted jobId is ignored.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jellyfin.Plugin.MediaDownloader\Jellyfin.Plugin.MediaDownloader.csproj" />
+  </ItemGroup>
+
+</Project>

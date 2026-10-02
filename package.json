@@ -8,6 +8,9 @@
   "scripts": {
     "start": "node scripts/start.js",
     "start:engine": "node scripts/start.js --engine",
+    "test:library": "node scripts/test-library.js",
+    "test:engine": "node scripts/test-engine-smoke.js",
+    "test:plugin": "node scripts/test-plugin-outbox.js",
     "postinstall": "node scripts/postinstall.js",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
