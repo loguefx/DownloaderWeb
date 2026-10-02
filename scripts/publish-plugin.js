@@ -110,13 +110,15 @@ function writeManifest(built, changelog, tag) {
     manifest.push(plugin);
   }
 
-  for (const { version, targetAbi, zip } of built) {
+  for (const { version, targetAbi, zip, assetUrl } of built) {
     const name = path.basename(zip);
     const entry = {
       version,
       changelog: changelog || `Version ${version}`,
       targetAbi,
-      sourceUrl: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${name}`,
+      // Prefer the exact URL the GitHub API returned; fall back to the
+      // canonical release-download shape.
+      sourceUrl: assetUrl || `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${name}`,
       checksum: md5(zip),
       timestamp: new Date().toISOString(),
     };
@@ -175,9 +177,10 @@ async function main() {
     console.log(`[release] created (id ${release.id})`);
   }
 
-  for (const { version, zip } of built) {
-    const name = `MediaDownloader.${version}.zip`;
-    const uploaded = uploadAsset(release.id, zip, name);
+  for (const item of built) {
+    const name = `MediaDownloader.${item.version}.zip`;
+    const uploaded = uploadAsset(release.id, item.zip, name);
+    item.assetUrl = uploaded.browser_download_url;
     console.log(`[release] uploaded ${name} -> ${uploaded.browser_download_url}`);
   }
 
