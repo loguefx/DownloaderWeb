@@ -70,17 +70,37 @@ function md5(file) {
   return crypto.createHash('md5').update(fs.readFileSync(file)).digest('hex');
 }
 
-function uploadAsset(releaseId, file, name) {
+/** Delete an existing asset with this name (GitHub 422s on duplicate names). */
+async function deleteExistingAsset(releaseId, name) {
+  const release = await gh(`/releases/${releaseId}`);
+  const asset = (release.assets || []).find(a => a.name === name);
+  if (!asset) return;
   const token = getToken();
   const res = spawnSync('curl', [
-    '-s', '-f', '-X', 'POST',
+    '-s', '-f', '-X', 'DELETE',
+    '-H', `authorization: Bearer ${token}`,
+    '-H', 'accept: application/vnd.github+json',
+    `https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset.id}`,
+  ], { encoding: 'utf8' });
+  if (res.status !== 0) fail(`could not delete existing asset ${name}: ${(res.stderr || '').slice(0, 200)}`);
+  console.log(`[release] replaced existing asset ${name}`);
+}
+
+function uploadAsset(releaseId, file, name) {
+  // GitHub's asset API is POST with a body (NOT PUT/--upload-file).
+  const token = getToken();
+  const res = spawnSync('curl', [
+    '-s', '-f', '-L',
+    '-X', 'POST',
     '-H', `authorization: Bearer ${token}`,
     '-H', 'accept: application/vnd.github+json',
     '-H', 'content-type: application/octet-stream',
-    '--upload-file', file,
-    `https://api.github.com/repos/${GITHUB_REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
+    '--data-binary', '@' + file,
+    // Asset uploads go to uploads.github.com (see the release's upload_url);
+    // api.github.com 404s on this endpoint.
+    `https://uploads.github.com/repos/${GITHUB_REPO}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
   ], { encoding: 'utf8' });
-  if (res.status !== 0) fail(`asset upload failed: ${(res.stderr || res.stdout || '').slice(0, 300)}`);
+  if (res.status !== 0) fail(`asset upload failed: curl exit ${res.status}: ${(res.stderr || res.stdout || '').slice(0, 400)}`);
   return JSON.parse(res.stdout);
 }
 
@@ -179,6 +199,7 @@ async function main() {
 
   for (const item of built) {
     const name = `MediaDownloader.${item.version}.zip`;
+    await deleteExistingAsset(release.id, name);
     const uploaded = uploadAsset(release.id, item.zip, name);
     item.assetUrl = uploaded.browser_download_url;
     console.log(`[release] uploaded ${name} -> ${uploaded.browser_download_url}`);
