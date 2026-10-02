@@ -106,11 +106,12 @@ async function main() {
 
   // ---- build + run the C# plugin harness -----------------------------------
   const dotnet = process.env.DOTNET || path.join(os.homedir(), '.dotnet', 'dotnet');
+  const tfm = process.env.TFM || 'net8.0'; // net8.0=10.10  net9.0=10.11  net10.0=12.0
   const testsDir = path.join(REPO, 'Jellyfin.Plugin.MediaDownloader.Tests');
-  const dll = path.join(testsDir, 'bin', 'Debug', 'net8.0', 'Jellyfin.Plugin.MediaDownloader.Tests.dll');
+  const dll = path.join(testsDir, 'bin', 'Debug', tfm, 'Jellyfin.Plugin.MediaDownloader.Tests.dll');
 
-  console.log('\n[build] dotnet build (plugin + harness)');
-  const build = spawnSync(dotnet, ['build', '-v', 'q', '--nologo'], { cwd: testsDir, encoding: 'utf8' });
+  console.log(`\n[build] dotnet build (plugin + harness, target ${tfm})`);
+  const build = spawnSync(dotnet, ['build', '-v', 'q', '--nologo', '-f', tfm], { cwd: testsDir, encoding: 'utf8' });
   if (build.status !== 0) {
     console.log(build.stdout || '');
     console.log(build.stderr || '');

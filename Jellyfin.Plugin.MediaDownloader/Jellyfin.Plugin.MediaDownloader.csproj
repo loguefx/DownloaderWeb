@@ -3,13 +3,17 @@
   <!--
     Media Downloader - Jellyfin plugin (Jellyfin_Integration/Build plan, Part 2 + Part 4).
 
-    Targets Jellyfin 10.10 (latest stable, .NET 8). The downloaded
-    jellyfin-plugin-intros-master starter targets the 12.0 RC line (net10.0),
-    which only installs on nightly servers; switch TargetFramework + package
-    versions to match a 12-RC server if that is what you run.
+    Multi-targets the current stable Jellyfin lines so the same source builds
+    a plugin for each server generation (install the build that matches your
+    server):
+      net8.0  -> Jellyfin 10.10   (Jellyfin.Controller 10.10.*)
+      net9.0  -> Jellyfin 10.11   (Jellyfin.Controller 10.11.*)
+      net10.0 -> Jellyfin 12.0    (Jellyfin.Controller 12.0.0)
+    The 12.x API is a superset-compatible line; the code compiles for all
+    three without #ifdefs.
   -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <RootNamespace>Jellyfin.Plugin.MediaDownloader</RootNamespace>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
@@ -17,9 +21,19 @@
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
     <PackageReference Include="Jellyfin.Controller" Version="10.10.*" />
     <PackageReference Include="Jellyfin.Model" Version="10.10.*" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.*" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.*" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
+    <PackageReference Include="Jellyfin.Model" Version="12.0.0" />
   </ItemGroup>
 
   <ItemGroup>

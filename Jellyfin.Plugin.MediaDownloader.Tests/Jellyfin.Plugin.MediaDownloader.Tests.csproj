@@ -6,10 +6,13 @@
     scripts/test-plugin-outbox.js under plain Node). Verifies the
     exactly-once delivery states: offline -> waiting-to-send, online -> sent,
     engine 4xx -> rejected, and re-delivery of an accepted jobId is ignored.
+
+    Multi-targets the same Jellyfin lines as the plugin so the ITG can be
+    run against each build (10.10 / 10.11 / 12.0).
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>

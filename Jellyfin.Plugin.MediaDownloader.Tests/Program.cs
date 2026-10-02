@@ -37,6 +37,13 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
         public string CachePath => Path.Combine(_root, "cache");
         public string TempDirectory => Path.Combine(_root, "temp");
         public string VirtualDataPath => Path.Combine(_root, "virtual");
+
+        // Added to IApplicationPaths in Jellyfin 10.11 / 12.0; harmless extras
+        // on the 10.10 (net8.0) target where the interface lacks them.
+        public string TrickplayPath => Path.Combine(_root, "trickplay");
+        public string BackupPath => Path.Combine(_root, "backup");
+        public void MakeSanityCheckOrThrow() { }
+        public void CreateAndCheckMarker(string a, string b, bool c) { }
     }
 
     internal sealed class FakeXmlSerializer : IXmlSerializer
