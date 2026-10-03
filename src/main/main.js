@@ -464,7 +464,24 @@ app.on('before-quit', () => {
   }
 });
 
+// Engine mode must survive stray async errors: one bad promise in a discovery
+// job must not take down the API, the queue or the watcher. Log loudly and
+// keep running (the queue's own retry logic picks the job back up).
+if (engineMode) {
+  process.on('uncaughtException', (err) => {
+    console.error('[engine] uncaughtException (surviving):', (err && err.stack) || err);
+  });
+  process.on('unhandledRejection', (reason) => {
+    console.error('[engine] unhandledRejection (surviving):', (reason && reason.stack) || reason);
+  });
+}
+
 app.on('window-all-closed', () => {
+  // Engine mode is a headless SERVICE: discover windows come and go (a job
+  // opens one; it closes when done, when a page dies, or when someone clicks
+  // its X), but the HTTP API, queue and watcher must keep running. Quitting
+  // here is what silently killed the engine whenever the last window closed.
+  if (engineMode) return;
   vpn.stop();
   watcher.stop();
   if (process.platform !== 'darwin') app.quit();
