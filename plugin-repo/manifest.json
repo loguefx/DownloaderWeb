@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.7",
+                "changelog": "Fix Test-connection 500: register MediaDownloaderPlugin in the DI container (it was injected into the controller but never registered, so every action 500'd). Added E4 regression test.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v7/MediaDownloader.12.1.0.7.zip",
+                "checksum": "ebb371fd759f2b22d3542e5aa06da0e2",
+                "timestamp": "2026-10-03T03:37:45.947Z"
+            },
+            {
                 "version": "12.1.0.6",
                 "changelog": "Plugin now appears in the dashboard sidebar: 'Media Downloader' (settings) and 'Media Downloader Overview' (queue/download screen). Includes all prior fixes; install 12.1.0.6 on Jellyfin 12.1.",
                 "targetAbi": "12.1.0.0",
@@ -56,6 +64,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.7",
+                "changelog": "Fix Test-connection 500: register MediaDownloaderPlugin in the DI container (it was injected into the controller but never registered, so every action 500'd). Added E4 regression test.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v7/MediaDownloader.10.11.0.7.zip",
+                "checksum": "581a494da3c6e6d7ae4df091d7e993d4",
+                "timestamp": "2026-10-03T03:37:45.947Z"
+            },
+            {
                 "version": "10.11.0.6",
                 "changelog": "Plugin now appears in the dashboard sidebar: 'Media Downloader' (settings) and 'Media Downloader Overview' (queue/download screen). Includes all prior fixes; install 12.1.0.6 on Jellyfin 12.1.",
                 "targetAbi": "10.11.0.0",
@@ -102,6 +118,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.7",
+                "changelog": "Fix Test-connection 500: register MediaDownloaderPlugin in the DI container (it was injected into the controller but never registered, so every action 500'd). Added E4 regression test.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v7/MediaDownloader.10.10.0.7.zip",
+                "checksum": "f4c7749f72ae90b635617eb87fb754ff",
+                "timestamp": "2026-10-03T03:37:45.947Z"
             },
             {
                 "version": "10.10.0.6",
