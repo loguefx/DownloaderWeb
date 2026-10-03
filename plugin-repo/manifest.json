@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.6",
+                "changelog": "Plugin now appears in the dashboard sidebar: 'Media Downloader' (settings) and 'Media Downloader Overview' (queue/download screen). Includes all prior fixes; install 12.1.0.6 on Jellyfin 12.1.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v6/MediaDownloader.12.1.0.6.zip",
+                "checksum": "b78c268786e2781074a98bb032fc37d9",
+                "timestamp": "2026-10-03T02:08:10.617Z"
+            },
+            {
                 "version": "12.1.0.5",
                 "changelog": "Fix: plugin API endpoints were 500ing (OutboxWorker DI registration) - Test connection / settings now work. Includes all prior fixes; install 12.1.0.5 on Jellyfin 12.1.",
                 "targetAbi": "12.1.0.0",
@@ -48,6 +56,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.6",
+                "changelog": "Plugin now appears in the dashboard sidebar: 'Media Downloader' (settings) and 'Media Downloader Overview' (queue/download screen). Includes all prior fixes; install 12.1.0.6 on Jellyfin 12.1.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v6/MediaDownloader.10.11.0.6.zip",
+                "checksum": "4b55e6e73b52a204f5506b0b9a1ae1f0",
+                "timestamp": "2026-10-03T02:08:10.614Z"
+            },
+            {
                 "version": "10.11.0.5",
                 "changelog": "Fix: plugin API endpoints were 500ing (OutboxWorker DI registration) - Test connection / settings now work. Includes all prior fixes; install 12.1.0.5 on Jellyfin 12.1.",
                 "targetAbi": "10.11.0.0",
@@ -86,6 +102,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.6",
+                "changelog": "Plugin now appears in the dashboard sidebar: 'Media Downloader' (settings) and 'Media Downloader Overview' (queue/download screen). Includes all prior fixes; install 12.1.0.6 on Jellyfin 12.1.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v6/MediaDownloader.10.10.0.6.zip",
+                "checksum": "d85e274287734457545ca7fb11eaa22f",
+                "timestamp": "2026-10-03T02:08:10.613Z"
             },
             {
                 "version": "10.10.0.5",
