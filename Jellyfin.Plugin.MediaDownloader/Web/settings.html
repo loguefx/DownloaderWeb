@@ -314,6 +314,14 @@
                     });
                 }
 
+                function errText(err) {
+                    if (!err) return 'unknown error';
+                    if (typeof err === 'string') return err;
+                    if (err.message) return err.message;
+                    if (err.error) return typeof err.error === 'string' ? err.error : JSON.stringify(err.error);
+                    return 'HTTP ' + (err.status || '?') + ' ' + JSON.stringify(err).slice(0, 300);
+                }
+
                 function testConnection() {
                     const result = $('#testConnResult');
                     result.textContent = 'Testing\u2026';
@@ -336,7 +344,7 @@
                             result.style.color = '#c62828';
                         }
                     }).catch((err) => {
-                        result.textContent = 'Test failed: ' + ((err && err.message) || err);
+                        result.textContent = 'Test failed: ' + errText(err);
                         result.style.color = '#c62828';
                     });
                 }

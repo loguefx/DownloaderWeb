@@ -5,21 +5,29 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace Jellyfin.Plugin.MediaDownloader
 {
     /// <summary>
     /// Wires the plugin's services into Jellyfin. EngineClient and Outbox are
-    /// singletons; OutboxWorker is a hosted service (Jellyfin runs it for the
-    /// life of the server).
+    /// singletons; OutboxWorker is a hosted service (the Host starts it) AND a
+    /// plain singleton (the controller injects it to call Notify()).
     ///
-    /// The plugin instance is resolved LAZILY inside each factory. Capturing
-    /// MediaDownloaderPlugin.Instance in this method and dereferencing it from
-    /// the deferred factory is what crashed startup with a NullReferenceException:
-    /// at service-registration time the static can still be null. A factory runs
-    /// later (hosted-service start / first request), by which time the plugin
-    /// instance exists, so resolving it there is safe. The data folder also has
-    /// an IApplicationPaths fallback so it can never be null.
+    /// Two ordering traps, both fixed here:
+    ///
+    /// 1. MediaDownloaderPlugin.Instance is still null while RegisterServices
+    ///    runs; capturing it and dereferencing it from a deferred factory
+    ///    crashed startup with a NullReferenceException. -> resolve it lazily
+    ///    inside the factories (they run later, when the instance exists),
+    ///    with an IApplicationPaths fallback so the folder can never be null.
+    ///
+    /// 2. AddHostedService&lt;T&gt; (modern .NET) registers ONLY IHostedService -
+    ///    the concrete type stays unregistered, so the controller's
+    ///    OutboxWorker injection fails ("No service for type OutboxWorker"),
+    ///    and an IHostedService-&gt;T registration would build a SECOND, never
+    ///    started instance. -> register OutboxWorker as the singleton and
+    ///    alias IHostedService to that SAME instance.
     /// </summary>
     public class PluginServiceRegistrator : IPluginServiceRegistrator
     {
@@ -27,7 +35,11 @@ namespace Jellyfin.Plugin.MediaDownloader
         {
             serviceCollection.AddSingleton<EngineClient>(sp => new EngineClient(PluginInstance()));
             serviceCollection.AddSingleton<Outbox>(sp => new Outbox(DataFolder(sp)));
-            serviceCollection.AddHostedService<OutboxWorker>();
+
+            // One worker instance, shared by the Host (StartAsync) and the
+            // controller (Notify).
+            serviceCollection.AddSingleton<OutboxWorker>();
+            serviceCollection.AddSingleton<IHostedService>(sp => sp.GetRequiredService<OutboxWorker>());
         }
 
         /// <summary>The plugin instance, resolved at call time (never at registration time).</summary>

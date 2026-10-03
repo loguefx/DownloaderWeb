@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
         private readonly ILogger<OutboxWorker> _logger;
         private readonly Channel<bool> _wakeup;
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private int _disposed;
         private Task _loop;
 
         public OutboxWorker(Outbox outbox, EngineClient engine, ILogger<OutboxWorker> logger)
@@ -136,7 +137,12 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
 
         public void Dispose()
         {
-            _cts.Cancel();
+            // The DI container may dispose this instance more than once - it is
+            // registered under BOTH OutboxWorker and IHostedService - so the
+            // second dispose must be a no-op (a raw _cts.Cancel() there throws
+            // ObjectDisposedException).
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try { _cts.Cancel(); } catch (ObjectDisposedException) { }
             _cts.Dispose();
         }
     }

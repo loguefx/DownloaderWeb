@@ -236,6 +236,34 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                     File.Exists(Path.Combine(expectedDir, "outbox.json")), expectedDir);
                 provider2.Dispose();
 
+                // E3: the controller injects the CONCRETE OutboxWorker (to call
+                // Notify()). It must resolve via DI, and it must be the SAME
+                // instance the Host starts - AddHostedService<T> alone registers
+                // only IHostedService (concrete type 500s) and would otherwise
+                // build a second, never-started worker.
+                SetInstance(null);
+                var coll3 = new ServiceCollection();
+                coll3.AddSingleton<IApplicationPaths>(diPaths);
+                coll3.AddSingleton<ILogger<OutboxWorker>>(NullLogger<OutboxWorker>.Instance);
+                new PluginServiceRegistrator().RegisterServices(coll3, null);
+                var provider3 = coll3.BuildServiceProvider();
+                new MediaDownloaderPlugin(diPaths, new FakeXmlSerializer()); // Jellyfin loads it
+                bool e3Threw = false;
+                OutboxWorker e3Concrete = null;
+                IHostedService e3Hosted = null;
+                try
+                {
+                    e3Concrete = provider3.GetRequiredService<OutboxWorker>();
+                    foreach (var svc in provider3.GetRequiredService<IEnumerable<IHostedService>>())
+                    {
+                        if (svc is OutboxWorker o) e3Hosted = o;
+                    }
+                }
+                catch (Exception ex) { e3Threw = true; Console.WriteLine("   E3 exception: " + ex.GetType().Name + ": " + ex.Message); }
+                Check("E3: concrete OutboxWorker resolves via DI (controller path)", !e3Threw && e3Concrete != null);
+                Check("E3: it is the SAME instance the Host starts (one worker)", !e3Threw && ReferenceEquals(e3Concrete, e3Hosted));
+                provider3.Dispose();
+
                 // Restore a valid instance for anything that runs after this section.
                 new MediaDownloaderPlugin(paths, new FakeXmlSerializer());
             }
