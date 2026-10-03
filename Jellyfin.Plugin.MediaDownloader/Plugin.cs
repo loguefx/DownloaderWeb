@@ -28,16 +28,30 @@ namespace Jellyfin.Plugin.MediaDownloader
             Instance = this;
         }
 
+        /// <summary>
+        /// The plugin's dashboard pages.
+        ///
+        /// EnableInMainMenu = true is REQUIRED for the dashboard sidebar: the
+        /// Jellyfin web client (10.11+ and 12.x) builds its "Plugins" drawer
+        /// from GET /web/ConfigurationPages?enableInMainMenu=true - pages
+        /// without the flag only exist behind the Plugins list page.
+        /// </summary>
         public IEnumerable<PluginPageInfo> GetPages()
         {
             yield return new PluginPageInfo
             {
                 Name = Name,
+                DisplayName = Name,
+                EnableInMainMenu = true,
+                MenuIcon = "settings",
                 EmbeddedResourcePath = GetType().Namespace + ".Web.settings.html"
             };
             yield return new PluginPageInfo
             {
                 Name = Name + "Overview",
+                DisplayName = Name + " Overview",
+                EnableInMainMenu = true,
+                MenuIcon = "download",
                 EmbeddedResourcePath = GetType().Namespace + ".Web.overview.html"
             };
         }

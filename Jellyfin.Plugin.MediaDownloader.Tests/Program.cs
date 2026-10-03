@@ -268,6 +268,32 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                 new MediaDownloaderPlugin(paths, new FakeXmlSerializer());
             }
 
+            // ---- F: dashboard sidebar pages -------------------------------
+            // The web client builds the dashboard sidebar from
+            // GET /web/ConfigurationPages?enableInMainMenu=true, so every page
+            // we want visible MUST carry the flag - and each page's embedded
+            // resource must actually exist in the assembly (a typo 404s in the
+            // dashboard).
+            {
+                var pages = new MediaDownloaderPlugin(paths, new FakeXmlSerializer()).GetPages();
+                int count = 0;
+                bool allMenu = true;
+                bool allRes = true;
+                foreach (var p in pages)
+                {
+                    count++;
+                    if (!p.EnableInMainMenu) allMenu = false;
+                    if (typeof(MediaDownloaderPlugin).Assembly.GetManifestResourceStream(p.EmbeddedResourcePath) == null)
+                    {
+                        allRes = false;
+                        Console.WriteLine("   F missing resource: " + p.EmbeddedResourcePath);
+                    }
+                }
+                Check("F: plugin declares dashboard pages (settings + overview)", count >= 2);
+                Check("F: all pages flagged for the main menu (sidebar)", allMenu);
+                Check("F: every page's embedded resource exists in the assembly", allRes);
+            }
+
             Console.WriteLine("HARNESS " + _passed + " passed, " + _failed + " failed");
             return _failed == 0 ? 0 : 1;
         }
