@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.10",
+                "changelog": "Add download queue form to Overview page: source URL, kind (TV/Movie/Anime), library selector, and title. POSTs to MediaDownloader/Jobs.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v10/MediaDownloader.12.1.0.10.zip",
+                "checksum": "1639d3cb340597452c514aff34549048",
+                "timestamp": "2026-10-04T23:51:39.537Z"
+            },
+            {
                 "version": "12.1.0.9",
                 "changelog": "Fix Test connection always showing 'Offline: engine unreachable': plugin pages now parse API responses as JSON (dataType: 'json') and send POST/PUT bodies as JSON. Also fixes empty library dropdowns, engine settings load/save, Verify, and Overview controls.",
                 "targetAbi": "12.1.0.0",
@@ -80,6 +88,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.10",
+                "changelog": "Add download queue form to Overview page: source URL, kind (TV/Movie/Anime), library selector, and title. POSTs to MediaDownloader/Jobs.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v10/MediaDownloader.10.11.0.10.zip",
+                "checksum": "87bf906d4a36be808deaf04084be3744",
+                "timestamp": "2026-10-04T23:51:39.537Z"
+            },
+            {
                 "version": "10.11.0.9",
                 "changelog": "Fix Test connection always showing 'Offline: engine unreachable': plugin pages now parse API responses as JSON (dataType: 'json') and send POST/PUT bodies as JSON. Also fixes empty library dropdowns, engine settings load/save, Verify, and Overview controls.",
                 "targetAbi": "10.11.0.0",
@@ -150,6 +166,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.10",
+                "changelog": "Add download queue form to Overview page: source URL, kind (TV/Movie/Anime), library selector, and title. POSTs to MediaDownloader/Jobs.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v10/MediaDownloader.10.10.0.10.zip",
+                "checksum": "10375975d48657a51d1fca536dddf835",
+                "timestamp": "2026-10-04T23:51:39.537Z"
             },
             {
                 "version": "10.10.0.9",
