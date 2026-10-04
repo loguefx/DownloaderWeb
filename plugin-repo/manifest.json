@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.8",
+                "changelog": "Fix double-encoded JSON responses (Health, Libraries, Outbox were returning JSON strings instead of objects, so the plugin UI showed offline despite a 200 response)",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v8/MediaDownloader.12.1.0.8.zip",
+                "checksum": "c6e2414a3c9467eccbc8ea1512046864",
+                "timestamp": "2026-10-04T22:41:12.983Z"
+            },
+            {
                 "version": "12.1.0.7",
                 "changelog": "Fix Test-connection 500: register MediaDownloaderPlugin in the DI container (it was injected into the controller but never registered, so every action 500'd). Added E4 regression test.",
                 "targetAbi": "12.1.0.0",
@@ -64,6 +72,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.8",
+                "changelog": "Fix double-encoded JSON responses (Health, Libraries, Outbox were returning JSON strings instead of objects, so the plugin UI showed offline despite a 200 response)",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v8/MediaDownloader.10.11.0.8.zip",
+                "checksum": "17af7ff3180dae77ad7c05c90ac3c063",
+                "timestamp": "2026-10-04T22:41:12.982Z"
+            },
+            {
                 "version": "10.11.0.7",
                 "changelog": "Fix Test-connection 500: register MediaDownloaderPlugin in the DI container (it was injected into the controller but never registered, so every action 500'd). Added E4 regression test.",
                 "targetAbi": "10.11.0.0",
@@ -118,6 +134,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.8",
+                "changelog": "Fix double-encoded JSON responses (Health, Libraries, Outbox were returning JSON strings instead of objects, so the plugin UI showed offline despite a 200 response)",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v8/MediaDownloader.10.10.0.8.zip",
+                "checksum": "0f98da904a88f01a886936f036cae8fa",
+                "timestamp": "2026-10-04T22:41:12.981Z"
             },
             {
                 "version": "10.10.0.7",
