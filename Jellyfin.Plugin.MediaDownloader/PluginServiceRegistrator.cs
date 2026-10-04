@@ -36,6 +36,14 @@ namespace Jellyfin.Plugin.MediaDownloader
             serviceCollection.AddSingleton<EngineClient>(sp => new EngineClient(PluginInstance()));
             serviceCollection.AddSingleton<Outbox>(sp => new Outbox(DataFolder(sp)));
 
+            // The controller injects the plugin instance directly (it reads
+            // Configuration defaults like DefaultMinHeight / MoviesLibrary). Jellyfin
+            // does NOT register plugin instances in the DI container, so without
+            // this the controller cannot be built and EVERY action (Health,
+            // Libraries, Jobs, ...) returns HTTP 500. Resolve lazily: Instance is
+            // set by request time, exactly like EngineClient above.
+            serviceCollection.AddSingleton<MediaDownloaderPlugin>(sp => PluginInstance());
+
             // One worker instance, shared by the Host (StartAsync) and the
             // controller (Notify).
             serviceCollection.AddSingleton<OutboxWorker>();

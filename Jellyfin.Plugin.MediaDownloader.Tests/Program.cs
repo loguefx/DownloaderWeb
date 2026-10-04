@@ -264,6 +264,29 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                 Check("E3: it is the SAME instance the Host starts (one worker)", !e3Threw && ReferenceEquals(e3Concrete, e3Hosted));
                 provider3.Dispose();
 
+                // E4: the controller injects MediaDownloaderPlugin directly (it reads
+                // Configuration defaults). Jellyfin does NOT put plugin instances in
+                // the DI container, so RegisterServices MUST register it - otherwise
+                // the controller cannot be built and EVERY action (Health, Libraries,
+                // Jobs, ...) returns 500. This is the production "Test connection: 500"
+                // bug. Without the registration this GetRequiredService throws.
+                SetInstance(null);
+                var coll4 = new ServiceCollection();
+                coll4.AddSingleton<IApplicationPaths>(diPaths);
+                coll4.AddSingleton<ILogger<OutboxWorker>>(NullLogger<OutboxWorker>.Instance);
+                new PluginServiceRegistrator().RegisterServices(coll4, null);
+                var provider4 = coll4.BuildServiceProvider();
+                new MediaDownloaderPlugin(diPaths, new FakeXmlSerializer()); // Jellyfin loads it (sets Instance)
+                bool e4Threw = false;
+                MediaDownloaderPlugin e4Plugin = null;
+                try
+                {
+                    e4Plugin = provider4.GetRequiredService<MediaDownloaderPlugin>();
+                }
+                catch (Exception ex) { e4Threw = true; Console.WriteLine("   E4 exception: " + ex.GetType().Name + ": " + ex.Message); }
+                Check("E4: MediaDownloaderPlugin resolves via DI (controller dependency)", !e4Threw && e4Plugin != null);
+                provider4.Dispose();
+
                 // Restore a valid instance for anything that runs after this section.
                 new MediaDownloaderPlugin(paths, new FakeXmlSerializer());
             }
