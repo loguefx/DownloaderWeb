@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.9",
+                "changelog": "Fix Test connection always showing 'Offline: engine unreachable': plugin pages now parse API responses as JSON (dataType: 'json') and send POST/PUT bodies as JSON. Also fixes empty library dropdowns, engine settings load/save, Verify, and Overview controls.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v9/MediaDownloader.12.1.0.9.zip",
+                "checksum": "0bc703c6baaef44fd8cf788dbdc07fa6",
+                "timestamp": "2026-10-04T23:33:19.754Z"
+            },
+            {
                 "version": "12.1.0.8",
                 "changelog": "Fix double-encoded JSON responses (Health, Libraries, Outbox were returning JSON strings instead of objects, so the plugin UI showed offline despite a 200 response)",
                 "targetAbi": "12.1.0.0",
@@ -72,6 +80,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.9",
+                "changelog": "Fix Test connection always showing 'Offline: engine unreachable': plugin pages now parse API responses as JSON (dataType: 'json') and send POST/PUT bodies as JSON. Also fixes empty library dropdowns, engine settings load/save, Verify, and Overview controls.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v9/MediaDownloader.10.11.0.9.zip",
+                "checksum": "01575216dcbf6f4d5c295de318a887f0",
+                "timestamp": "2026-10-04T23:33:19.753Z"
+            },
+            {
                 "version": "10.11.0.8",
                 "changelog": "Fix double-encoded JSON responses (Health, Libraries, Outbox were returning JSON strings instead of objects, so the plugin UI showed offline despite a 200 response)",
                 "targetAbi": "10.11.0.0",
@@ -134,6 +150,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.9",
+                "changelog": "Fix Test connection always showing 'Offline: engine unreachable': plugin pages now parse API responses as JSON (dataType: 'json') and send POST/PUT bodies as JSON. Also fixes empty library dropdowns, engine settings load/save, Verify, and Overview controls.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v9/MediaDownloader.10.10.0.9.zip",
+                "checksum": "d7d916d5521c11054d99b91e1a271d88",
+                "timestamp": "2026-10-04T23:33:19.753Z"
             },
             {
                 "version": "10.10.0.8",
