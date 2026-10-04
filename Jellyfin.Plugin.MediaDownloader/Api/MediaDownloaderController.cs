@@ -78,23 +78,25 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             {
                 var healthJson = await _engine.GetRawAsync("api/health").ConfigureAwait(false);
                 var health = JsonNode.Parse(healthJson);
-                return Ok(new JsonObject
+                var json = new JsonObject
                 {
                     ["engine"] = "online",
                     ["health"] = health,
                     ["outbox"] = outboxInfo
-                }.ToJsonString());
+                }.ToJsonString();
+                return Content(json, MediaTypeNames.Application.Json);
             }
             catch (Exception ex)
             {
                 // Offline is a normal state (the engine PC may be off): report
                 // it, don't throw. The banner shows the waiting count.
-                return Ok(new JsonObject
+                var json = new JsonObject
                 {
                     ["engine"] = "offline",
                     ["error"] = FriendlyOfflineError(ex),
                     ["outbox"] = outboxInfo
-                }.ToJsonString());
+                }.ToJsonString();
+                return Content(json, MediaTypeNames.Application.Json);
             }
         }
 
@@ -120,7 +122,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
                     ["locations"] = new JsonArray((f.Locations ?? Array.Empty<string>()).Select(l => (JsonNode)l).ToArray())
                 })
                 .ToList();
-            return Ok(new JsonObject { ["libraries"] = new JsonArray(libraries.ToArray()) }.ToJsonString());
+            return Content(new JsonObject { ["libraries"] = new JsonArray(libraries.ToArray()) }.ToJsonString(), MediaTypeNames.Application.Json);
         }
 
         // ------------------------------------------------------------------
@@ -280,13 +282,13 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
                     ["message"] = e.LastEngineMessage
                 })
                 .ToList();
-            return Ok(new JsonObject
+            return Content(new JsonObject
             {
                 ["waiting"] = waiting,
                 ["sent"] = sent,
                 ["rejected"] = rejected,
                 ["items"] = new JsonArray(items.ToArray())
-            }.ToJsonString());
+            }.ToJsonString(), MediaTypeNames.Application.Json);
         }
 
         [HttpDelete("Outbox/{jobId}")]
