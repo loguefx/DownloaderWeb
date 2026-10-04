@@ -15,7 +15,8 @@ const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
 const sites = require('./sites');
-const { episodeRefFromUrl } = require('./sites/findtitle');
+const { episodeRefFromUrl, lookupMediaId } = require('./sites/findtitle');
+const resolveid = require('./sites/resolveid');
 const hlscheck = require('./hlscheck');
 const { verifyFile, belowMinHeight } = require('./verify');
 
@@ -259,6 +260,18 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           if (ref.title) {
             const want = ref.title + (ref.season ? ` S${ref.season}E${ref.episode || 1}` : '');
             log(`No 1080p on this catalog; searching other sites for ${want}.`);
+            // Anime (and any title without a known id): resolve a TMDB/IMDB id
+            // FIRST, so the CF-free id-keyed primary (Vidsrc, rank 0) can be
+            // used - the same 1080p path TV/movies take - instead of dropping
+            // to the Cloudflare-checkbox catalog. No-op when an id is already
+            // known; a miss just continues with the pre-existing behavior.
+            if (!lookupMediaId(ref.title).tmdb && !lookupMediaId(ref.title).imdb) {
+              try {
+                await resolveid.resolveMediaId(ref.title, log);
+              } catch (e) {
+                log('id resolve failed: ' + ((e && e.message) || e));
+              }
+            }
             const hooks = {
               wc: win.webContents,
               load: (page) => loadWithTimeout(win, page, 30000),
