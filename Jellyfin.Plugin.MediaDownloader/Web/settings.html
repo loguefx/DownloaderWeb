@@ -188,17 +188,17 @@
 
                 function apiGet(path) {
                     const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'GET', url });
+                    return ApiClient.ajax({ type: 'GET', url, dataType: 'json' });
                 }
 
                 function apiPost(path, data) {
                     const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'POST', url, data: data || {}, contentType: 'application/json' });
+                    return ApiClient.ajax({ type: 'POST', url, data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
                 }
 
                 function apiPut(path, data) {
                     const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'PUT', url, data: data || {}, contentType: 'application/json' });
+                    return ApiClient.ajax({ type: 'PUT', url, data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
                 }
 
                 function fillLibrarySelects() {

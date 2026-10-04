@@ -89,13 +89,13 @@
                 const $ = (sel) => document.querySelector(sel);
 
                 function apiGet(path) {
-                    return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path) });
+                    return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path), dataType: 'json' });
                 }
                 function apiPost(path, data) {
-                    return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path), data: data || {}, contentType: 'application/json' });
+                    return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path), data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
                 }
                 function apiDelete(path) {
-                    return ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl(path) });
+                    return ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl(path), dataType: 'json' });
                 }
 
                 function setBanner(kind, text) {
