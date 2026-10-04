@@ -11,6 +11,36 @@
             <div class="content-primary">
                 <div id="banner" class="detailBody" style="padding:.8em 1em;border-radius:.5em;margin-bottom:1em;font-weight:600;"></div>
 
+                <h3 class="sectionTitle">Queue a download</h3>
+                <p class="fieldDescription">
+                    Paste a page URL (or search link) for a TV show, movie, or anime. The engine resolves
+                    the best 1080p source and places the file into the chosen library's drive folders.
+                </p>
+                <div class="inputContainer" style="flex-wrap:wrap;gap:.4em;">
+                    <div class="inputContainer" style="flex:1;min-width:260px;">
+                        <input id="jobUrl" type="text" class="emby-input" placeholder="https://… (source URL or search link)" />
+                    </div>
+                    <div class="inputContainer" style="min-width:120px;">
+                        <select id="jobKind" class="emby-select">
+                            <option value="tv">TV Show</option>
+                            <option value="movie">Movie</option>
+                            <option value="anime">Anime</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer" style="min-width:140px;">
+                        <select id="jobLibrary" class="emby-select">
+                            <option value="">(default)</option>
+                        </select>
+                    </div>
+                    <div class="inputContainer" style="min-width:180px;">
+                        <input id="jobTitle" type="text" class="emby-input" placeholder="Title (optional)" />
+                    </div>
+                    <button id="submitJobBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="align-self:center;">
+                        <span>Queue download</span>
+                    </button>
+                </div>
+                <div id="jobResult" class="fieldDescription" style="margin-top:.3em;"></div>
+
                 <div class="inputContainer">
                     <button id="refreshBtn" is="emby-button" type="button" class="raised button-submit emby-button">
                         <span>&#8635; Refresh</span>
@@ -182,6 +212,51 @@
                     });
                 }
 
+                function fillJobLibraries(libs) {
+                    const sel = $('#jobLibrary');
+                    sel.innerHTML = '';
+                    const def = document.createElement('option');
+                    def.value = '';
+                    def.textContent = '(default)';
+                    sel.appendChild(def);
+                    (libs || []).forEach((lib) => {
+                        const opt = document.createElement('option');
+                        opt.value = lib.name;
+                        opt.textContent = lib.name + '  (' + (lib.collectionType || '') + ')';
+                        sel.appendChild(opt);
+                    });
+                }
+
+                function submitJob() {
+                    const url = $('#jobUrl').value.trim();
+                    if (!url) { showJobResult('bad', 'Enter a source URL first.'); return; }
+                    const kind = $('#jobKind').value;
+                    const library = $('#jobLibrary').value;
+                    const title = $('#jobTitle').value.trim();
+                    const body = { sourceUrl: url, kind: kind };
+                    if (library) body.library = library;
+                    if (title) body.title = title;
+                    const btn = $('#submitJobBtn');
+                    btn.disabled = true;
+                    showJobResult('wait', 'Queuing…');
+                    return apiPost('MediaDownloader/Jobs', body).then((r) => {
+                        showJobResult('ok', 'Queued: ' + (r.summary ? r.summary.title : title || url) +
+                            ' → ' + (r.summary ? r.summary.library : library || 'default') +
+                            '  (job ' + r.jobId + ')');
+                        $('#jobUrl').value = '';
+                        $('#jobTitle').value = '';
+                        refresh();
+                    }).catch((err) => {
+                        showJobResult('bad', 'Failed: ' + ((err && err.message) || err));
+                    }).finally(() => { btn.disabled = false; });
+                }
+
+                function showJobResult(kind, text) {
+                    const el = $('#jobResult');
+                    el.textContent = text;
+                    el.style.color = kind === 'ok' ? '#2e7d32' : kind === 'bad' ? '#c62828' : '#f9a825';
+                }
+
                 function refresh() {
                     // Health drives the banner + outbox counts.
                     return apiGet('MediaDownloader/Health').then((h) => {
@@ -220,7 +295,14 @@
                     apiPost('MediaDownloader/Outbox/purge', { state: 'rejected' }).then(refresh).catch(() => alert('Purge failed'));
                 });
 
-                document.querySelector('#overviewPage').addEventListener('pageshow', () => refresh());
+                $('#submitJobBtn').addEventListener('click', submitJob);
+                $('#jobUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitJob(); });
+
+                document.querySelector('#overviewPage').addEventListener('pageshow', () => {
+                    // Load libraries for the job form, then refresh the dashboard.
+                    apiGet('MediaDownloader/Libraries').then((r) => fillJobLibraries(r.libraries)).catch(() => {});
+                    refresh();
+                });
             })();
         </script>
     </div>
