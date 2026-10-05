@@ -147,7 +147,11 @@
 
         <script type="text/javascript">
             (() => {
-                const $ = (s) => document.querySelector(s);
+                // Scope lookups to this page instance: Jellyfin keeps previously
+                // visited pages in the DOM, so a global lookup can hit a stale copy.
+                const page = (document.currentScript && document.currentScript.closest('#overviewPage'))
+                    || Array.prototype.slice.call(document.querySelectorAll('#overviewPage')).pop();
+                const $ = (s) => page.querySelector(s);
 
                 // --- API helpers ---
                 function apiGet(path) {
@@ -292,8 +296,8 @@
                 }
 
                 function selectResult(r) {
+                    hideResults(); // hide the list (also resets selected, so assign after)
                     selected = r;
-                    hideResults(); // hide the list
                     // Show selected panel
                     const panel = $('#selectedPanel');
                     panel.style.display = 'flex';
@@ -490,7 +494,7 @@
                 });
 
                 // ====== INIT ======
-                document.querySelector('#overviewPage').addEventListener('pageshow', () => {
+                page.addEventListener('pageshow', () => {
                     // Load libraries
                     apiGet('MediaDownloader/Libraries').then((r) => {
                         const libs = (r && r.libraries) || [];
