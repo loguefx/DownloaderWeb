@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.13",
+                "changelog": "Fix: replace template literals with string concat (Jellyfin framework strips backtick templates).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v13/MediaDownloader.12.1.0.13.zip",
+                "checksum": "66f3d9f8296be1dc6f51b91c48242ee2",
+                "timestamp": "2026-10-05T08:19:31.354Z"
+            },
+            {
                 "version": "12.1.0.12",
                 "changelog": "Clean UI redesign: card layout, live search suggestions, proper error messages, library warning banner.",
                 "targetAbi": "12.1.0.0",
@@ -104,6 +112,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.13",
+                "changelog": "Fix: replace template literals with string concat (Jellyfin framework strips backtick templates).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v13/MediaDownloader.10.11.0.13.zip",
+                "checksum": "bea709e130c3ddeb8c81c1f9d0223f23",
+                "timestamp": "2026-10-05T08:19:31.353Z"
+            },
+            {
                 "version": "10.11.0.12",
                 "changelog": "Clean UI redesign: card layout, live search suggestions, proper error messages, library warning banner.",
                 "targetAbi": "10.11.0.0",
@@ -198,6 +214,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.13",
+                "changelog": "Fix: replace template literals with string concat (Jellyfin framework strips backtick templates).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v13/MediaDownloader.10.10.0.13.zip",
+                "checksum": "2c68db5baf06350d34a758319ebf155b",
+                "timestamp": "2026-10-05T08:19:31.353Z"
             },
             {
                 "version": "10.10.0.12",
