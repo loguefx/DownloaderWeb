@@ -133,6 +133,138 @@ function sse(req, res) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Title search + TMDB info (for the plugin's search-then-queue flow)
+// ---------------------------------------------------------------------------
+
+function getTmdbKey() {
+  const c = engineconfig.get() || {};
+  return String(process.env.TMDB_API_KEY || c.tmdbApiKey || '').trim();
+}
+
+async function tmdbFetch(pathname, key) {
+  const url = `https://api.themoviedb.org/3${pathname}${pathname.includes('?') ? '&' : '?'}api_key=${encodeURIComponent(key)}`;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function searchTitles(q, type) {
+  const key = getTmdbKey();
+  if (!key) {
+    // Fallback: Jellyfin catalog search
+    const j = (engineconfig.get() || {}).jellyfin || {};
+    const base = String(j.baseUrl || '').trim().replace(/\/+$/, '');
+    const jkey = String(j.apiKey || '').trim();
+    if (!base || !jkey) return [];
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const url = `${base}/api/search?searchTerm=${encodeURIComponent(q)}&limit=25`;
+      const res = await fetch(url, { signal: ctrl.signal, headers: { 'X-Emby-Token': jkey, Accept: 'application/json' } });
+      if (!res.ok) return [];
+      const body = await res.json();
+      const items = (body && body.Items) || [];
+      return items
+        .filter((it) => {
+          if (type === 'tv' && it.Type !== 'Series' && it.Type !== 'Season') return false;
+          if (type === 'movie' && it.Type !== 'Movie') return false;
+          return true;
+        })
+        .slice(0, 15)
+        .map((it) => ({
+          tmdb: String((it.ProviderIds && it.ProviderIds.Tmdb) || ''),
+          imdb: String((it.ProviderIds && it.ProviderIds.Imdb) || ''),
+          title: it.Name || it.OriginalTitle || q,
+          year: (it.PremiereDate || it.ProductionYear || '').slice(0, 4) || '',
+          type: (it.Type === 'Movie') ? 'movie' : 'tv',
+          poster: it.ImageTags && it.PrimaryImageTag
+            ? `${base}/Items/${it.Id}/Images/Primary?tag=${it.ImageTags.Primary}`
+            : ''
+        }));
+    } catch (e) {
+      return [];
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  // TMDB multi search
+  const body = await tmdbFetch(`/search/multi?query=${encodeURIComponent(q)}&include_adult=false&language=en-US`, key);
+  if (!body || !Array.isArray(body.results)) return [];
+  return body.results
+    .filter((r) => {
+      if (!r || !r.id) return false;
+      if (type === 'tv' && r.media_type !== 'tv') return false;
+      if (type === 'movie' && r.media_type !== 'movie') return false;
+      return true;
+    })
+    .slice(0, 15)
+    .map((r) => ({
+      tmdb: String(r.id),
+      imdb: String(r.imdb_id || ''),
+      title: r.title || r.name || q,
+      year: String((r.release_date || r.first_air_date || '') || '').slice(0, 4),
+      type: r.media_type === 'movie' ? 'movie' : 'tv',
+      poster: r.poster_path ? `https://image.tmdb.org/t/p/w92${r.poster_path}` : '',
+      overview: (r.overview || '').slice(0, 120)
+    }));
+}
+
+async function tmdbInfo(tmdbId, type) {
+  const key = getTmdbKey();
+  if (!key) return null;
+  if (type === 'movie') {
+    const body = await tmdbFetch(`/movie/${tmdbId}?language=en-US`, key);
+    if (!body) return null;
+    return {
+      tmdb: String(body.id),
+      imdb: String(body.imdb_id || ''),
+      title: body.title || '',
+      year: String(body.release_date || '').slice(0, 4),
+      type: 'movie',
+      poster: body.poster_path ? `https://image.tmdb.org/t/p/w342${body.poster_path}` : '',
+      overview: (body.overview || '').slice(0, 300),
+      runtime: body.runtime || null
+    };
+  }
+  // TV series: return seasons with episode counts
+  const body = await tmdbFetch(`/tv/${tmdbId}?language=en-US`, key);
+  if (!body) return null;
+  const seasons = (body.seasons || [])
+    .filter((s) => s.season_number > 0)
+    .map((s) => ({
+      season: s.season_number,
+      episodes: s.episode_count || 0,
+      year: String(s.air_date || '').slice(0, 4)
+    }));
+  // Fetch IMDB id (not in the main /tv response)
+  let imdb = '';
+  try {
+    const ext = await tmdbFetch(`/tv/${tmdbId}/external_ids`, key);
+    imdb = String((ext && ext.imdb_id) || '');
+  } catch (e) { /* optional */ }
+
+  return {
+    tmdb: String(body.id),
+    imdb,
+    title: body.name || '',
+    year: String(body.first_air_date || '').slice(0, 4),
+    type: 'tv',
+    poster: body.poster_path ? `https://image.tmdb.org/t/p/w342${body.poster_path}` : '',
+    overview: (body.overview || '').slice(0, 300),
+    seasons
+  };
+}
+
 async function handle(req, res, u) {
   const parts = u.pathname.split('/').filter(Boolean);
   // parts: ['api', ...]
@@ -150,11 +282,33 @@ async function handle(req, res, u) {
       return;
     }
 
-    // ---- search (stub until site search() adapters land) ----
+    // ---- search (TMDB multi-search or Jellyfin catalog) ----
     if (req.method === 'GET' && seg === 'search') {
-      json(res, 501, {
-        error: 'search is not enabled yet - queue jobs by pasted source URL (POST /api/jobs)'
-      });
+      const q = (u.searchParams.get('q') || '').trim();
+      const type = (u.searchParams.get('type') || 'all').trim(); // all | tv | movie
+      if (!q || q.length < 2) {
+        json(res, 400, { error: 'q must be at least 2 characters' });
+        return;
+      }
+      const results = await searchTitles(q, type);
+      json(res, 200, { results });
+      return;
+    }
+
+    // ---- TMDB info (seasons/episodes for a title) ----
+    if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'info') {
+      const tmdb = u.searchParams.get('tmdb') || '';
+      const type = (u.searchParams.get('type') || 'tv').trim(); // tv | movie
+      if (!tmdb) {
+        json(res, 400, { error: 'tmdb id is required' });
+        return;
+      }
+      const info = await tmdbInfo(tmdb, type);
+      if (!info) {
+        json(res, 404, { error: 'not found or TMDB key not configured' });
+        return;
+      }
+      json(res, 200, info);
       return;
     }
 

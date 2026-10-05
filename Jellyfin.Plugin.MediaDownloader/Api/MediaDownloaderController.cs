@@ -357,6 +357,15 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesCheck() =>
             await ProxyAsync(() => _engine.PostAsync("api/schedules/check")).ConfigureAwait(false);
 
+        [HttpGet("TmdbInfo")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type)
+        {
+            var t = string.IsNullOrEmpty(type) ? "tv" : type;
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={t}")).ConfigureAwait(false);
+        }
+
         // ------------------------------------------------------------------
         // Title / search / duplicate check (the later pages use these; the
         // endpoints already exist on the engine)
@@ -376,9 +385,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
         [HttpGet("Search")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status501NotImplemented)]
-        public async Task<IActionResult> Search([FromQuery] string q, [FromQuery] string type) =>
-            await ProxyAsync(() => _engine.GetRawAsync("api/search?q=" + Uri.EscapeDataString(q ?? string.Empty))).ConfigureAwait(false);
+        public async Task<IActionResult> Search([FromQuery] string q, [FromQuery] string type)
+        {
+            var t = string.IsNullOrEmpty(type) ? "all" : type;
+            return await ProxyAsync(() => _engine.GetRawAsync("api/search?q=" + Uri.EscapeDataString(q ?? string.Empty) + "&type=" + t)).ConfigureAwait(false);
+        }
 
         [HttpPost("LibraryCheck")]
         [ProducesResponseType(StatusCodes.Status200OK)]
