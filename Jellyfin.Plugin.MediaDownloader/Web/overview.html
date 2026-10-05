@@ -314,30 +314,39 @@
                     apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv')
                         .then((info) => {
                             selected.seasons = (info && info.seasons) || [];
-                            const sel = $('#selSeason');
-                            sel.innerHTML = '';
-                            // "All Seasons" option first
-                            var allOpt = document.createElement('option');
-                            allOpt.value = 'all';
-                            allOpt.textContent = 'All Seasons';
-                            sel.appendChild(allOpt);
-                            (selected.seasons || []).forEach((s) => {
-                                const opt = document.createElement('option');
-                                opt.value = s.season;
-                                opt.textContent = 'Season ' + s.season + ' (' + s.episodes + ' eps)';
-                                sel.appendChild(opt);
-                            });
-                            if (!selected.seasons.length) {
-                                sel.innerHTML = '<option value="all">All Seasons</option><option value="1">Season 1</option>';
-                            }
-                            updateEpisodes();
+                            renderSeasons();
                             $('#queueBtn').disabled = false;
                         })
-                        .catch(() => {
-                            $('#selSeason').innerHTML = '<option value="all">All Seasons</option><option value="1">Season 1</option>';
-                            updateEpisodes();
+                        .catch(function(err) {
+                            // Show what went wrong so we can debug
+                            selected.seasons = [];
+                            renderSeasons();
                             $('#queueBtn').disabled = false;
+                            var meta = $('#selMeta');
+                            if (meta) meta.textContent = 'TV Series - could not load seasons: ' + (err && err.message ? err.message : String(err || 'unknown'));
                         });
+                }
+
+                function renderSeasons() {
+                    var sel = $('#selSeason');
+                    sel.innerHTML = '';
+                    var allOpt = document.createElement('option');
+                    allOpt.value = 'all';
+                    allOpt.textContent = 'All Seasons';
+                    sel.appendChild(allOpt);
+                    var seasons = (selected && selected.seasons) || [];
+                    seasons.forEach(function(s) {
+                        var opt = document.createElement('option');
+                        opt.value = s.season;
+                        opt.textContent = 'Season ' + s.season + ' (' + s.episodes + ' eps)';
+                        sel.appendChild(opt);
+                    });
+                    if (!seasons.length) {
+                        var opt1 = document.createElement('option');
+                        opt1.value = '1'; opt1.textContent = 'Season 1';
+                        sel.appendChild(opt1);
+                    }
+                    updateEpisodes();
                 }
 
                 function updateEpisodes() {
