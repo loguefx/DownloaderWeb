@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -132,13 +133,27 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         [HttpPost("Jobs")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        public IActionResult Jobs([FromBody] JsonElement body)
+        public async Task<IActionResult> Jobs()
         {
-            if (!body.ValueKind.Equals(JsonValueKind.Object))
+            // Read the raw body (avoids [FromBody] JsonElement binding issues in Jellyfin 12.x)
+            string rawBody;
+            using (var reader = new StreamReader(Request.Body))
+            {
+                rawBody = await reader.ReadToEndAsync().ConfigureAwait(false);
+            }
+            if (string.IsNullOrWhiteSpace(rawBody))
             {
                 return BadRequest(new { error = "job object required" });
             }
-            var node = JsonNode.Parse(body.GetRawText()) as JsonObject;
+            JsonObject node;
+            try
+            {
+                node = JsonNode.Parse(rawBody) as JsonObject;
+            }
+            catch (Exception)
+            {
+                return BadRequest(new { error = "invalid JSON body" });
+            }
             if (node == null)
             {
                 return BadRequest(new { error = "job object required" });
