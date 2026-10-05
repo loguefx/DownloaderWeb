@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.12",
+                "changelog": "Clean UI redesign: card layout, live search suggestions, proper error messages, library warning banner.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v12/MediaDownloader.12.1.0.12.zip",
+                "checksum": "910f1c0dccf7c1147963f5ecb45c6527",
+                "timestamp": "2026-10-05T08:04:29.713Z"
+            },
+            {
                 "version": "12.1.0.11",
                 "changelog": "Search-based download: type a title, get TMDB results, pick season/episode, queue 1080p via Vidsrc (CF-free). Replaces URL-paste form.",
                 "targetAbi": "12.1.0.0",
@@ -96,6 +104,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.12",
+                "changelog": "Clean UI redesign: card layout, live search suggestions, proper error messages, library warning banner.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v12/MediaDownloader.10.11.0.12.zip",
+                "checksum": "523ff7d9e67afeb20c7cb995c58b7f01",
+                "timestamp": "2026-10-05T08:04:29.713Z"
+            },
+            {
                 "version": "10.11.0.11",
                 "changelog": "Search-based download: type a title, get TMDB results, pick season/episode, queue 1080p via Vidsrc (CF-free). Replaces URL-paste form.",
                 "targetAbi": "10.11.0.0",
@@ -182,6 +198,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.12",
+                "changelog": "Clean UI redesign: card layout, live search suggestions, proper error messages, library warning banner.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v12/MediaDownloader.10.10.0.12.zip",
+                "checksum": "072bdfde9cdcb23ef48890d5bffc3b30",
+                "timestamp": "2026-10-05T08:04:29.712Z"
             },
             {
                 "version": "10.10.0.11",
