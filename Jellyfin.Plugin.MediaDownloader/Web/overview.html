@@ -308,23 +308,30 @@
                         return;
                     }
 
-                    // TV: load seasons
+                    // TV: load seasons (with timeout fallback)
                     $('#selSeasonRow').style.display = 'block';
                     $('#selSeason').innerHTML = '<option>Loading…</option>';
-                    apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv')
-                        .then((info) => {
-                            selected.seasons = (info && info.seasons) || [];
-                            renderSeasons();
-                            $('#queueBtn').disabled = false;
-                        })
-                        .catch(function(err) {
-                            // Show what went wrong so we can debug
-                            selected.seasons = [];
-                            renderSeasons();
-                            $('#queueBtn').disabled = false;
-                            var meta = $('#selMeta');
-                            if (meta) meta.textContent = 'TV Series - could not load seasons: ' + (err && err.message ? err.message : String(err || 'unknown'));
-                        });
+
+                    // Race: TmdbInfo vs 6-second timeout
+                    var timeout = new Promise(function(_, reject) {
+                        setTimeout(function() { reject(new Error('timeout')); }, 6000);
+                    });
+                    Promise.race([
+                        apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv'),
+                        timeout
+                    ])
+                    .then((info) => {
+                        selected.seasons = (info && info.seasons) || [];
+                    })
+                    .catch(function() {
+                        // Fallback: assume 10 seasons × 24 eps (engine will skip non-existent)
+                        selected.seasons = [];
+                        for (var i = 1; i <= 10; i++) selected.seasons.push({ season: i, episodes: 24 });
+                    })
+                    .then(function() {
+                        renderSeasons();
+                        $('#queueBtn').disabled = false;
+                    });
                 }
 
                 function renderSeasons() {
