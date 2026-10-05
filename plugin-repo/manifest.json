@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.15",
+                "changelog": "Fix All Seasons: proper renderSeasons, show error message when TmdbInfo fails.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v15/MediaDownloader.12.1.0.15.zip",
+                "checksum": "272f8a31b20741b1eeac22e5967d8f90",
+                "timestamp": "2026-10-05T15:33:50.999Z"
+            },
+            {
                 "version": "12.1.0.14",
                 "changelog": "Add 'All Seasons' option to download every season in one click.",
                 "targetAbi": "12.1.0.0",
@@ -120,6 +128,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.15",
+                "changelog": "Fix All Seasons: proper renderSeasons, show error message when TmdbInfo fails.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v15/MediaDownloader.10.11.0.15.zip",
+                "checksum": "fcdee683651211c8b3698b21935a3313",
+                "timestamp": "2026-10-05T15:33:50.999Z"
+            },
+            {
                 "version": "10.11.0.14",
                 "changelog": "Add 'All Seasons' option to download every season in one click.",
                 "targetAbi": "10.11.0.0",
@@ -230,6 +246,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.15",
+                "changelog": "Fix All Seasons: proper renderSeasons, show error message when TmdbInfo fails.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v15/MediaDownloader.10.10.0.15.zip",
+                "checksum": "32229287b74f8cd1bda153f3282f5f53",
+                "timestamp": "2026-10-05T15:33:50.998Z"
             },
             {
                 "version": "10.10.0.14",
