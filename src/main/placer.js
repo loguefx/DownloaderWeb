@@ -163,7 +163,7 @@ async function verifyLibrary(lib, opts = {}) {
 
   for (const loc of locations) {
     const enginePath = toEnginePath(loc, cfg.pathMappings);
-    const ready = folderReady(enginePath);
+    let ready = folderReady(enginePath);
     const entry = {
       jellyfin: loc,
       engine: enginePath,
@@ -183,6 +183,24 @@ async function verifyLibrary(lib, opts = {}) {
     } catch (e) {
       // not mounted / not present: leave exists=false
     }
+
+    // If the folder exists and is writable but the marker is missing,
+    // create it now (this is what "Verify" is for — prepare the drive).
+    if (entry.exists && entry.isDir && !entry.marker && ready.reason === 'missing .mediadownloader marker file') {
+      try {
+        fs.accessSync(enginePath, fs.constants.W_OK);
+        const markerPath = path.join(enginePath, MARKER);
+        if (!fs.existsSync(markerPath)) {
+          fs.writeFileSync(markerPath, JSON.stringify({ created: new Date().toISOString(), app: 'webvideodownloader' }));
+        }
+        // Re-check: the marker should now be present.
+        ready = folderReady(enginePath);
+        entry.reason = ready.reason || null;
+      } catch (e) {
+        // Folder is not writable; leave as-is.
+      }
+    }
+
     entry.writable = ready.ready;
     try {
       entry.marker = fs.existsSync(path.join(enginePath, MARKER));
