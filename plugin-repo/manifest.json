@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.19",
+                "changelog": "Fix Jobs 404: read raw request body instead of [FromBody] JsonElement (Jellyfin 12.x binding issue).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v19/MediaDownloader.12.1.0.19.zip",
+                "checksum": "0c587c9217b7946a9fae6c34d82b2bd6",
+                "timestamp": "2026-10-05T21:10:54.935Z"
+            },
+            {
                 "version": "12.1.0.18",
                 "changelog": "Fix: blank season/episode dropdowns (hideResults order) + page scoping (Jellyfin SPA cache).",
                 "targetAbi": "12.1.0.0",
@@ -152,6 +160,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.19",
+                "changelog": "Fix Jobs 404: read raw request body instead of [FromBody] JsonElement (Jellyfin 12.x binding issue).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v19/MediaDownloader.10.11.0.19.zip",
+                "checksum": "8d2b09cd14fd9fb99ddab7c3c112ce6c",
+                "timestamp": "2026-10-05T21:10:54.935Z"
+            },
+            {
                 "version": "10.11.0.18",
                 "changelog": "Fix: blank season/episode dropdowns (hideResults order) + page scoping (Jellyfin SPA cache).",
                 "targetAbi": "10.11.0.0",
@@ -294,6 +310,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.19",
+                "changelog": "Fix Jobs 404: read raw request body instead of [FromBody] JsonElement (Jellyfin 12.x binding issue).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v19/MediaDownloader.10.10.0.19.zip",
+                "checksum": "1689cc2b40ce559c68a6476598c1b663",
+                "timestamp": "2026-10-05T21:10:54.935Z"
             },
             {
                 "version": "10.10.0.18",
