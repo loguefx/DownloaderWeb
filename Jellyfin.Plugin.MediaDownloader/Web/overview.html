@@ -3,313 +3,305 @@
 <head>
     <meta charset="utf-8" />
     <title>Media Downloader</title>
+    <style>
+        .md-section { margin-bottom: 1.8em; }
+        .md-card {
+            background: rgba(255,255,255,.03);
+            border: 1px solid rgba(255,255,255,.08);
+            border-radius: .6em;
+            padding: 1.2em 1.4em;
+            margin-bottom: 1em;
+        }
+        .md-card h3 { margin: 0 0 .6em 0; font-size: 1.1em; font-weight: 600; }
+        .md-search-row { display: flex; gap: .6em; align-items: center; flex-wrap: wrap; }
+        .md-search-row input[type=text] { flex: 1; min-width: 220px; }
+        .md-results { margin-top: .8em; }
+        .md-results table { width: 100%; border-collapse: collapse; }
+        .md-results td { padding: .5em .6em; border-bottom: 1px solid rgba(255,255,255,.06); vertical-align: middle; }
+        .md-results tr:hover { background: rgba(255,255,255,.04); cursor: pointer; }
+        .md-results .md-select-btn {
+            background: #2196f3; color: #fff; border: none; border-radius: .3em;
+            padding: .35em .9em; cursor: pointer; font-size: .9em; font-weight: 500;
+        }
+        .md-results .md-select-btn:hover { background: #1976d2; }
+        .md-selected {
+            display: flex; gap: 1em; align-items: flex-start; margin-top: 1em;
+            padding: 1em; background: rgba(33,150,243,.08); border-radius: .5em;
+            border: 1px solid rgba(33,150,243,.2);
+        }
+        .md-selected img { width: 64px; border-radius: .3em; }
+        .md-selected .md-info { flex: 1; }
+        .md-selected .md-info strong { font-size: 1.05em; }
+        .md-selected .md-info span { color: #999; font-size: .9em; }
+        .md-actions { display: flex; gap: .6em; align-items: center; margin-top: .8em; flex-wrap: wrap; }
+        .md-btn {
+            background: #2196f3; color: #fff; border: none; border-radius: .35em;
+            padding: .55em 1.4em; cursor: pointer; font-size: .95em; font-weight: 500;
+        }
+        .md-btn:hover { background: #1976d2; }
+        .md-btn:disabled { opacity: .5; cursor: not-allowed; }
+        .md-btn-secondary { background: rgba(255,255,255,.1); }
+        .md-btn-secondary:hover { background: rgba(255,255,255,.18); }
+        .md-msg { font-size: .9em; margin-top: .4em; }
+        .md-msg.ok { color: #4caf50; }
+        .md-msg.err { color: #ef5350; }
+        .md-msg.wait { color: #ff9800; }
+        .md-queue-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+            gap: .5em; margin-top: .6em;
+        }
+        .md-queue-item { text-align: center; padding: .6em .3em; background: rgba(255,255,255,.04); border-radius: .4em; }
+        .md-queue-item .md-q-num { font-size: 1.4em; font-weight: 700; }
+        .md-queue-item .md-q-label { font-size: .75em; color: #999; margin-top: .2em; }
+        .md-warning {
+            padding: .7em 1em; border-radius: .4em; margin-bottom: .8em;
+            background: rgba(255,152,0,.1); border: 1px solid rgba(255,152,0,.3); color: #ffb74d; font-size: .9em;
+        }
+        .md-outbox-row { display: flex; justify-content: space-between; align-items: center; padding: .4em 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+        .md-outbox-row .md-state-wait { color: #ff9800; }
+        .md-outbox-row .md-state-sent { color: #4caf50; }
+        .md-outbox-row .md-state-rej { color: #ef5350; }
+        .md-outbox-row button { background: none; border: 1px solid rgba(255,255,255,.2); color: #ccc; border-radius: .3em; padding: .2em .6em; cursor: pointer; font-size: .8em; }
+        .md-outbox-row button:hover { border-color: #ef5350; color: #ef5350; }
+    </style>
 </head>
 <body>
     <div id="overviewPage" data-role="page" class="page type-interior pluginPage"
          data-require="emby-button,emby-select">
         <div data-role="content">
             <div class="content-primary">
-                <div id="banner" class="detailBody" style="padding:.8em 1em;border-radius:.5em;margin-bottom:1em;font-weight:600;"></div>
+                <!-- Banner -->
+                <div id="banner" style="padding:.8em 1em;border-radius:.5em;margin-bottom:1.2em;font-weight:600;"></div>
 
-                <!-- ==================== SEARCH & QUEUE ==================== -->
-                <h3 class="sectionTitle">Search &amp; queue a download</h3>
-                <p class="fieldDescription">
-                    Type a title to search. Pick a result, choose the target library, and queue
-                    the download. The engine resolves the best 1080p source automatically.
-                </p>
+                <!-- ====== SEARCH & DOWNLOAD ====== -->
+                <div class="md-section">
+                    <div class="md-card">
+                        <h3>Search &amp; Download</h3>
+                        <div id="libWarning" class="md-warning" style="display:none;">
+                            ⚠ No target library is configured. Set a default in <strong>Media Downloader → Settings</strong>, or pick one below before queuing.
+                        </div>
+                        <div class="md-search-row">
+                            <input id="searchInput" type="text" class="emby-input" placeholder="Type a title… (e.g. Breaking Bad, Dune, One Piece)" autocomplete="off" />
+                            <select id="searchType" class="emby-select" style="min-width:110px;">
+                                <option value="all">All</option>
+                                <option value="tv">TV / Anime</option>
+                                <option value="movie">Movies</option>
+                            </select>
+                            <select id="jobLibrary" class="emby-select" style="min-width:150px;">
+                                <option value="">Library…</option>
+                            </select>
+                        </div>
 
-                <div class="inputContainer" style="flex-wrap:wrap;gap:.4em;align-items:center;">
-                    <div class="inputContainer" style="flex:2;min-width:240px;">
-                        <input id="searchInput" type="text" class="emby-input" placeholder="Search for a TV show, movie, or anime…" />
-                    </div>
-                    <div class="inputContainer" style="min-width:110px;">
-                        <select id="searchType" class="emby-select">
-                            <option value="all">All</option>
-                            <option value="tv">TV / Anime</option>
-                            <option value="movie">Movies</option>
-                        </select>
-                    </div>
-                    <div class="inputContainer" style="min-width:140px;">
-                        <select id="jobLibrary" class="emby-select">
-                            <option value="">(default library)</option>
-                        </select>
-                    </div>
-                </div>
+                        <!-- Results dropdown -->
+                        <div id="searchResults" class="md-results" style="display:none;"></div>
 
-                <!-- Search results -->
-                <div id="searchResults" style="margin-top:.6em;display:none;">
-                    <table class="detailTable" id="resultsTable">
-                        <thead>
-                            <tr>
-                                <th class="detailTableHeaderCell">Title</th>
-                                <th class="detailTableHeaderCell">Year</th>
-                                <th class="detailTableHeaderCell">Type</th>
-                                <th class="detailTableHeaderCell"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="resultsBody"></tbody>
-                    </table>
-                </div>
+                        <!-- Selected item -->
+                        <div id="selectedPanel" class="md-selected" style="display:none;">
+                            <img id="selPoster" style="display:none;" />
+                            <div class="md-info">
+                                <strong id="selTitle"></strong><br/>
+                                <span id="selMeta"></span>
+                            </div>
+                            <div style="min-width:180px;">
+                                <div id="selSeasonRow" style="display:none;margin-bottom:.5em;">
+                                    <select id="selSeason" class="emby-select" style="width:100%;margin-bottom:.4em;"></select>
+                                    <select id="selEpisode" class="emby-select" style="width:100%;"></select>
+                                </div>
+                            </div>
+                        </div>
 
-                <!-- Selected title detail (TV seasons / movie info) -->
-                <div id="selectedDetail" style="display:none;margin-top:.8em;padding:.7em 1em;border-radius:.5em;background:rgba(255,255,255,.04);">
-                    <div id="detailPoster" style="display:flex;gap:1em;align-items:flex-start;">
-                        <img id="detailPosterImg" style="width:72px;border-radius:.3em;display:none;" />
-                        <div>
-                            <strong id="detailTitle"></strong><br/>
-                            <span id="detailMeta" class="fieldDescription"></span>
+                        <div class="md-actions">
+                            <button id="queueBtn" class="md-btn" type="button" disabled>Queue Download</button>
+                            <span id="queueMsg" class="md-msg"></span>
                         </div>
                     </div>
-                    <div id="seasonPicker" style="display:none;margin-top:.6em;flex-wrap:wrap;gap:.5em;align-items:center;">
-                        <select id="seasonSelect" class="emby-select"></select>
-                        <select id="episodeSelect" class="emby-select">
-                            <option value="all">All episodes</option>
-                        </select>
+                </div>
+
+                <!-- ====== ENGINE QUEUE ====== -->
+                <div class="md-section">
+                    <div class="md-card">
+                        <h3>Engine Queue</h3>
+                        <div class="md-actions" style="margin-top:0;margin-bottom:.6em;">
+                            <button id="refreshBtn" class="md-btn md-btn-secondary" type="button">↻ Refresh</button>
+                            <button id="pauseBtn" class="md-btn md-btn-secondary" type="button">Pause</button>
+                            <button id="resumeBtn" class="md-btn md-btn-secondary" type="button">Resume</button>
+                            <button id="stopBtn" class="md-btn md-btn-secondary" type="button">Stop All</button>
+                        </div>
+                        <div id="queueGrid" class="md-queue-grid"></div>
                     </div>
-                    <div style="margin-top:.8em;display:flex;gap:.5em;align-items:center;">
-                        <button id="queueBtn" is="emby-button" type="button" class="raised button-submit emby-button">
-                            <span>Queue download</span>
-                        </button>
-                        <span id="queueResult" class="fieldDescription"></span>
+                </div>
+
+                <!-- ====== OUTBOX ====== -->
+                <div class="md-section">
+                    <div class="md-card">
+                        <h3>Outbox <span style="font-weight:400;font-size:.85em;color:#999;">(delivered when engine is back)</span></h3>
+                        <div id="outboxList" style="margin-top:.5em;"></div>
+                        <div class="md-actions">
+                            <button id="purgeSentBtn" class="md-btn md-btn-secondary" type="button">Clear delivered</button>
+                            <button id="purgeRejectedBtn" class="md-btn md-btn-secondary" type="button">Clear rejected</button>
+                        </div>
                     </div>
                 </div>
-
-                <!-- ==================== ENGINE CONTROLS ==================== -->
-                <h3 class="sectionTitle" style="margin-top:1.5em;">Engine queue</h3>
-                <div class="inputContainer">
-                    <button id="refreshBtn" is="emby-button" type="button" class="raised button-submit emby-button">
-                        <span>&#8635; Refresh</span>
-                    </button>
-                    <button id="pauseBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
-                        <span>Pause queue</span>
-                    </button>
-                    <button id="resumeBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
-                        <span>Resume</span>
-                    </button>
-                    <button id="stopBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
-                        <span>Stop all</span>
-                    </button>
-                    <span class="fieldDescription" style="margin-left:.8em;align-self:center;">
-                        Settings: open the <strong>Media Downloader</strong> page in the sidebar.
-                    </span>
-                </div>
-
-                <table class="detailTable">
-                    <thead>
-                        <tr>
-                            <th class="detailTableHeaderCell">queued</th>
-                            <th class="detailTableHeaderCell">downloading</th>
-                            <th class="detailTableHeaderCell">verifying</th>
-                            <th class="detailTableHeaderCell">placing</th>
-                            <th class="detailTableHeaderCell">waiting</th>
-                            <th class="detailTableHeaderCell">failed</th>
-                            <th class="detailTableHeaderCell">done</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr id="queueRow">
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                            <td class="detailTableBodyCell">-</td>
-                        </tr>
-                    </tbody>
-                </table>
-
-                <h3 class="sectionTitle">Outbox (delivered when the engine is back)</h3>
-                <p class="fieldDescription">
-                    Jobs queued while the engine was offline. Delivered exactly once.
-                </p>
-                <div class="inputContainer">
-                    <button id="purgeSentBtn" is="emby-button" type="button" class="raised button-submit emby-button">
-                        <span>Purge delivered</span>
-                    </button>
-                    <button id="purgeRejectedBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-left:.5em;">
-                        <span>Purge rejected</span>
-                    </button>
-                </div>
-                <table class="detailTable">
-                    <thead>
-                        <tr>
-                            <th class="detailTableHeaderCell">title</th>
-                            <th class="detailTableHeaderCell">state</th>
-                            <th class="detailTableHeaderCell">attempts</th>
-                            <th class="detailTableHeaderCell">queued</th>
-                            <th class="detailTableHeaderCell"></th>
-                        </tr>
-                    </thead>
-                    <tbody id="outboxBody"></tbody>
-                </table>
             </div>
         </div>
 
         <script type="text/javascript">
             (() => {
-                const pluginGuid = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
-                const $ = (sel) => document.querySelector(sel);
+                const $ = (s) => document.querySelector(s);
 
                 // --- API helpers ---
                 function apiGet(path) {
                     return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path), dataType: 'json' });
                 }
                 function apiPost(path, data) {
-                    return ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl(path), data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
+                    return ApiClient.ajax({
+                        type: 'POST', url: ApiClient.getUrl(path),
+                        data: JSON.stringify(data || {}),
+                        contentType: 'application/json',
+                        dataType: 'json'
+                    });
                 }
                 function apiDelete(path) {
                     return ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl(path), dataType: 'json' });
                 }
 
+                // Extract error message from various rejection shapes
+                function errMsg(err) {
+                    if (!err) return 'Unknown error';
+                    if (typeof err === 'string') return err;
+                    if (err.message) return err.message;
+                    if (err.error) return err.error;
+                    // Jellyfin ApiClient sometimes rejects with the Response object
+                    if (err.status) return 'HTTP ' + err.status + (err.statusText ? ' ' + err.statusText : '');
+                    return String(err);
+                }
+
                 // --- Banner ---
-                function setBanner(kind, text) {
+                function setBanner(ok, text) {
                     const b = $('#banner');
                     b.textContent = text;
-                    if (kind === 'ok') {
-                        b.style.background = '#e8f5e9'; b.style.color = '#1b5e20'; b.style.borderLeft = '6px solid #2e7d32';
-                    } else if (kind === 'warn') {
-                        b.style.background = '#fff8e1'; b.style.color = '#7a5b00'; b.style.borderLeft = '6px solid #f9a825';
-                    } else {
-                        b.style.background = '#ffebee'; b.style.color = '#8e1b1b'; b.style.borderLeft = '6px solid #c62828';
-                    }
+                    if (ok) { b.style.background = '#e8f5e9'; b.style.color = '#1b5e20'; b.style.borderLeft = '5px solid #2e7d32'; }
+                    else { b.style.background = '#fff3e0'; b.style.color = '#e65100'; b.style.borderLeft = '5px solid #ff9800'; }
                 }
 
-                // --- Queue + outbox (existing) ---
-                function loadQueue(q) {
-                    if (!q) return;
-                    const cells = [q.queued, q.downloading, q.verifying, q.placing, q.waiting, q.failed, q.done];
-                    const row = $('#queueRow').querySelectorAll('td');
-                    cells.forEach((c, i) => { row[i].textContent = c != null ? c : '-'; });
+                // --- Queue display ---
+                function renderQueue(q) {
+                    const grid = $('#queueGrid');
+                    if (!q) { grid.innerHTML = ''; return; }
+                    const items = [
+                        ['queued', q.queued], ['downloading', q.downloading], ['verifying', q.verifying],
+                        ['placing', q.placing], ['waiting', q.waiting], ['failed', q.failed], ['done', q.done]
+                    ];
+                    grid.innerHTML = items.map(([label, val]) =>
+                        `<div class="md-queue-item"><div class="md-q-num">${val != null ? val : '–'}</div><div class="md-q-label">${label}</div></div>`
+                    ).join('');
                 }
 
-                function loadOutbox(items) {
-                    const body = $('#outboxBody');
-                    body.innerHTML = '';
+                // --- Outbox display ---
+                function renderOutbox(items) {
+                    const box = $('#outboxList');
                     if (!items || !items.length) {
-                        const tr = document.createElement('tr');
-                        const td = document.createElement('td');
-                        td.colSpan = 5; td.className = 'detailTableBodyCell';
-                        td.textContent = 'Empty - nothing is waiting.'; td.style.textAlign = 'center'; td.style.color = '#888';
-                        tr.appendChild(td); body.appendChild(tr); return;
+                        box.innerHTML = '<div style="color:#888;padding:.5em 0;font-size:.9em;">Empty — nothing waiting.</div>';
+                        return;
                     }
-                    items.forEach((e) => {
-                        const tr = document.createElement('tr'); tr.className = 'detailTableBodyRow';
-                        const tdTitle = document.createElement('td'); tdTitle.className = 'detailTableBodyCell'; tdTitle.textContent = e.title || e.jobId; tr.appendChild(tdTitle);
-                        const tdState = document.createElement('td'); tdState.className = 'detailTableBodyCell'; tdState.textContent = e.state;
-                        if (e.state === 'waiting-to-send') tdState.style.color = '#f9a825';
-                        else if (e.state === 'sent') tdState.style.color = '#2e7d32';
-                        else if (e.state === 'rejected') tdState.style.color = '#c62828';
-                        tr.appendChild(tdState);
-                        const tdAtt = document.createElement('td'); tdAtt.className = 'detailTableBodyCell'; tdAtt.textContent = e.attempts != null ? e.attempts : 0; tr.appendChild(tdAtt);
-                        const tdAt = document.createElement('td'); tdAt.className = 'detailTableBodyCell'; tdAt.textContent = e.createdAt ? new Date(e.createdAt).toLocaleString() : '-'; tr.appendChild(tdAt);
-                        const tdAct = document.createElement('td'); tdAct.className = 'detailTableBodyCell';
-                        const btn = document.createElement('button'); btn.is = 'emby-button'; btn.type = 'button';
-                        btn.className = 'raised button-submit emby-button'; btn.textContent = 'Remove';
-                        btn.addEventListener('click', () => apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(e.jobId)).then(refresh).catch(() => alert('Remove failed')));
-                        tdAct.appendChild(btn); tr.appendChild(tdAct); body.appendChild(tr);
+                    box.innerHTML = items.map((e, i) => {
+                        const cls = e.state === 'waiting-to-send' ? 'md-state-wait' : e.state === 'sent' ? 'md-state-sent' : 'md-state-rej';
+                        const time = e.createdAt ? new Date(e.createdAt).toLocaleString() : '';
+                        return `<div class="md-outbox-row">
+                            <span>${e.title || e.jobId}</span>
+                            <span class="${cls}" style="font-size:.85em;">${e.state}</span>
+                            <span style="font-size:.8em;color:#888;">${time}</span>
+                            <button data-idx="${i}">Remove</button>
+                        </div>`;
+                    }).join('');
+                    box.querySelectorAll('button[data-idx]').forEach((btn) => {
+                        btn.addEventListener('click', () => {
+                            const item = items[parseInt(btn.dataset.idx)];
+                            apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(item.jobId)).then(refresh).catch(() => {});
+                        });
                     });
                 }
 
                 function refresh() {
                     return apiGet('MediaDownloader/Health').then((h) => {
-                        const out = h.outbox || { waiting: 0, sent: 0, rejected: 0 };
+                        const out = h.outbox || {};
                         if (h.engine === 'online') {
-                            const vpn = h.health && h.health.vpn ? h.health.vpn : {};
-                            const q = h.health && h.health.queue ? h.health.queue : {};
-                            if (vpn.connected === false) {
-                                setBanner('warn', 'Engine online but VPN is DOWN - downloads are on hold (' + (q.waiting != null ? q.waiting : 0) + ' waiting).');
-                            } else {
-                                setBanner('ok', 'Engine online and VPN up. Outbox: ' + out.waiting + ' waiting, ' + out.sent + ' delivered, ' + out.rejected + ' rejected.');
-                            }
-                            loadQueue(q);
+                            const vpn = (h.health && h.health.vpn) || {};
+                            const q = (h.health && h.health.queue) || {};
+                            setBanner(true, `Engine online · VPN ${vpn.connected ? 'up' : 'DOWN'} · Queue ${q.total || 0} · Outbox ${out.waiting || 0} waiting`);
+                            renderQueue(q);
                         } else {
-                            setBanner('bad', 'Engine is OFFLINE - ' + out.waiting + ' job(s) waiting in the outbox.');
+                            setBanner(false, `Engine offline · ${out.waiting || 0} job(s) in outbox`);
                         }
                         return apiGet('MediaDownloader/Outbox');
-                    }).then((o) => {
-                        loadOutbox(o.items);
-                    }).catch((err) => {
-                        setBanner('bad', 'Could not reach the plugin: ' + ((err && err.message) || err));
-                    });
+                    }).then((o) => { renderOutbox(o.items); })
+                    .catch((err) => { setBanner(false, 'Plugin error: ' + errMsg(err)); });
                 }
 
-                // --- Search ---
+                // ====== SEARCH ======
                 let searchTimer = null;
-                let searchResults = [];
-                let selected = null; // { tmdb, imdb, title, year, type, seasons? }
+                let results = [];
+                let selected = null;
 
                 function doSearch() {
                     const q = $('#searchInput').value.trim();
+                    if (q.length < 2) { hideResults(); return; }
                     const type = $('#searchType').value;
-                    if (q.length < 2) { clearResults(); return; }
                     apiGet('MediaDownloader/Search?q=' + encodeURIComponent(q) + '&type=' + type)
-                        .then((r) => {
-                            searchResults = (r && r.results) || [];
-                            renderResults();
-                        })
-                        .catch(() => {
-                            searchResults = [];
-                            renderResults();
-                        });
+                        .then((r) => { results = (r && r.results) || []; showResults(); })
+                        .catch(() => { results = []; showResults(); });
                 }
 
-                function renderResults() {
+                function showResults() {
                     const box = $('#searchResults');
-                    const body = $('#resultsBody');
-                    body.innerHTML = '';
-                    if (!searchResults.length) {
-                        box.style.display = 'none';
-                        return;
-                    }
+                    if (!results.length) { box.style.display = 'none'; box.innerHTML = '<div style="padding:.5em;color:#999;">No results found.</div>'; box.style.display = 'block'; return; }
                     box.style.display = 'block';
-                    searchResults.forEach((r, i) => {
-                        const tr = document.createElement('tr');
-                        tr.className = 'detailTableBodyRow';
-                        const tdTitle = document.createElement('td'); tdTitle.className = 'detailTableBodyCell';
-                        tdTitle.textContent = r.title; tdTitle.style.cursor = 'pointer';
-                        tr.appendChild(tdTitle);
-                        const tdYear = document.createElement('td'); tdYear.className = 'detailTableBodyCell'; tdYear.textContent = r.year || ''; tr.appendChild(tdYear);
-                        const tdType = document.createElement('td'); tdType.className = 'detailTableBodyCell'; tdType.textContent = r.type === 'movie' ? 'Movie' : 'TV/Anime'; tr.appendChild(tdType);
-                        const tdAct = document.createElement('td'); tdAct.className = 'detailTableBodyCell'; tdAct.style.textAlign = 'right';
-                        const btn = document.createElement('button'); btn.is = 'emby-button'; btn.type = 'button';
-                        btn.className = 'raised button-submit emby-button'; btn.textContent = 'Select';
-                        btn.addEventListener('click', () => selectResult(r));
-                        tdAct.appendChild(btn); tr.appendChild(tdAct);
-                        body.appendChild(tr);
+                    box.innerHTML = '<table><tbody>' + results.map((r, i) =>
+                        `<tr data-idx="${i}">
+                            <td style="font-weight:500;">${r.title}</td>
+                            <td style="color:#999;width:60px;">${r.year || ''}</td>
+                            <td style="color:#999;width:70px;">${r.type === 'movie' ? 'Movie' : 'TV'}</td>
+                            <td style="width:70px;text-align:right;"><button class="md-select-btn" type="button">Select</button></td>
+                        </tr>`
+                    ).join('') + '</tbody></table>';
+                    box.querySelectorAll('tr[data-idx]').forEach((tr) => {
+                        tr.addEventListener('click', () => { selectResult(results[parseInt(tr.dataset.idx)]); });
                     });
                 }
 
-                function clearResults() {
+                function hideResults() {
                     $('#searchResults').style.display = 'none';
-                    $('#resultsBody').innerHTML = '';
-                    $('#selectedDetail').style.display = 'none';
+                    $('#searchResults').innerHTML = '';
+                    $('#selectedPanel').style.display = 'none';
+                    $('#queueBtn').disabled = true;
+                    $('#queueMsg').textContent = '';
                     selected = null;
                 }
 
                 function selectResult(r) {
-                    selected = { tmdb: r.tmdb, imdb: r.imdb, title: r.title, year: r.year, type: r.type, seasons: null };
-                    // Show detail panel
-                    const det = $('#selectedDetail');
-                    det.style.display = 'block';
-                    $('#detailTitle').textContent = r.title + (r.year ? ' (' + r.year + ')' : '');
-                    $('#detailMeta').textContent = r.type === 'movie' ? 'Movie' : 'TV Series / Anime';
-                    const img = $('#detailPosterImg');
+                    selected = r;
+                    hideResults(); // hide the list
+                    // Show selected panel
+                    const panel = $('#selectedPanel');
+                    panel.style.display = 'flex';
+                    $('#selTitle').textContent = r.title + (r.year ? ' (' + r.year + ')' : '');
+                    $('#selMeta').textContent = r.type === 'movie' ? 'Movie' : 'TV Series / Anime';
+                    const img = $('#selPoster');
                     if (r.poster) { img.src = r.poster; img.style.display = 'block'; } else { img.style.display = 'none'; }
 
                     if (r.type === 'movie') {
-                        $('#seasonPicker').style.display = 'none';
-                        $('#queueBtn').querySelector('span').textContent = 'Queue download';
+                        $('#selSeasonRow').style.display = 'none';
+                        $('#queueBtn').disabled = false;
                         return;
                     }
 
-                    // TV: fetch seasons
-                    $('#seasonPicker').style.display = 'flex';
-                    $('#seasonSelect').innerHTML = '<option value="">Loading…</option>';
+                    // TV: load seasons
+                    $('#selSeasonRow').style.display = 'block';
+                    $('#selSeason').innerHTML = '<option>Loading…</option>';
                     apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv')
                         .then((info) => {
                             selected.seasons = (info && info.seasons) || [];
-                            const sel = $('#seasonSelect');
+                            const sel = $('#selSeason');
                             sel.innerHTML = '';
                             (selected.seasons || []).forEach((s) => {
                                 const opt = document.createElement('option');
@@ -317,53 +309,59 @@
                                 opt.textContent = 'Season ' + s.season + ' (' + s.episodes + ' eps)';
                                 sel.appendChild(opt);
                             });
-                            if (!selected.seasons.length) {
-                                sel.innerHTML = '<option value="1">Season 1</option>';
-                            }
-                            updateEpisodeSelect();
+                            if (!selected.seasons.length) sel.innerHTML = '<option value="1">Season 1</option>';
+                            updateEpisodes();
+                            $('#queueBtn').disabled = false;
                         })
                         .catch(() => {
-                            // Fallback: just season 1
-                            const sel = $('#seasonSelect');
-                            sel.innerHTML = '<option value="1">Season 1</option>';
-                            updateEpisodeSelect();
+                            $('#selSeason').innerHTML = '<option value="1">Season 1</option>';
+                            updateEpisodes();
+                            $('#queueBtn').disabled = false;
                         });
                 }
 
-                function updateEpisodeSelect() {
-                    const season = parseInt($('#seasonSelect').value) || 1;
+                function updateEpisodes() {
+                    const season = parseInt($('#selSeason').value) || 1;
                     const seasons = (selected && selected.seasons) || [];
                     const s = seasons.find((x) => x.season === season);
-                    const maxEp = s ? s.episodes : 24; // default 24 if unknown
-                    const epSel = $('#episodeSelect');
-                    epSel.innerHTML = '<option value="all">All episodes (1-' + maxEp + ')</option>';
-                    for (let i = 1; i <= Math.min(maxEp, 100); i++) {
+                    const maxEp = s ? s.episodes : 24;
+                    const sel = $('#selEpisode');
+                    sel.innerHTML = '<option value="all">All episodes (1–' + maxEp + ')</option>';
+                    for (let i = 1; i <= Math.min(maxEp, 120); i++) {
                         const opt = document.createElement('option');
-                        opt.value = String(i);
-                        opt.textContent = 'Episode ' + i;
-                        epSel.appendChild(opt);
+                        opt.value = String(i); opt.textContent = 'Episode ' + i;
+                        sel.appendChild(opt);
                     }
                 }
 
+                // ====== QUEUE DOWNLOAD ======
                 function queueDownload() {
-                    if (!selected) { showQueueResult('bad', 'Pick a result first.'); return; }
+                    if (!selected) return;
                     const library = $('#jobLibrary').value;
+
+                    // Check if a library is available
+                    const libOpts = $('#jobLibrary').options;
+                    const hasLibs = libOpts.length > 1; // more than just the placeholder
+                    if (!library && !hasLibs) {
+                        showMsg('err', 'No library available. Set one in Media Downloader → Settings first.');
+                        return;
+                    }
+
                     const btn = $('#queueBtn');
                     btn.disabled = true;
-                    showQueueResult('wait', 'Queuing…');
+                    showMsg('wait', 'Queuing…');
 
                     let jobs = [];
                     if (selected.type === 'movie') {
                         jobs.push({
                             sourceUrl: 'https://vidsrc.sh/embed/movie/' + selected.tmdb,
-                            kind: 'movie',
                             title: selected.title,
                             scope: 'episodes',
                             selections: [{ season: 1, episodes: [1] }]
                         });
                     } else {
-                        const season = parseInt($('#seasonSelect').value) || 1;
-                        const epVal = $('#episodeSelect').value;
+                        const season = parseInt($('#selSeason').value) || 1;
+                        const epVal = $('#selEpisode').value;
                         const seasons = (selected.seasons || []);
                         const s = seasons.find((x) => x.season === season);
                         const maxEp = s ? s.episodes : 24;
@@ -371,7 +369,6 @@
                             for (let e = 1; e <= maxEp; e++) {
                                 jobs.push({
                                     sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + e,
-                                    kind: 'tv',
                                     title: selected.title + ' S' + season + 'E' + e,
                                     scope: 'episodes',
                                     selections: [{ season: season, episodes: [e] }]
@@ -381,73 +378,77 @@
                             const ep = parseInt(epVal) || 1;
                             jobs.push({
                                 sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + ep,
-                                kind: 'tv',
                                 title: selected.title + ' S' + season + 'E' + ep,
                                 scope: 'episodes',
                                 selections: [{ season: season, episodes: [ep] }]
                             });
                         }
                     }
-
-                    // Add library to each job
                     if (library) jobs.forEach((j) => { j.library = library; });
 
-                    // Queue all jobs
                     const promises = jobs.map((j) => apiPost('MediaDownloader/Jobs', j));
                     Promise.all(promises)
-                        .then((results) => {
-                            const ok = results.filter((r) => r && r.accepted).length;
-                            showQueueResult('ok', 'Queued ' + ok + ' job(s) → ' + (library || 'default library') + '.');
+                        .then((res) => {
+                            const ok = res.filter((r) => r && (r.accepted || r.jobId)).length;
+                            showMsg('ok', `✓ Queued ${ok} job${ok > 1 ? 's' : ''}${library ? ' → ' + library : ''}`);
+                            // Reset selection
+                            selected = null;
+                            $('#selectedPanel').style.display = 'none';
+                            $('#searchInput').value = '';
+                            $('#queueBtn').disabled = true;
                             refresh();
                         })
-                        .catch((err) => {
-                            showQueueResult('bad', 'Failed: ' + ((err && err.message) || err));
-                        })
+                        .catch((err) => { showMsg('err', errMsg(err)); })
                         .finally(() => { btn.disabled = false; });
                 }
 
-                function showQueueResult(kind, text) {
-                    const el = $('#queueResult');
+                function showMsg(kind, text) {
+                    const el = $('#queueMsg');
                     el.textContent = text;
-                    el.style.color = kind === 'ok' ? '#2e7d32' : kind === 'bad' ? '#c62828' : '#f9a825';
+                    el.className = 'md-msg ' + (kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : 'wait');
                 }
 
-                // --- Event wiring ---
+                // ====== EVENTS ======
                 $('#searchInput').addEventListener('input', () => {
                     clearTimeout(searchTimer);
-                    searchTimer = setTimeout(doSearch, 400);
+                    searchTimer = setTimeout(doSearch, 350);
                 });
-                $('#searchInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(); } });
-                $('#seasonSelect').addEventListener('change', updateEpisodeSelect);
+                $('#searchInput').addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(); }
+                    if (e.key === 'Escape') hideResults();
+                });
+                $('#selSeason').addEventListener('change', updateEpisodes);
                 $('#queueBtn').addEventListener('click', queueDownload);
 
                 $('#refreshBtn').addEventListener('click', refresh);
-                $('#pauseBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/pause').then(refresh).catch(() => alert('Engine offline')));
-                $('#resumeBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/resume').then(refresh).catch(() => alert('Engine offline')));
-                $('#stopBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/stop').then(refresh).catch(() => alert('Engine offline')));
+                $('#pauseBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/pause').then(refresh).catch(() => {}));
+                $('#resumeBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/resume').then(refresh).catch(() => {}));
+                $('#stopBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/stop').then(refresh).catch(() => {}));
                 $('#purgeSentBtn').addEventListener('click', () => {
-                    if (!confirm('Remove all delivered (sent) jobs?')) return;
-                    apiPost('MediaDownloader/Outbox/purge', { state: 'sent' }).then(refresh).catch(() => alert('Purge failed'));
+                    if (!confirm('Clear all delivered jobs?')) return;
+                    apiPost('MediaDownloader/Outbox/purge', { state: 'sent' }).then(refresh).catch(() => {});
                 });
                 $('#purgeRejectedBtn').addEventListener('click', () => {
-                    if (!confirm('Remove all rejected jobs?')) return;
-                    apiPost('MediaDownloader/Outbox/purge', { state: 'rejected' }).then(refresh).catch(() => alert('Purge failed'));
+                    if (!confirm('Clear all rejected jobs?')) return;
+                    apiPost('MediaDownloader/Outbox/purge', { state: 'rejected' }).then(refresh).catch(() => {});
                 });
 
-                // --- Page init ---
+                // ====== INIT ======
                 document.querySelector('#overviewPage').addEventListener('pageshow', () => {
-                    // Load libraries for the job form
+                    // Load libraries
                     apiGet('MediaDownloader/Libraries').then((r) => {
                         const libs = (r && r.libraries) || [];
                         const sel = $('#jobLibrary');
-                        sel.innerHTML = '<option value="">(default library)</option>';
+                        sel.innerHTML = '<option value="">Library…</option>';
                         libs.forEach((lib) => {
                             const opt = document.createElement('option');
                             opt.value = lib.name;
-                            opt.textContent = lib.name + '  (' + (lib.collectionType || '') + ')';
+                            opt.textContent = lib.name + ' (' + (lib.collectionType || '') + ')';
                             sel.appendChild(opt);
                         });
-                    }).catch(() => {});
+                        // Show warning if no libraries
+                        if (!libs.length) $('#libWarning').style.display = 'block';
+                    }).catch(() => { $('#libWarning').style.display = 'block'; });
                     refresh();
                 });
             })();
