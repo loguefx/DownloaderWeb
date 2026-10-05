@@ -192,32 +192,32 @@
                         ['queued', q.queued], ['downloading', q.downloading], ['verifying', q.verifying],
                         ['placing', q.placing], ['waiting', q.waiting], ['failed', q.failed], ['done', q.done]
                     ];
-                    grid.innerHTML = items.map(([label, val]) =>
-                        `<div class="md-queue-item"><div class="md-q-num">${val != null ? val : '–'}</div><div class="md-q-label">${label}</div></div>`
-                    ).join('');
+                    grid.innerHTML = items.map(function(p) {
+                        return '<div class="md-queue-item"><div class="md-q-num">' + (p[1] != null ? p[1] : '-') + '</div><div class="md-q-label">' + p[0] + '</div></div>';
+                    }).join('');
                 }
 
                 // --- Outbox display ---
                 function renderOutbox(items) {
                     const box = $('#outboxList');
                     if (!items || !items.length) {
-                        box.innerHTML = '<div style="color:#888;padding:.5em 0;font-size:.9em;">Empty — nothing waiting.</div>';
+                        box.innerHTML = '<div style="color:#888;padding:.5em 0;font-size:.9em;">Empty - nothing waiting.</div>';
                         return;
                     }
-                    box.innerHTML = items.map((e, i) => {
+                    box.innerHTML = items.map(function(e, i) {
                         const cls = e.state === 'waiting-to-send' ? 'md-state-wait' : e.state === 'sent' ? 'md-state-sent' : 'md-state-rej';
                         const time = e.createdAt ? new Date(e.createdAt).toLocaleString() : '';
-                        return `<div class="md-outbox-row">
-                            <span>${e.title || e.jobId}</span>
-                            <span class="${cls}" style="font-size:.85em;">${e.state}</span>
-                            <span style="font-size:.8em;color:#888;">${time}</span>
-                            <button data-idx="${i}">Remove</button>
-                        </div>`;
+                        return '<div class="md-outbox-row">' +
+                            '<span>' + (e.title || e.jobId) + '</span>' +
+                            '<span class="' + cls + '" style="font-size:.85em;">' + e.state + '</span>' +
+                            '<span style="font-size:.8em;color:#888;">' + time + '</span>' +
+                            '<button data-idx="' + i + '">Remove</button>' +
+                            '</div>';
                     }).join('');
-                    box.querySelectorAll('button[data-idx]').forEach((btn) => {
-                        btn.addEventListener('click', () => {
-                            const item = items[parseInt(btn.dataset.idx)];
-                            apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(item.jobId)).then(refresh).catch(() => {});
+                    box.querySelectorAll('button[data-idx]').forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            const item = items[parseInt(btn.getAttribute('data-idx'))];
+                            apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(item.jobId)).then(refresh).catch(function() {});
                         });
                     });
                 }
@@ -228,10 +228,10 @@
                         if (h.engine === 'online') {
                             const vpn = (h.health && h.health.vpn) || {};
                             const q = (h.health && h.health.queue) || {};
-                            setBanner(true, `Engine online · VPN ${vpn.connected ? 'up' : 'DOWN'} · Queue ${q.total || 0} · Outbox ${out.waiting || 0} waiting`);
+                            setBanner(true, 'Engine online · VPN ' + (vpn.connected ? 'up' : 'DOWN') + ' · Queue ' + (q.total || 0) + ' · Outbox ' + (out.waiting || 0) + ' waiting');
                             renderQueue(q);
                         } else {
-                            setBanner(false, `Engine offline · ${out.waiting || 0} job(s) in outbox`);
+                            setBanner(false, 'Engine offline · ' + (out.waiting || 0) + ' job(s) in outbox');
                         }
                         return apiGet('MediaDownloader/Outbox');
                     }).then((o) => { renderOutbox(o.items); })
@@ -254,19 +254,32 @@
 
                 function showResults() {
                     const box = $('#searchResults');
-                    if (!results.length) { box.style.display = 'none'; box.innerHTML = '<div style="padding:.5em;color:#999;">No results found.</div>'; box.style.display = 'block'; return; }
+                    if (!results.length) {
+                        box.style.display = 'block';
+                        box.innerHTML = '<div style="padding:.5em;color:#999;">No results found.</div>';
+                        return;
+                    }
                     box.style.display = 'block';
-                    box.innerHTML = '<table><tbody>' + results.map((r, i) =>
-                        `<tr data-idx="${i}">
-                            <td style="font-weight:500;">${r.title}</td>
-                            <td style="color:#999;width:60px;">${r.year || ''}</td>
-                            <td style="color:#999;width:70px;">${r.type === 'movie' ? 'Movie' : 'TV'}</td>
-                            <td style="width:70px;text-align:right;"><button class="md-select-btn" type="button">Select</button></td>
-                        </tr>`
-                    ).join('') + '</tbody></table>';
-                    box.querySelectorAll('tr[data-idx]').forEach((tr) => {
-                        tr.addEventListener('click', () => { selectResult(results[parseInt(tr.dataset.idx)]); });
-                    });
+                    var rows = '';
+                    for (var i = 0; i < results.length; i++) {
+                        var r = results[i];
+                        rows += '<tr data-idx="' + i + '">';
+                        rows += '<td style="font-weight:500;">' + (r.title || '') + '</td>';
+                        rows += '<td style="color:#999;width:60px;">' + (r.year || '') + '</td>';
+                        rows += '<td style="color:#999;width:70px;">' + (r.type === 'movie' ? 'Movie' : 'TV') + '</td>';
+                        rows += '<td style="width:70px;text-align:right;"><button class="md-select-btn" type="button">Select</button></td>';
+                        rows += '</tr>';
+                    }
+                    box.innerHTML = '<table><tbody>' + rows + '</tbody></table>';
+                    var trs = box.querySelectorAll('tr[data-idx]');
+                    for (var j = 0; j < trs.length; j++) {
+                        (function(tr) {
+                            tr.addEventListener('click', function() {
+                                var idx = parseInt(tr.getAttribute('data-idx'));
+                                selectResult(results[idx]);
+                            });
+                        })(trs[j]);
+                    }
                 }
 
                 function hideResults() {
@@ -390,7 +403,7 @@
                     Promise.all(promises)
                         .then((res) => {
                             const ok = res.filter((r) => r && (r.accepted || r.jobId)).length;
-                            showMsg('ok', `✓ Queued ${ok} job${ok > 1 ? 's' : ''}${library ? ' → ' + library : ''}`);
+                            showMsg('ok', '✓ Queued ' + ok + ' job' + (ok > 1 ? 's' : '') + (library ? ' → ' + library : ''));
                             // Reset selection
                             selected = null;
                             $('#selectedPanel').style.display = 'none';
