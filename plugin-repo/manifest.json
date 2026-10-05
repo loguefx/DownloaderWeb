@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.18",
+                "changelog": "Fix: blank season/episode dropdowns (hideResults order) + page scoping (Jellyfin SPA cache).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v18/MediaDownloader.12.1.0.18.zip",
+                "checksum": "19731d1c16a22096d72a63f1a0e0fe55",
+                "timestamp": "2026-10-05T16:36:14.467Z"
+            },
+            {
                 "version": "12.1.0.17",
                 "changelog": "Seasons show immediately (no loading hang). TmdbInfo is background-only for accurate counts.",
                 "targetAbi": "12.1.0.0",
@@ -144,6 +152,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.18",
+                "changelog": "Fix: blank season/episode dropdowns (hideResults order) + page scoping (Jellyfin SPA cache).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v18/MediaDownloader.10.11.0.18.zip",
+                "checksum": "752c1f04989d7fd31e29da73d5717354",
+                "timestamp": "2026-10-05T16:36:14.467Z"
+            },
+            {
                 "version": "10.11.0.17",
                 "changelog": "Seasons show immediately (no loading hang). TmdbInfo is background-only for accurate counts.",
                 "targetAbi": "10.11.0.0",
@@ -278,6 +294,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.18",
+                "changelog": "Fix: blank season/episode dropdowns (hideResults order) + page scoping (Jellyfin SPA cache).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v18/MediaDownloader.10.10.0.18.zip",
+                "checksum": "8b1d1bb1fdf5c73daa64257ec26767a5",
+                "timestamp": "2026-10-05T16:36:14.466Z"
             },
             {
                 "version": "10.10.0.17",
