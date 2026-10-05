@@ -308,30 +308,25 @@
                         return;
                     }
 
-                    // TV: load seasons (with timeout fallback)
+                    // TV: show seasons immediately (no API call needed)
+                    // Try TmdbInfo in background for accurate episode counts;
+                    // show a sensible default right away so the UI never hangs.
                     $('#selSeasonRow').style.display = 'block';
-                    $('#selSeason').innerHTML = '<option>Loading…</option>';
+                    // Default: 10 seasons × 24 eps (engine skips non-existent ones)
+                    selected.seasons = [];
+                    for (var i = 1; i <= 10; i++) selected.seasons.push({ season: i, episodes: 24 });
+                    renderSeasons();
+                    $('#queueBtn').disabled = false;
 
-                    // Race: TmdbInfo vs 6-second timeout
-                    var timeout = new Promise(function(_, reject) {
-                        setTimeout(function() { reject(new Error('timeout')); }, 6000);
-                    });
-                    Promise.race([
-                        apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv'),
-                        timeout
-                    ])
-                    .then((info) => {
-                        selected.seasons = (info && info.seasons) || [];
-                    })
-                    .catch(function() {
-                        // Fallback: assume 10 seasons × 24 eps (engine will skip non-existent)
-                        selected.seasons = [];
-                        for (var i = 1; i <= 10; i++) selected.seasons.push({ season: i, episodes: 24 });
-                    })
-                    .then(function() {
-                        renderSeasons();
-                        $('#queueBtn').disabled = false;
-                    });
+                    // Background: try to get accurate season/episode counts
+                    apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv')
+                        .then(function(info) {
+                            if (info && info.seasons && info.seasons.length) {
+                                selected.seasons = info.seasons;
+                                renderSeasons();
+                            }
+                        })
+                        .catch(function() { /* keep defaults */ });
                 }
 
                 function renderSeasons() {
