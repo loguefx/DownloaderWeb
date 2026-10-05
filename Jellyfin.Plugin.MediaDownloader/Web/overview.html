@@ -316,29 +316,42 @@
                             selected.seasons = (info && info.seasons) || [];
                             const sel = $('#selSeason');
                             sel.innerHTML = '';
+                            // "All Seasons" option first
+                            var allOpt = document.createElement('option');
+                            allOpt.value = 'all';
+                            allOpt.textContent = 'All Seasons';
+                            sel.appendChild(allOpt);
                             (selected.seasons || []).forEach((s) => {
                                 const opt = document.createElement('option');
                                 opt.value = s.season;
                                 opt.textContent = 'Season ' + s.season + ' (' + s.episodes + ' eps)';
                                 sel.appendChild(opt);
                             });
-                            if (!selected.seasons.length) sel.innerHTML = '<option value="1">Season 1</option>';
+                            if (!selected.seasons.length) {
+                                sel.innerHTML = '<option value="all">All Seasons</option><option value="1">Season 1</option>';
+                            }
                             updateEpisodes();
                             $('#queueBtn').disabled = false;
                         })
                         .catch(() => {
-                            $('#selSeason').innerHTML = '<option value="1">Season 1</option>';
+                            $('#selSeason').innerHTML = '<option value="all">All Seasons</option><option value="1">Season 1</option>';
                             updateEpisodes();
                             $('#queueBtn').disabled = false;
                         });
                 }
 
                 function updateEpisodes() {
-                    const season = parseInt($('#selSeason').value) || 1;
+                    const seasonVal = $('#selSeason').value;
                     const seasons = (selected && selected.seasons) || [];
+                    const sel = $('#selEpisode');
+                    if (seasonVal === 'all') {
+                        // All seasons: just show "All episodes"
+                        sel.innerHTML = '<option value="all">All episodes (all seasons)</option>';
+                        return;
+                    }
+                    const season = parseInt(seasonVal) || 1;
                     const s = seasons.find((x) => x.season === season);
                     const maxEp = s ? s.episodes : 24;
-                    const sel = $('#selEpisode');
                     sel.innerHTML = '<option value="all">All episodes (1–' + maxEp + ')</option>';
                     for (let i = 1; i <= Math.min(maxEp, 120); i++) {
                         const opt = document.createElement('option');
@@ -373,28 +386,47 @@
                             selections: [{ season: 1, episodes: [1] }]
                         });
                     } else {
-                        const season = parseInt($('#selSeason').value) || 1;
+                        const seasonVal = $('#selSeason').value;
                         const epVal = $('#selEpisode').value;
                         const seasons = (selected.seasons || []);
-                        const s = seasons.find((x) => x.season === season);
-                        const maxEp = s ? s.episodes : 24;
-                        if (epVal === 'all') {
-                            for (let e = 1; e <= maxEp; e++) {
-                                jobs.push({
-                                    sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + e,
-                                    title: selected.title + ' S' + season + 'E' + e,
-                                    scope: 'episodes',
-                                    selections: [{ season: season, episodes: [e] }]
-                                });
+
+                        if (seasonVal === 'all') {
+                            // All seasons: queue every episode in every season
+                            var seasonList = seasons.length ? seasons : [{ season: 1, episodes: 24 }];
+                            for (var si = 0; si < seasonList.length; si++) {
+                                var s = seasonList[si];
+                                var maxEp = s.episodes || 24;
+                                for (var e = 1; e <= maxEp; e++) {
+                                    jobs.push({
+                                        sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + s.season + '-' + e,
+                                        title: selected.title + ' S' + s.season + 'E' + e,
+                                        scope: 'episodes',
+                                        selections: [{ season: s.season, episodes: [e] }]
+                                    });
+                                }
                             }
                         } else {
-                            const ep = parseInt(epVal) || 1;
-                            jobs.push({
-                                sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + ep,
-                                title: selected.title + ' S' + season + 'E' + ep,
-                                scope: 'episodes',
-                                selections: [{ season: season, episodes: [ep] }]
-                            });
+                            var season = parseInt(seasonVal) || 1;
+                            var s2 = seasons.find(function(x) { return x.season === season; });
+                            var maxEp2 = s2 ? s2.episodes : 24;
+                            if (epVal === 'all') {
+                                for (var e2 = 1; e2 <= maxEp2; e2++) {
+                                    jobs.push({
+                                        sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + e2,
+                                        title: selected.title + ' S' + season + 'E' + e2,
+                                        scope: 'episodes',
+                                        selections: [{ season: season, episodes: [e2] }]
+                                    });
+                                }
+                            } else {
+                                var ep = parseInt(epVal) || 1;
+                                jobs.push({
+                                    sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + ep,
+                                    title: selected.title + ' S' + season + 'E' + ep,
+                                    scope: 'episodes',
+                                    selections: [{ season: season, episodes: [ep] }]
+                                });
+                            }
                         }
                     }
                     if (library) jobs.forEach((j) => { j.library = library; });
