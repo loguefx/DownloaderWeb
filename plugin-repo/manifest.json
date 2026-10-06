@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.22",
+                "changelog": "Claude redesign: cleaner pages, fix Enqueue 404 (raw body reader), add TmdbSeason endpoint, improve label handling.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v22/MediaDownloader.12.1.0.22.zip",
+                "checksum": "dc21acc0a76a71083df6ce8c40918a14",
+                "timestamp": "2026-10-06T02:02:10.318Z"
+            },
+            {
                 "version": "12.1.0.21",
                 "changelog": "Remove [ApiController] attribute - may be interfering with POST route registration in Jellyfin 12.x.",
                 "targetAbi": "12.1.0.0",
@@ -176,6 +184,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.22",
+                "changelog": "Claude redesign: cleaner pages, fix Enqueue 404 (raw body reader), add TmdbSeason endpoint, improve label handling.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v22/MediaDownloader.10.11.0.22.zip",
+                "checksum": "010bf3d8447bbfbb74f495a70a8b3c0d",
+                "timestamp": "2026-10-06T02:02:10.318Z"
+            },
+            {
                 "version": "10.11.0.21",
                 "changelog": "Remove [ApiController] attribute - may be interfering with POST route registration in Jellyfin 12.x.",
                 "targetAbi": "10.11.0.0",
@@ -342,6 +358,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.22",
+                "changelog": "Claude redesign: cleaner pages, fix Enqueue 404 (raw body reader), add TmdbSeason endpoint, improve label handling.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v22/MediaDownloader.10.10.0.22.zip",
+                "checksum": "bca1199eb4c23cb364eed207698d7d8b",
+                "timestamp": "2026-10-06T02:02:10.318Z"
             },
             {
                 "version": "10.10.0.21",
