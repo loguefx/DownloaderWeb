@@ -54,7 +54,7 @@ function onLog(msg) {
 // Every queue/engine log line (manager 'log' events, which onLog also emits)
 // lands in a small ring buffer, so the plugin can poll GET /api/log instead
 // of holding an SSE stream open through Jellyfin.
-const LOG_MAX = 200;
+const LOG_MAX = 1000;
 const recent = [];
 manager.on('log', (msg) => {
   recent.push({ ts: Date.now(), msg: String(msg == null ? '' : msg) });
