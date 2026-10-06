@@ -196,8 +196,11 @@ module.exports = {
     );
     const best = await vidsrcDl.pick1080(dlRef, onLog);
     if (!best) {
-      onLog('Vidsrc (headless): no 1080p stream; falling back to browser path.');
-      return null;
+      // No 1080p on any Vidsrc source. Return a distinct status so the queue
+      // can log clearly and cap retries (the browser fallback will likely hit
+      // Cloudflare on the other sites, so retrying 6× wastes hours).
+      onLog(`Vidsrc (headless): no 1080p on any source for ${ref.title || dlRef.tmdb || dlRef.imdb}.`);
+      return { status: 'no_quality' };
     }
     onLog(`Vidsrc (headless): locked ${best.realWidth}x${best.realHeight} from ${best.host}.`);
     return {

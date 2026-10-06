@@ -514,6 +514,7 @@ class DownloadManager extends EventEmitter {
         }
 
         let outcome;
+        let noQuality = false;
         {
           const _prof = sites.resolve(item.url || item.baseUrl || '');
           if (_prof && typeof _prof.directResolve === 'function') {
@@ -535,7 +536,18 @@ class DownloadManager extends EventEmitter {
             }
           }
         }
-        if (!outcome || outcome.status !== 'resolved') outcome = await item.discover();
+        // The headless path checked every Vidsrc source and found no 1080p.
+        // Still try the browser path (other sites might have it), but cap
+        // retries to 2 — the fallback sites are usually Cloudflare-gated,
+        // so 6 retries just burns hours on "Still waiting for Cloudflare".
+        if (outcome && outcome.status === 'no_quality') {
+          noQuality = true;
+          item._noQuality = true; // persist on the item so the retry cap applies on every attempt
+          this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
+          outcome = await item.discover();
+        } else if (!outcome || outcome.status !== 'resolved') {
+          outcome = await item.discover();
+        }
         const status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 
         if (status === 'unavailable') {
@@ -570,7 +582,11 @@ class DownloadManager extends EventEmitter {
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;
           item.error = reason;
-          const max = Math.max(1, config.download.maxRetries || 6);
+          // No-1080p episodes: the fallback sites are Cloudflare-gated, so extra
+          // retries just burn time on "Still waiting for Cloudflare". Cap at 2.
+          const max = item._noQuality
+            ? Math.max(1, Math.min(2, config.download.maxRetries || 6))
+            : Math.max(1, config.download.maxRetries || 6);
           if (item.attempts >= max) {
             // Endless retries on one dead episode (S2E03 at 190+ tries) held the
             // only Linux worker and blocked every later season behind it.
@@ -581,10 +597,17 @@ class DownloadManager extends EventEmitter {
             }
             item.status = 'failed';
             this._emit();
-            this._log(
-              `Gave up on "${item.label}" after ${item.attempts} tries (${reason}). ` +
-                'Stopped retrying so other downloads can start.'
-            );
+            if (item._noQuality) {
+              this._log(
+                `"${item.label}" — no 1080p source found (Vidsrc + fallback). ` +
+                  'This show does not have a 1080p encode available right now.'
+              );
+            } else {
+              this._log(
+                `Gave up on "${item.label}" after ${item.attempts} tries (${reason}). ` +
+                  'Stopped retrying so other downloads can start.'
+              );
+            }
             return { fatal: false };
           }
           item.status = 'queued';
