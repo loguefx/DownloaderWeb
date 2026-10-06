@@ -31,7 +31,6 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
     /// [Authorize(Policy = RequiresElevation)] = admins only (Part 9 adds the
     /// finer request/approval rules on top of this).
     /// </summary>
-    [ApiController]
     [Authorize(Policy = Policies.RequiresElevation)]
     [Route("MediaDownloader")]
     [Produces(MediaTypeNames.Application.Json)]
