@@ -88,6 +88,18 @@ function toTemplate(sampleUrl) {
     }
   }
 
+  // Vidsrc embeds carry season AND episode after the id:
+  //   /embed/tv/{tmdb}-{season}-{episode}   /embed/imdb/{imdb}-{season}-{episode}
+  // Tokenize both so one job can cover every episode of a season (or several
+  // seasons) from a single sample URL. /embed/movie/{id} has no dashes and is
+  // left alone.
+  const vidsrc = t.match(/^(.*\/embed\/(?:tv|imdb)\/[^/?#-]+)-(\d+)-(\d+)(\/?(?:[?#].*)?)$/i);
+  if (vidsrc) {
+    season = parseInt(vidsrc[2], 10);
+    t = `${vidsrc[1]}-{season}-{episode}${vidsrc[4]}`;
+    return { template: t, season };
+  }
+
   // Episode token: prefer an explicit ep/episode marker at the end.
   const epMarker = /(ep(?:isode)?|e)[-_]?(\d+)(\/?)((?:[?#].*)?)$/i;
   if (epMarker.test(t)) {

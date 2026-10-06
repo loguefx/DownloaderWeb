@@ -5,498 +5,776 @@
     <title>Media Downloader</title>
 </head>
 <body>
+    <!--
+        Media Downloader - Settings. Same look as the Overview page; the
+        <style> lives inside the page element because Jellyfin only mounts
+        this data-role="page" div (a <style> in <head> is dropped).
+    -->
     <div id="configPage" data-role="page" class="page type-interior pluginPage"
-         data-require="emby-input,emby-button,emby-select,emby-checkbox">
+         data-require="emby-button">
         <div data-role="content">
             <div class="content-primary">
-                <p>
-                    This plugin forwards download requests to the
-                    <strong>Media Downloader engine</strong> (the headless app running on
-                    the Windows PC behind the VPN). The engine URL and key below live only
-                    on this Jellyfin server - your browser never talks to the engine
-                    directly.
-                </p>
+<style>
+/* shared with overview.html - keep the two copies in step */
+.mdl {
+    --md-card: rgba(255,255,255,.035);
+    --md-card-2: rgba(255,255,255,.055);
+    --md-hover: rgba(255,255,255,.07);
+    --md-line: rgba(255,255,255,.09);
+    --md-text: inherit;
+    --md-muted: rgba(255,255,255,.62);
+    --md-faint: rgba(255,255,255,.42);
+    --md-accent: #00a4dc;
+    --md-accent-ink: #fff;
+    --md-accent-soft: rgba(0,164,220,.14);
+    --md-green: #4ade80; --md-green-bg: rgba(74,222,128,.12); --md-green-line: rgba(74,222,128,.28);
+    --md-yellow: #fbbf24; --md-yellow-bg: rgba(251,191,36,.13); --md-yellow-line: rgba(251,191,36,.3);
+    --md-purple: #c4a1ff; --md-purple-bg: rgba(167,123,255,.15);
+    --md-red: #f87171; --md-red-bg: rgba(248,113,113,.13); --md-red-line: rgba(248,113,113,.3);
+    --md-blue: #5cc8f0; --md-blue-bg: rgba(0,164,220,.15);
+    --md-grey-bg: rgba(255,255,255,.08);
+    --md-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    max-width: 1280px; margin: 0 auto; padding: .5em 0 6em; line-height: 1.45; font-size: 15px;
+}
+.mdl.mdl--light {
+    --md-card: rgba(0,0,0,.03); --md-card-2: rgba(0,0,0,.05); --md-hover: rgba(0,0,0,.06);
+    --md-line: rgba(0,0,0,.12); --md-muted: rgba(0,0,0,.62); --md-faint: rgba(0,0,0,.45);
+    --md-grey-bg: rgba(0,0,0,.07); --md-green: #15803d; --md-yellow: #a16207; --md-purple: #7c3aed;
+    --md-red: #dc2626; --md-blue: #0369a1;
+}
+.mdl *, .mdl *::before, .mdl *::after { box-sizing: border-box; }
+.mdl [hidden] { display: none !important; }
+.mdl h1 { font-size: 1.85em; font-weight: 700; margin: 0 0 .2em; letter-spacing: -.01em; }
+.mdl h2 { font-size: 1.08em; font-weight: 650; margin: 0; }
+.mdl p { margin: 0; }
+.mdl a { color: var(--md-blue); text-decoration: none; cursor: pointer; }
+.mdl a:hover { text-decoration: underline; }
+.mdl .mono { font-family: var(--md-mono); font-size: .86em; }
+.mdl .muted { color: var(--md-muted); }
+.mdl .faint { color: var(--md-faint); }
+.mdl .small { font-size: .85em; }
 
-                <form id="configForm">
-                    <!-- ================= Connection ================= -->
-                    <h3 class="sectionTitle">Connection</h3>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="engineUrl">Engine URL</label>
-                        <input id="engineUrl" is="emby-input" type="text"
-                               placeholder="http://192.168.1.20:7878"
-                               autocomplete="off" spellcheck="false" />
-                        <div class="fieldDescription">
-                            Base URL of the engine HTTP API (the Windows PC). Port 7878 by default.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="engineApiKey">Engine API key</label>
-                        <input id="engineApiKey" is="emby-input" type="password"
-                               placeholder="40-character key from engine.json"
-                               autocomplete="off" spellcheck="false" />
-                        <div class="fieldDescription">
-                            The <code>apiKey</code> from the engine's
-                            <code>engine.json</code>. Sent to the engine as a Bearer token; never shown to the browser.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <button id="testConnBtn" is="emby-button" type="button"
-                                class="raised button-submit block emby-button">
-                            <span>Test connection</span>
-                        </button>
-                        <div id="testConnResult" class="fieldDescription"></div>
-                    </div>
+/* top bar */
+.mdl-top { display: flex; align-items: center; justify-content: space-between; gap: 1em; flex-wrap: wrap;
+    padding-bottom: .9em; border-bottom: 1px solid var(--md-line); margin-bottom: 1em; }
+.mdl-crumbs { color: var(--md-muted); font-size: .9em; }
+.mdl-crumbs b { color: inherit; font-weight: 600; }
+.mdl-crumbs .cur { color: var(--md-text); font-weight: 500; }
+.mdl-pills { display: flex; gap: .5em; flex-wrap: wrap; }
+.mdl-status { display: inline-flex; align-items: center; gap: .45em; padding: .3em .8em; border-radius: 999px;
+    border: 1px solid var(--md-line); background: var(--md-card); font-size: .84em; white-space: nowrap; }
+.mdl-status i { width: .5em; height: .5em; border-radius: 50%; background: var(--md-faint); display: inline-block; }
+.mdl-status.ok i { background: var(--md-green); box-shadow: 0 0 0 3px var(--md-green-bg); }
+.mdl-status.bad i { background: var(--md-red); box-shadow: 0 0 0 3px var(--md-red-bg); }
+.mdl-status.warn i { background: var(--md-yellow); }
 
-                    <!-- ================= Libraries & defaults ================= -->
-                    <h3 class="sectionTitle">Libraries &amp; defaults</h3>
-                    <p class="fieldDescription">
-                        Pick which Jellyfin library each kind is filed into. A job is
-                        delivered to that library's <em>current</em> drive folders, so
-                        adding a drive in Jellyfin is all that is needed.
-                    </p>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="tvLibrary">TV shows library</label>
-                        <select id="tvLibrary" is="emby-select"></select>
-                        <div class="fieldDescription">Default target for TV series.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="moviesLibrary">Movies library</label>
-                        <select id="moviesLibrary" is="emby-select"></select>
-                        <div class="fieldDescription">Default target for movies.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="animeLibrary">Anime library</label>
-                        <select id="animeLibrary" is="emby-select"></select>
-                        <div class="fieldDescription">
-                            Default target for anime (leave "Same as TV" to reuse the TV library).
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="defaultMinHeight">Minimum height (px)</label>
-                        <input id="defaultMinHeight" is="emby-input" type="number" min="480" step="1" value="1080" />
-                        <div class="fieldDescription">Quality floor requested for new jobs (e.g. 1080).</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="defaultMode">Default mode</label>
-                        <select id="defaultMode" is="emby-select">
-                            <option value="dub">Dubbed</option>
-                            <option value="sub">Subtitled</option>
-                        </select>
-                        <div class="fieldDescription">Preferred audio for new jobs.</div>
-                    </div>
+/* tabs (plugin sub-navigation) */
+.mdl-nav { display: flex; gap: .3em; flex-wrap: wrap; margin-bottom: 1.6em; }
+.mdl-nav button, .mdl-nav a { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: .45em;
+    padding: .5em .95em; border-radius: .55em; color: var(--md-muted); font-size: .93em; font-weight: 500; }
+.mdl-nav button:hover, .mdl-nav a:hover { background: var(--md-hover); color: inherit; text-decoration: none; }
+.mdl-nav .on { background: var(--md-accent-soft); color: var(--md-blue); }
+.mdl-nav .count { background: var(--md-accent); color: #fff; border-radius: 999px; font-size: .75em; padding: .05em .55em; font-weight: 700; }
+.mdl-nav .count:empty { display: none; }
+.mdl-nav svg { width: 1.1em; height: 1.1em; }
 
-                    <!-- ================= Engine settings (proxied) ================= -->
-                    <h3 class="sectionTitle">Engine (on the Windows PC)</h3>
-                    <p class="fieldDescription">
-                        These live in the engine's own <code>engine.json</code> (the single
-                        source of truth). They are read and written through the engine while
-                        it is online.
-                    </p>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="reserveBytes">Free-space reserve</label>
-                        <input id="reserveBytes" is="emby-input" type="number" min="0" step="1073741824" value="53687091200" />
-                        <span id="reserveGb" class="fieldDescription"></span>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="fillMode">Fill mode</label>
-                        <select id="fillMode" is="emby-select">
-                            <option value="order">Order (fill folders as listed)</option>
-                            <option value="spread">Spread (use the most free space)</option>
-                        </select>
-                        <div class="fieldDescription">How the engine chooses which drive to place a file on.</div>
-                    </div>
-                    <div class="checkboxContainer checkboxContainer-withDescription">
-                        <label class="emby-checkbox-label">
-                            <input id="readOnly" type="checkbox" is="emby-checkbox" />
-                            <span>Read-only mode (hold all downloads)</span>
-                        </label>
-                        <div class="fieldDescription">Temporarily pause all engine placement.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="jellyfinBaseUrl">Jellyfin refresh URL (engine &rarr; server)</label>
-                        <input id="jellyfinBaseUrl" is="emby-input" type="text" placeholder="http://jellyfin.lan:8096" spellcheck="false" />
-                        <div class="fieldDescription">
-                            Lets the engine trigger a per-folder refresh after placing a file. Optional.
-                        </div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="jellyfinApiKey">Jellyfin API key (engine &rarr; server)</label>
-                        <input id="jellyfinApiKey" is="emby-input" type="password" placeholder="leave blank to keep current" autocomplete="off" spellcheck="false" />
-                        <div class="fieldDescription">A Jellyfin API key with library rights. Optional.</div>
-                    </div>
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused">Path mappings (Jellyfin path &rarr; engine drive)</label>
-                        <div id="pathMappings"></div>
-                        <div class="fieldDescription">
-                            Translate a Jellyfin/NAS path to the engine PC's drive. Longest prefix wins.
-                        </div>
-                        <button id="addMappingBtn" is="emby-button" type="button" class="raised button-submit emby-button" style="margin-top:.5em;">
-                            <span>+ Add mapping</span>
-                        </button>
-                    </div>
-                    <div class="inputContainer">
-                        <button id="saveEngineBtn" is="emby-button" type="button" class="raised button-submit block emby-button">
-                            <span>Save engine settings</span>
-                        </button>
-                        <div id="engineSaveResult" class="fieldDescription"></div>
-                    </div>
+/* page head */
+.mdl-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1em; flex-wrap: wrap; margin-bottom: 1.4em; }
+.mdl-head p { color: var(--md-muted); max-width: 46em; }
+.mdl-actions { display: flex; gap: .5em; flex-wrap: wrap; align-items: center; }
 
-                    <!-- ================= Verify drives ================= -->
-                    <h3 class="sectionTitle">Verify drives</h3>
-                    <p class="fieldDescription">
-                        Asks the engine to check each library's drive folders: are they mounted,
-                        writable, and does a real write&nbsp;+&nbsp;read-back succeed? Run this after you
-                        mount the drives on the Windows PC (same letters as the Jellyfin server) to
-                        confirm finished files will land in the right place.
-                    </p>
-                    <div class="inputContainer">
-                        <button id="verifyBtn" is="emby-button" type="button" class="raised button-submit emby-button">
-                            <span>Verify all drives</span>
-                        </button>
-                    </div>
-                    <div id="verifyResult" class="fieldDescription"></div>
-                    <div id="verifyTable"></div>
+/* buttons */
+.mdl-btn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: .45em;
+    padding: .55em 1.05em; border-radius: .5em; font-size: .9em; font-weight: 600; line-height: 1.2;
+    background: var(--md-card-2); border: 1px solid var(--md-line); color: inherit; white-space: nowrap; }
+.mdl-btn:hover { background: var(--md-hover); }
+.mdl-btn:focus-visible { outline: 2px solid var(--md-accent); outline-offset: 2px; }
+.mdl-btn.primary { background: var(--md-accent); border-color: var(--md-accent); color: var(--md-accent-ink); }
+.mdl-btn.primary:hover { filter: brightness(1.1); }
+.mdl-btn.danger { color: var(--md-red); }
+.mdl-btn.sm { padding: .35em .7em; font-size: .82em; }
+.mdl-btn.icon { padding: .4em .6em; }
+.mdl-btn[disabled], .mdl-btn.is-disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
+.mdl-btn svg { width: 1.05em; height: 1.05em; }
 
-                    <!-- ================= Save plugin ================= -->
+/* cards */
+.mdl-card { background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; padding: 1.15em 1.25em; }
+.mdl-card + .mdl-card { margin-top: 1em; }
+.mdl-grid-main > .mdl-card + .mdl-card { margin-top: 0; }
+.mdl-card-h { display: flex; justify-content: space-between; align-items: center; gap: .8em; margin-bottom: .9em; }
+.mdl-grid-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1.1em; align-items: start; }
+@media (max-width: 1000px) { .mdl-grid-main { grid-template-columns: minmax(0,1fr); } }
+
+/* stats */
+.mdl-stats { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: .8em; margin-bottom: 1.1em; }
+@media (max-width: 900px) { .mdl-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+.mdl-stat { background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; padding: .95em 1.05em; }
+.mdl-stat .k { font-size: .82em; color: var(--md-muted); }
+.mdl-stat .v { font-size: 1.9em; font-weight: 700; margin: .1em 0 .05em; }
+.mdl-stat .s { font-size: .8em; }
+.mdl-stat .s.blue { color: var(--md-blue); } .mdl-stat .s.yellow { color: var(--md-yellow); }
+.mdl-stat .s.green { color: var(--md-green); } .mdl-stat .s.red { color: var(--md-red); }
+
+/* status pills */
+.mdl-pill { display: inline-flex; align-items: center; gap: .3em; padding: .2em .6em; border-radius: .4em; font-size: .76em; font-weight: 650; white-space: nowrap; background: var(--md-grey-bg); color: var(--md-muted); }
+.mdl-pill.blue { background: var(--md-blue-bg); color: var(--md-blue); }
+.mdl-pill.green { background: var(--md-green-bg); color: var(--md-green); }
+.mdl-pill.yellow { background: var(--md-yellow-bg); color: var(--md-yellow); }
+.mdl-pill.purple { background: var(--md-purple-bg); color: var(--md-purple); }
+.mdl-pill.red { background: var(--md-red-bg); color: var(--md-red); }
+.mdl-badge { display: inline-block; font-size: .68em; font-weight: 800; letter-spacing: .08em; padding: .25em .55em; border-radius: .35em; text-transform: uppercase; background: rgba(0,0,0,.55); color: #fff; }
+.mdl-badge.movie { color: #fcd34d; } .mdl-badge.show { color: #7dd3fc; } .mdl-badge.anime { color: #d8b4fe; }
+
+/* progress */
+.mdl-bar { height: 4px; border-radius: 4px; background: var(--md-grey-bg); overflow: hidden; margin-top: .55em; }
+.mdl-bar > i { display: block; height: 100%; border-radius: 4px; background: var(--md-accent); transition: width .4s ease; }
+.mdl-bar.yellow > i { background: var(--md-yellow); } .mdl-bar.purple > i { background: var(--md-purple); }
+.mdl-bar.green > i { background: var(--md-green); } .mdl-bar.red > i { background: var(--md-red); }
+.mdl-bar.indet > i { width: 30% !important; animation: mdl-indet 1.4s ease-in-out infinite; }
+@keyframes mdl-indet { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+.mdl-bar.thick { height: 7px; }
+
+/* rows */
+.mdl-row { display: flex; align-items: center; gap: .8em; padding: .8em .9em; border: 1px solid var(--md-line); border-radius: .6em; background: var(--md-card); }
+.mdl-row + .mdl-row { margin-top: .5em; }
+.mdl-row .grow { flex: 1; min-width: 0; }
+.mdl-row .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-row .sub { font-size: .82em; color: var(--md-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-list-h { display: flex; justify-content: space-between; gap: 1em; font-size: .76em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--md-muted); margin: 1.2em .2em .55em; }
+.mdl-list-h:first-child { margin-top: 0; }
+.mdl-list-h span:last-child { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.mdl-empty { padding: 1.6em 1em; text-align: center; color: var(--md-muted); border: 1px dashed var(--md-line); border-radius: .6em; }
+.mdl-kv { display: flex; justify-content: space-between; gap: .8em; padding: .45em 0; font-size: .9em; }
+.mdl-kv + .mdl-kv { border-top: 1px solid var(--md-line); }
+
+/* callouts */
+.mdl-callout { display: flex; gap: .7em; align-items: flex-start; padding: .8em 1em; border-radius: .6em; border: 1px solid var(--md-line); background: var(--md-card-2); font-size: .92em; }
+.mdl-callout.green { background: var(--md-green-bg); border-color: var(--md-green-line); }
+.mdl-callout.yellow { background: var(--md-yellow-bg); border-color: var(--md-yellow-line); }
+.mdl-callout.red { background: var(--md-red-bg); border-color: var(--md-red-line); }
+.mdl-callout.blue { background: var(--md-blue-bg); border-color: rgba(0,164,220,.35); }
+.mdl-callout b { font-weight: 650; }
+.mdl-callout svg { flex: none; width: 1.15em; height: 1.15em; margin-top: .1em; }
+.mdl-callout.green svg { color: var(--md-green); } .mdl-callout.yellow svg { color: var(--md-yellow); }
+.mdl-callout.red svg { color: var(--md-red); } .mdl-callout.blue svg { color: var(--md-blue); }
+
+/* inputs */
+.mdl label.lbl { display: block; font-size: .84em; font-weight: 600; margin: 0 0 .35em; }
+.mdl input.inp, .mdl select.inp { width: 100%; padding: .6em .75em; border-radius: .5em; border: 1px solid var(--md-line);
+    background: rgba(0,0,0,.25); color: inherit; font: inherit; font-size: .95em; outline: none; }
+.mdl.mdl--light input.inp, .mdl.mdl--light select.inp { background: #fff; }
+.mdl select.inp option { background: #1d1f23; color: #eee; }
+.mdl input.inp:focus, .mdl select.inp:focus { border-color: var(--md-accent); box-shadow: 0 0 0 3px var(--md-accent-soft); }
+.mdl .field + .field { margin-top: 1em; }
+.mdl .hint { font-size: .8em; color: var(--md-muted); margin-top: .35em; }
+.mdl .check { display: flex; gap: .65em; align-items: flex-start; cursor: pointer; }
+.mdl .check input { margin: .2em 0 0; width: 1.05em; height: 1.05em; accent-color: var(--md-accent); flex: none; }
+.mdl .check b { display: block; font-size: .92em; }
+.mdl .check span { display: block; font-size: .8em; color: var(--md-muted); }
+.mdl-seg { display: inline-flex; background: rgba(0,0,0,.25); border: 1px solid var(--md-line); border-radius: .55em; padding: 3px; gap: 3px; }
+.mdl-seg button { all: unset; cursor: pointer; padding: .42em 1em; border-radius: .4em; font-size: .88em; font-weight: 600; color: var(--md-muted); text-align: center; }
+.mdl-seg button.on { background: var(--md-accent); color: #fff; }
+.mdl-seg.full { display: flex; } .mdl-seg.full button { flex: 1; }
+
+/* search */
+.mdl-search { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: .6em; align-items: end; margin-top: 1em; }
+.mdl-search .inp-wrap { position: relative; }
+.mdl-search .inp-wrap svg { position: absolute; left: .75em; top: 50%; transform: translateY(-50%); width: 1em; height: 1em; color: var(--md-faint); }
+.mdl-search .inp-wrap input { padding-left: 2.3em; }
+.mdl-results-h { display: flex; justify-content: space-between; align-items: baseline; gap: 1em; margin: 1.5em 0 .8em; }
+.mdl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 1em; }
+.mdl-tcard { display: flex; flex-direction: column; background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; overflow: hidden; cursor: pointer; transition: transform .12s ease, border-color .12s ease; }
+.mdl-tcard:hover { transform: translateY(-2px); border-color: rgba(0,164,220,.55); }
+.mdl-poster { position: relative; aspect-ratio: 2 / 3; background: linear-gradient(160deg, #2a3442, #1d2129); overflow: hidden; }
+.mdl-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mdl-poster .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 1em; text-align: center; color: rgba(255,255,255,.55); font-weight: 600; }
+.mdl-poster .mdl-badge { position: absolute; top: .6em; left: .6em; }
+.mdl-tcard .body { padding: .75em .85em .9em; display: flex; flex-direction: column; gap: .3em; flex: 1; }
+.mdl-tcard .name { font-weight: 650; line-height: 1.25; }
+.mdl-tcard .meta { font-size: .8em; color: var(--md-muted); }
+.mdl-tcard .ov { font-size: .78em; color: var(--md-faint); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.mdl-tcard .mdl-btn { margin-top: auto; width: 100%; }
+
+/* title hero */
+.mdl-back { display: inline-flex; align-items: center; gap: .4em; color: var(--md-muted) !important; margin-bottom: 1em; font-size: .92em; }
+.mdl-hero { display: grid; grid-template-columns: 170px minmax(0,1fr); gap: 1.4em; }
+@media (max-width: 640px) { .mdl-hero { grid-template-columns: 110px minmax(0,1fr); } }
+.mdl-hero .mdl-poster { border-radius: .6em; }
+.mdl-hero h1 { margin-top: .35em; }
+.mdl-hero .meta { color: var(--md-muted); margin-bottom: .6em; }
+.mdl-hero .ov { margin-bottom: 1em; max-width: 60em; }
+
+/* choose episodes */
+.mdl-modes { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .6em; margin-bottom: 1em; }
+@media (max-width: 640px) { .mdl-modes { grid-template-columns: minmax(0,1fr); } }
+.mdl-mode { all: unset; cursor: pointer; display: flex; gap: .65em; padding: .8em .9em; border: 1px solid var(--md-line); border-radius: .6em; background: var(--md-card); }
+.mdl-mode:hover { background: var(--md-hover); }
+.mdl-mode i { flex: none; width: 1em; height: 1em; border-radius: 50%; border: 2px solid var(--md-faint); margin-top: .15em; }
+.mdl-mode.on { border-color: var(--md-accent); background: var(--md-accent-soft); }
+.mdl-mode.on i { border-color: var(--md-accent); background: radial-gradient(circle, var(--md-accent) 0 45%, transparent 50%); }
+.mdl-mode b { display: block; font-size: .93em; }
+.mdl-mode span { display: block; font-size: .8em; color: var(--md-muted); }
+.mdl-seasons { display: flex; gap: .5em; flex-wrap: wrap; margin-bottom: .9em; }
+.mdl-season { all: unset; cursor: pointer; padding: .55em .85em; border: 1px solid var(--md-line); border-radius: .55em; background: var(--md-card); min-width: 8.5em; }
+.mdl-season:hover { background: var(--md-hover); }
+.mdl-season b { display: block; font-size: .9em; }
+.mdl-season span { display: block; font-size: .74em; color: var(--md-muted); }
+.mdl-season b em { font-style: normal; font-weight: 400; color: var(--md-faint); font-size: .85em; }
+.mdl-season.on { border-color: var(--md-accent); background: var(--md-accent-soft); }
+.mdl-season.picked { border-color: var(--md-green-line); background: var(--md-green-bg); }
+.mdl-ep { display: grid; grid-template-columns: 1.3em 3.2em minmax(0,1fr) auto auto; align-items: center; gap: .75em; padding: .65em .9em; border: 1px solid var(--md-line); border-radius: .55em; cursor: pointer; background: var(--md-card); }
+.mdl-ep + .mdl-ep { margin-top: .4em; }
+.mdl-ep:hover { background: var(--md-hover); }
+.mdl-ep input { width: 1.05em; height: 1.05em; margin: 0; accent-color: var(--md-accent); }
+.mdl-ep .no { font-family: var(--md-mono); font-size: .82em; color: var(--md-muted); }
+.mdl-ep .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-ep .rt { font-size: .8em; color: var(--md-muted); }
+.mdl-ep.sel { border-color: rgba(0,164,220,.55); background: var(--md-accent-soft); }
+.mdl-ep.off { cursor: not-allowed; opacity: .55; }
+.mdl-ep.off:hover { background: var(--md-card); }
+.mdl-path { font-family: var(--md-mono); font-size: .8em; padding: .65em .8em; border-radius: .5em; background: rgba(0,0,0,.28); border: 1px solid var(--md-line); word-break: break-all; }
+.mdl.mdl--light .mdl-path { background: rgba(0,0,0,.04); }
+
+/* sticky footer */
+.mdl-foot { position: sticky; bottom: 0; z-index: 5; margin-top: 1.2em; display: flex; align-items: center; justify-content: space-between; gap: 1em; flex-wrap: wrap;
+    padding: .9em 1.2em; border: 1px solid var(--md-line); border-radius: .8em; background: rgba(22,24,28,.94); backdrop-filter: blur(8px); box-shadow: 0 -8px 24px rgba(0,0,0,.25); }
+.mdl.mdl--light .mdl-foot { background: rgba(255,255,255,.95); }
+.mdl-foot b { display: block; }
+.mdl-msg { font-size: .88em; }
+.mdl-msg.ok { color: var(--md-green); } .mdl-msg.err { color: var(--md-red); } .mdl-msg.wait { color: var(--md-yellow); }
+
+/* queue */
+.mdl-tabs { display: flex; gap: .2em; border-bottom: 1px solid var(--md-line); margin: -.2em 0 1em; overflow-x: auto; }
+.mdl-tabs button { all: unset; cursor: pointer; padding: .6em .85em; font-size: .9em; font-weight: 600; color: var(--md-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.mdl-tabs button.on { color: inherit; border-bottom-color: var(--md-accent); }
+.mdl-tabs button em { font-style: normal; font-size: .82em; background: var(--md-grey-bg); border-radius: 999px; padding: .05em .5em; margin-left: .35em; }
+.mdl-log { font-family: var(--md-mono); font-size: .76em; line-height: 1.6; background: rgba(0,0,0,.35); border: 1px solid var(--md-line); border-radius: .55em; padding: .8em .9em; height: 460px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.mdl.mdl--light .mdl-log { background: rgba(0,0,0,.04); }
+.mdl-log .ts { color: var(--md-faint); }
+.mdl-log .g { color: var(--md-green); } .mdl-log .y { color: var(--md-yellow); } .mdl-log .r { color: var(--md-red); } .mdl-log .b { color: var(--md-blue); }
+.mdl-disk { display: flex; align-items: center; gap: 1em; }
+.mdl-disk .grow { flex: 1; }
+.mdl-disk .mdl-bar { width: 180px; margin: 0; flex: none; }
+@media (max-width: 640px) { .mdl-disk { flex-wrap: wrap; } .mdl-disk .mdl-bar { width: 100%; } }
+.mdl-spin { display: inline-block; width: .95em; height: .95em; border: 2px solid var(--md-line); border-top-color: var(--md-accent); border-radius: 50%; animation: mdl-spin .8s linear infinite; vertical-align: -.15em; }
+@keyframes mdl-spin { to { transform: rotate(360deg); } }
+.mdl-form2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1em; }
+.mdl-form3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1em; }
+@media (max-width: 760px) { .mdl-form2, .mdl-form3 { grid-template-columns: minmax(0,1fr); } }
+.mdl-card > p.muted { font-size: .88em; margin: -.4em 0 1em; }
+.mdl-settings { max-width: 860px; }
+.mdl-drive { display: grid; grid-template-columns: minmax(0,1fr) 200px auto; gap: 1em; align-items: center; padding: .7em .9em; }
+.mdl-drive + .mdl-drive { border-top: 1px solid var(--md-line); }
+@media (max-width: 760px) { .mdl-drive { grid-template-columns: minmax(0,1fr); } }
+.mdl-lib { border: 1px solid var(--md-line); border-radius: .6em; overflow: hidden; }
+.mdl-lib + .mdl-lib { margin-top: .7em; }
+.mdl-lib-h { padding: .55em .9em; background: var(--md-card-2); font-size: .88em; display: flex; justify-content: space-between; gap: .8em; }
+.mdl-map { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr) auto; gap: .5em; align-items: center; }
+.mdl-map + .mdl-map { margin-top: .5em; }
+.mdl-naming { width: 100%; border-collapse: collapse; font-size: .86em; }
+.mdl-naming td { padding: .55em .8em; border-top: 1px solid var(--md-line); vertical-align: top; }
+.mdl-naming tr:first-child td { border-top: 0; }
+.mdl-naming td:first-child { font-weight: 600; white-space: nowrap; width: 1%; }
+.mdl-savebar { position: sticky; bottom: 0; z-index: 5; display: flex; justify-content: space-between; align-items: center; gap: 1em; flex-wrap: wrap; margin-top: 1.2em;
+    padding: .85em 1.1em; border: 1px solid var(--md-line); border-radius: .8em; background: rgba(22,24,28,.94); backdrop-filter: blur(8px); }
+.mdl.mdl--light .mdl-savebar { background: rgba(255,255,255,.95); }
+.mdl-keywrap { position: relative; }
+.mdl-keywrap input { padding-right: 4.2em; }
+.mdl-keywrap button { position: absolute; right: .35em; top: 50%; transform: translateY(-50%); }
+</style>
+
+<div class="mdl">
+    <div class="mdl-top">
+        <div class="mdl-crumbs">Plugins / <b>Media Downloader</b> / <span class="cur">Settings</span></div>
+        <div class="mdl-pills">
+            <span class="mdl-status" data-status-engine><i></i><span>Checking engine…</span></span>
+            <span class="mdl-status" data-status-vpn hidden><i></i><span>VPN</span></span>
+        </div>
+    </div>
+
+    <nav class="mdl-nav">
+        <a data-overview="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Overview</a>
+        <a data-overview="add">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            Add title</a>
+        <a data-overview="queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+            Queue</a>
+        <a class="on">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+            Settings</a>
+    </nav>
+
+    <form class="mdl-settings" data-form autocomplete="off">
+        <div class="mdl-head" style="margin-bottom:1.1em;">
+            <div>
+                <h1>Settings</h1>
+                <p>Where the engine is, where files go, and the defaults for new downloads.</p>
+            </div>
+        </div>
+
+        <!-- ===== Download engine ===== -->
+        <div class="mdl-card">
+            <h2 style="margin-bottom:.5em;">Download engine</h2>
+            <p class="muted">The DownloaderWeb engine does the searching, source detection, downloading and verifying.
+               The URL and key stay on this Jellyfin server; your browser never talks to the engine directly.</p>
+            <div class="mdl-form2">
+                <div>
+                    <label class="lbl" for="mdlEngineUrl">Engine URL</label>
+                    <input id="mdlEngineUrl" class="inp mono" type="text" data-f="engineUrl" placeholder="http://192.168.1.20:7878" spellcheck="false" />
+                </div>
+                <div>
+                    <label class="lbl" for="mdlEngineKey">API key</label>
+                    <div class="mdl-keywrap">
+                        <input id="mdlEngineKey" class="inp mono" type="password" data-f="engineKey" placeholder="apiKey from engine.json" spellcheck="false" />
+                        <button type="button" class="mdl-btn sm" data-toggle-key>Show</button>
+                    </div>
+                </div>
+            </div>
+            <div class="mdl-actions" style="margin-top:1em;">
+                <button type="button" class="mdl-btn" data-test>Test connection</button>
+                <span class="mdl-msg small" data-test-result></span>
+            </div>
+        </div>
+
+        <!-- ===== Libraries & defaults ===== -->
+        <div class="mdl-card">
+            <h2 style="margin-bottom:.5em;">Libraries and defaults</h2>
+            <p class="muted">Which Jellyfin library each kind is filed into. A job goes to that library's <em>current</em> folders,
+               so adding a drive in Jellyfin is all that is needed. You can still pick another library per title.</p>
+            <div class="mdl-form3">
+                <div>
+                    <label class="lbl" for="mdlTvLib">TV shows</label>
+                    <select id="mdlTvLib" class="inp" data-f="tvLibrary"></select>
+                </div>
+                <div>
+                    <label class="lbl" for="mdlMovieLib">Movies</label>
+                    <select id="mdlMovieLib" class="inp" data-f="moviesLibrary"></select>
+                </div>
+                <div>
+                    <label class="lbl" for="mdlAnimeLib">Anime</label>
+                    <select id="mdlAnimeLib" class="inp" data-f="animeLibrary"></select>
+                </div>
+                <div>
+                    <label class="lbl" for="mdlMinHeight">Quality floor</label>
+                    <select id="mdlMinHeight" class="inp" data-f="minHeight">
+                        <option value="2160">2160p</option>
+                        <option value="1080">1080p (recommended)</option>
+                        <option value="720">720p</option>
+                        <option value="480">480p</option>
+                        <option value="0">Best available</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="lbl" for="mdlMode">Anime audio</label>
+                    <select id="mdlMode" class="inp" data-f="mode">
+                        <option value="dub">DUB</option>
+                        <option value="sub">SUB</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== Drives ===== -->
+        <div class="mdl-card">
+            <div class="mdl-card-h" style="margin-bottom:.5em;"><h2>Libraries and drives</h2>
+                <button type="button" class="mdl-btn sm" data-verify>Verify drives</button></div>
+            <p class="muted">The engine checks each library folder: mounted, writable, and a real write + read-back.
+               Each folder gets an empty <span class="mono">.mediadownloader</span> marker so a dropped mount is never written to.</p>
+            <div data-verify-result class="small muted"></div>
+            <div data-drives></div>
+        </div>
+
+        <!-- ===== Engine storage ===== -->
+        <div class="mdl-card">
+            <h2 style="margin-bottom:.5em;">Engine storage</h2>
+            <p class="muted" data-engine-note>Stored in the engine's own <span class="mono">engine.json</span> and edited here while the engine is online.</p>
+            <fieldset data-engine-fields style="border:0;padding:0;margin:0;min-width:0;">
+                <div class="mdl-form2">
                     <div>
-                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
-                            <span>Save</span>
-                        </button>
+                        <label class="lbl" for="mdlStaging">Staging folder (engine PC)</label>
+                        <input id="mdlStaging" class="inp mono" type="text" data-f="stagingPath" spellcheck="false" />
                     </div>
-                </form>
+                    <div>
+                        <label class="lbl" for="mdlReserve">Keep free on each drive (GB)</label>
+                        <input id="mdlReserve" class="inp" type="number" min="0" step="1" data-f="reserveGb" />
+                    </div>
+                    <div>
+                        <label class="lbl" for="mdlFill">New series go to</label>
+                        <select id="mdlFill" class="inp" data-f="fillMode">
+                            <option value="order">First drive with room</option>
+                            <option value="spread">Drive with the most free space</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;align-items:flex-end;">
+                        <label class="check"><input type="checkbox" data-f="readOnly" />
+                            <div><b>Read-only mode</b><span>Hold every placement into the libraries.</span></div></label>
+                    </div>
+                    <div>
+                        <label class="lbl" for="mdlJfUrl">Jellyfin URL (for library refresh)</label>
+                        <input id="mdlJfUrl" class="inp mono" type="text" data-f="jfUrl" placeholder="http://jellyfin.lan:8096" spellcheck="false" />
+                    </div>
+                    <div>
+                        <label class="lbl" for="mdlJfKey">Jellyfin API key (for library refresh)</label>
+                        <input id="mdlJfKey" class="inp mono" type="password" data-f="jfKey" placeholder="leave blank to keep the current key" spellcheck="false" />
+                    </div>
+                </div>
+                <div class="field" style="margin-top:1.2em;">
+                    <label class="lbl">Path mappings (Jellyfin path → engine path)</label>
+                    <div data-maps></div>
+                    <button type="button" class="mdl-btn sm" style="margin-top:.6em;" data-add-map>+ Add mapping</button>
+                    <div class="hint">When the engine PC sees a library folder under another path (e.g. <span class="mono">/mnt/disk1/tv</span> → <span class="mono">Z:\tv</span>). Longest prefix wins.</div>
+                </div>
+            </fieldset>
+        </div>
+
+        <!-- ===== File naming ===== -->
+        <div class="mdl-card">
+            <h2 style="margin-bottom:.5em;">File naming</h2>
+            <p class="muted">Files are named exactly like the web downloader, so libraries built by either stay in step. This is not a setting.</p>
+            <div class="mdl-lib">
+                <table class="mdl-naming">
+                    <tr><td>Show or anime</td><td class="mono">Starfall Academy/Season 2/Starfall Academy S2E5.mp4</td></tr>
+                    <tr><td>Movie</td><td class="mono">Stargazer Lines/Stargazer Lines.mp4</td></tr>
+                    <tr><td>SUB and DUB</td><td class="mono">Same name. [SUB] only appears in the queue.</td></tr>
+                    <tr><td>Also recognised</td><td class="mono">Starfall Academy Season 2 - Episode 05.mp4 (older files, never re-downloaded)</td></tr>
+                </table>
+            </div>
+        </div>
+
+        <div class="mdl-savebar">
+            <span class="mdl-msg small" data-save-result></span>
+            <div class="mdl-actions">
+                <button type="button" class="mdl-btn" data-discard>Discard changes</button>
+                <button type="submit" class="mdl-btn primary">Save</button>
+            </div>
+        </div>
+    </form>
+</div>
+
             </div>
         </div>
 
         <script type="text/javascript">
             (() => {
-                const pluginGuid = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
+                const page = (document.currentScript && document.currentScript.closest('#configPage'))
+                    || Array.prototype.slice.call(document.querySelectorAll('#configPage')).pop();
+                const root = page.querySelector('.mdl');
+                const $ = (s) => root.querySelector(s);
+                const $$ = (s) => Array.prototype.slice.call(root.querySelectorAll(s));
+                const f = (name) => root.querySelector('[data-f="' + name + '"]');
 
-                let config = {
-                    EngineUrl: '',
-                    EngineApiKey: '',
-                    TvLibrary: '',
-                    MoviesLibrary: '',
-                    AnimeLibrary: '',
-                    DefaultMinHeight: 1080,
-                    DefaultMode: 'dub'
-                };
-                let engineSettings = null; // cached engine config
+                const PLUGIN_ID = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
+                const OVERVIEW_PAGE = 'Media DownloaderOverview';
+                const GB = 1024 * 1024 * 1024;
+
+                const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+                    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+                function fmtBytes(b) {
+                    if (!(b > 0)) return 'n/a';
+                    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    let i = 0;
+                    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+                    return (b >= 100 || i === 0 ? b.toFixed(0) : b.toFixed(1)) + ' ' + u[i];
+                }
+
+                function readError(err) {
+                    if (!err) return Promise.resolve('Unknown error');
+                    if (typeof err === 'string') return Promise.resolve(err);
+                    if (err && typeof err.text === 'function' && err.status) {
+                        return err.text().then((t) => {
+                            try { const j = JSON.parse(t); if (j && (j.error || j.title)) return String(j.error || j.title); } catch (e) { /* not JSON */ }
+                            return 'HTTP ' + err.status;
+                        }).catch(() => 'HTTP ' + err.status);
+                    }
+                    return Promise.resolve(err.message || err.error || ('HTTP ' + (err.status || '?')));
+                }
+                function api(method, path, body) {
+                    const opts = { type: method, url: ApiClient.getUrl(path), dataType: 'json' };
+                    if (body !== undefined) { opts.data = JSON.stringify(body); opts.contentType = 'application/json'; }
+                    return ApiClient.ajax(opts).catch((err) => readError(err).then((m) => { throw new Error(m); }));
+                }
+
+                function msg(sel, kind, text) {
+                    const el = $(sel);
+                    el.className = 'mdl-msg small ' + (kind || '');
+                    el.textContent = text || '';
+                }
+
+                // Light Jellyfin themes: flip the palette.
+                function detectTheme() {
+                    try {
+                        let el = page, bg = '';
+                        while (el && el !== document.documentElement) {
+                            bg = getComputedStyle(el).backgroundColor;
+                            if (bg && bg !== 'transparent' && !/rgba\(.*,\s*0\)$/.test(bg)) break;
+                            el = el.parentElement;
+                        }
+                        if (!bg || bg === 'transparent') bg = getComputedStyle(document.body).backgroundColor;
+                        const m = (bg || '').match(/\d+(\.\d+)?/g);
+                        if (m && m.length >= 3) root.classList.toggle('mdl--light', (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255 > 0.6);
+                    } catch (e) { /* keep dark */ }
+                }
+
+                // Opens the Overview page on a given tab (it reads this once).
+                function goOverview(view) {
+                    try { sessionStorage.setItem('mdl-view', view); } catch (e) { /* private mode */ }
+                    try {
+                        if (window.Dashboard && typeof Dashboard.navigate === 'function') {
+                            Dashboard.navigate('configurationpage?name=' + encodeURIComponent(OVERVIEW_PAGE));
+                            return;
+                        }
+                    } catch (e) { /* fall through */ }
+                    window.location.hash = '#/configurationpage?name=' + encodeURIComponent(OVERVIEW_PAGE);
+                }
+
+                let config = null;          // plugin configuration (server)
+                let engine = null;          // engine settings, null while offline
                 let libraries = [];
+                let maps = [];
 
-                const $ = (sel) => document.querySelector(sel);
-                const bytesToGb = (b) => (b / (1024 * 1024 * 1024)).toFixed(1);
-
-                function apiGet(path) {
-                    const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'GET', url, dataType: 'json' });
+                function fillLibrarySelect(sel, emptyLabel, wantType) {
+                    sel.innerHTML = '<option value="">' + esc(emptyLabel) + '</option>' + libraries
+                        .slice()
+                        .sort((a, b) => (a.collectionType === wantType ? 0 : 1) - (b.collectionType === wantType ? 0 : 1))
+                        .map((l) => '<option value="' + esc(l.name) + '">' + esc(l.name) + ' (' + esc(l.collectionType) + ')</option>').join('');
+                }
+                function setSelect(sel, value) {
+                    sel.value = value;
+                    if (sel.value !== value && value) {
+                        // Keep a value that is not in the list (e.g. a renamed library) visible.
+                        const o = document.createElement('option');
+                        o.value = value;
+                        o.textContent = value + ' (not found)';
+                        sel.appendChild(o);
+                        sel.value = value;
+                    }
                 }
 
-                function apiPost(path, data) {
-                    const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'POST', url, data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
+                function renderStatus(h) {
+                    const eng = $('[data-status-engine]');
+                    const vpnEl = $('[data-status-vpn]');
+                    const online = h && h.engine === 'online';
+                    eng.className = 'mdl-status ' + (online ? 'ok' : 'bad');
+                    eng.lastChild.textContent = online ? 'Engine online' + (h.health && h.health.version ? ' · v' + h.health.version : '') : 'Engine offline';
+                    eng.title = online ? '' : ((h && h.error) || '');
+                    const vpn = online && h.health ? h.health.vpn : null;
+                    vpnEl.hidden = !vpn;
+                    if (vpn) {
+                        vpnEl.className = 'mdl-status ' + (vpn.connected ? 'ok' : 'bad');
+                        vpnEl.lastChild.textContent = vpn.connected ? 'Mullvad VPN connected' : 'VPN down';
+                    }
                 }
 
-                function apiPut(path, data) {
-                    const url = ApiClient.getUrl(path);
-                    return ApiClient.ajax({ type: 'PUT', url, data: JSON.stringify(data || {}), contentType: 'application/json', dataType: 'json' });
+                function renderMaps() {
+                    $('[data-maps]').innerHTML = maps.length ? maps.map((m, i) =>
+                        '<div class="mdl-map">' +
+                            '<input class="inp mono" type="text" data-map="' + i + '" data-side="jellyfin" placeholder="Jellyfin path, e.g. /mnt/disk1/tv" value="' + esc(m.jellyfin) + '">' +
+                            '<span class="muted">→</span>' +
+                            '<input class="inp mono" type="text" data-map="' + i + '" data-side="engine" placeholder="Engine path, e.g. Z:\\tv" value="' + esc(m.engine) + '">' +
+                            '<button type="button" class="mdl-btn icon sm" title="Remove" data-del-map="' + i + '">✕</button>' +
+                        '</div>').join('') : '<div class="hint" style="margin-top:0;">No mappings: the engine uses the Jellyfin paths as-is.</div>';
                 }
 
-                function fillLibrarySelects() {
-                    const selects = [$('#tvLibrary'), $('#moviesLibrary'), $('#animeLibrary')];
-                    selects.forEach((sel) => {
-                        sel.innerHTML = '';
-                        const none = document.createElement('option');
-                        none.value = '';
-                        none.textContent = '(none)';
-                        sel.appendChild(none);
-                        libraries.forEach((lib) => {
-                            const opt = document.createElement('option');
-                            opt.value = lib.name;
-                            opt.textContent = lib.name + '  [' + lib.collectionType + ']';
-                            sel.appendChild(opt);
-                        });
-                    });
-                    // "Same as TV" option for anime
-                    const animeSel = $('#animeLibrary');
-                    const same = document.createElement('option');
-                    same.value = 'same-as-tv';
-                    same.textContent = 'Same as TV';
-                    animeSel.appendChild(same);
+                function renderEngineState() {
+                    const on = !!engine;
+                    $('[data-engine-fields]').disabled = !on;
+                    $('[data-engine-fields]').style.opacity = on ? '' : '.5';
+                    $('[data-engine-note]').innerHTML = on
+                        ? 'Stored in the engine\'s own <span class="mono">engine.json</span> and edited here while the engine is online.'
+                        : '<span style="color:var(--md-yellow)">The engine is offline, so these cannot be read or changed right now.</span> Save the connection above, then reload this page.';
                 }
 
-                function renderPathMappings() {
-                const box = $('#pathMappings');
-                    box.innerHTML = '';
-                    const list = (engineSettings && engineSettings.pathMappings) || [];
-                    list.forEach((m, i) => {
-                        const row = document.createElement('div');
-                        row.className = 'flex align-center';
-                        row.style.marginBottom = '.3em';
-                        const left = document.createElement('input');
-                        left.type = 'text';
-                        left.is = 'emby-input';
-                        left.placeholder = 'Jellyfin path, e.g. \\\\nas\\anime';
-                        left.value = m.jellyfin || '';
-                        left.style.width = '46%';
-                        left.addEventListener('change', () => { list[i].jellyfin = left.value; });
-                        const arrow = document.createElement('span');
-                        arrow.textContent = '  \u2192  ';
-                        arrow.style.minWidth = '2.5em';
-                        arrow.style.textAlign = 'center';
-                        const right = document.createElement('input');
-                        right.type = 'text';
-                        right.is = 'emby-input';
-                        right.placeholder = 'Engine drive, e.g. Z:\\anime';
-                        right.value = m.engine || '';
-                        right.style.width = '46%';
-                        right.addEventListener('change', () => { list[i].engine = right.value; });
-                        const del = document.createElement('button');
-                        del.is = 'emby-button';
-                        del.type = 'button';
-                        del.className = 'raised button-submit emby-button';
-                        del.style.marginLeft = '.4em';
-                        del.textContent = '\u2212';
-                        del.addEventListener('click', () => { list.splice(i, 1); renderPathMappings(); });
-                        row.appendChild(left);
-                        row.appendChild(arrow);
-                        row.appendChild(right);
-                        row.appendChild(del);
-                        box.appendChild(row);
-                    });
+                function fillForm() {
+                    const c = config || {};
+                    f('engineUrl').value = c.EngineUrl || '';
+                    f('engineKey').value = c.EngineApiKey || '';
+                    fillLibrarySelect(f('tvLibrary'), '(none)', 'tvshows');
+                    fillLibrarySelect(f('moviesLibrary'), '(none)', 'movies');
+                    fillLibrarySelect(f('animeLibrary'), 'Same as TV shows', 'tvshows');
+                    setSelect(f('tvLibrary'), c.TvLibrary || '');
+                    setSelect(f('moviesLibrary'), c.MoviesLibrary || '');
+                    setSelect(f('animeLibrary'), c.AnimeLibrary || '');
+                    setSelect(f('minHeight'), String(c.DefaultMinHeight != null ? c.DefaultMinHeight : 1080));
+                    f('mode').value = c.DefaultMode === 'sub' ? 'sub' : 'dub';
+
+                    const e = engine || {};
+                    f('stagingPath').value = e.stagingPath || '';
+                    f('reserveGb').value = e.reserveBytes != null ? Math.round(e.reserveBytes / GB) : 50;
+                    f('fillMode').value = e.fillMode === 'spread' ? 'spread' : 'order';
+                    f('readOnly').checked = !!e.readOnly;
+                    f('jfUrl').value = (e.jellyfin && e.jellyfin.baseUrl) || '';
+                    f('jfKey').value = '';
+                    f('jfKey').placeholder = e.jellyfin && e.jellyfin.apiKey ? 'set - leave blank to keep it' : 'not set';
+                    maps = Array.isArray(e.pathMappings) ? e.pathMappings.map((m) => ({ jellyfin: m.jellyfin || '', engine: m.engine || '' })) : [];
+                    renderMaps();
+                    renderEngineState();
                 }
 
-                function loadEngineSettings() {
-                    return apiGet('MediaDownloader/EngineSettings').then((data) => {
-                        engineSettings = data;
-                        $('#reserveBytes').value = data.reserveBytes != null ? data.reserveBytes : 0;
-                        updateReserveGb();
-                        $('#fillMode').value = data.fillMode || 'order';
-                        $('#readOnly').checked = !!data.readOnly;
-                        $('#jellyfinBaseUrl').value = (data.jellyfin && data.jellyfin.baseUrl) || '';
-                        $('#jellyfinApiKey').value = '';
-                        renderPathMappings();
-                        return engineSettings;
-                    }).catch(() => {
-                        engineSettings = { reserveBytes: 53687091200, fillMode: 'order', pathMappings: [], readOnly: false, jellyfin: { baseUrl: '', apiKey: '' } };
-                        renderPathMappings();
-                        return null;
-                    });
-                }
-
-                function updateReserveGb() {
-                    const v = Number($('#reserveBytes').value) || 0;
-                    $('#reserveGb').textContent = v > 0 ? '= ' + bytesToGb(v) + ' GB' : '';
-                }
-
-                function loadPage() {
+                function load() {
                     Dashboard.showLoadingMsg();
-                    fillLibrarySelects();
-                    updateReserveGb();
-                    Promise.all([
-                        ApiClient.getPluginConfiguration(pluginGuid),
-                        apiGet('MediaDownloader/Libraries').catch(() => ({ libraries: [] })),
-                        loadEngineSettings()
-                    ]).then(([cfg, libs]) => {
-                        config = cfg || config;
-                        libraries = (libs && libs.libraries) || [];
-                        fillLibrarySelects();
-                        $('#engineUrl').value = config.EngineUrl || '';
-                        $('#engineApiKey').value = config.EngineApiKey || '';
-                        $('#tvLibrary').value = config.TvLibrary || '';
-                        $('#moviesLibrary').value = config.MoviesLibrary || '';
-                        $('#animeLibrary').value = config.AnimeLibrary || '';
-                        $('#defaultMinHeight').value = config.DefaultMinHeight != null ? config.DefaultMinHeight : 1080;
-                        $('#defaultMode').value = config.DefaultMode || 'dub';
-                        Dashboard.hideLoadingMsg();
+                    msg('[data-save-result]', '', '');
+                    return Promise.all([
+                        ApiClient.getPluginConfiguration(PLUGIN_ID).then((c) => { config = c || {}; }),
+                        api('GET', 'MediaDownloader/Libraries').then((r) => { libraries = (r && r.libraries) || []; }).catch(() => { libraries = []; }),
+                        api('GET', 'MediaDownloader/EngineSettings').then((e) => { engine = e; }).catch(() => { engine = null; }),
+                        api('GET', 'MediaDownloader/Health').then(renderStatus).catch(() => renderStatus(null))
+                    ]).then(() => {
+                        fillForm();
+                        renderDrivesFromLibraries();
                     }).catch((err) => {
-                        Dashboard.hideLoadingMsg();
-                        console.error('Media Downloader: failed to load settings', err);
-                    });
+                        msg('[data-save-result]', 'err', 'Could not load settings: ' + ((err && err.message) || err));
+                    }).then(() => Dashboard.hideLoadingMsg());
                 }
 
-                function errText(err) {
-                    if (!err) return 'unknown error';
-                    if (typeof err === 'string') return err;
-                    if (err.message) return err.message;
-                    if (err.error) return typeof err.error === 'string' ? err.error : JSON.stringify(err.error);
-                    return 'HTTP ' + (err.status || '?') + ' ' + JSON.stringify(err).slice(0, 300);
+                function collectPlugin() {
+                    const c = Object.assign({}, config || {});
+                    c.EngineUrl = f('engineUrl').value.trim();
+                    c.EngineApiKey = f('engineKey').value.trim();
+                    c.TvLibrary = f('tvLibrary').value;
+                    c.MoviesLibrary = f('moviesLibrary').value;
+                    c.AnimeLibrary = f('animeLibrary').value; // '' = same as TV
+                    c.DefaultMinHeight = parseInt(f('minHeight').value, 10) || 0;
+                    c.DefaultMode = f('mode').value;
+                    return c;
+                }
+
+                function collectEngine() {
+                    const out = {
+                        reserveBytes: Math.max(0, Math.round((parseFloat(f('reserveGb').value) || 0) * GB)),
+                        fillMode: f('fillMode').value,
+                        readOnly: f('readOnly').checked,
+                        pathMappings: maps.map((m) => ({ jellyfin: m.jellyfin.trim(), engine: m.engine.trim() })).filter((m) => m.jellyfin || m.engine),
+                        jellyfin: { baseUrl: f('jfUrl').value.trim() }
+                    };
+                    const staging = f('stagingPath').value.trim();
+                    if (staging && staging !== (engine && engine.stagingPath)) out.stagingPath = staging;
+                    // Only send a key the user typed: an empty value would WIPE
+                    // the key stored on the engine.
+                    const key = f('jfKey').value.trim();
+                    if (key) out.jellyfin.apiKey = key;
+                    return out;
+                }
+
+                function save() {
+                    msg('[data-save-result]', 'wait', 'Saving…');
+                    const c = collectPlugin();
+                    return ApiClient.updatePluginConfiguration(PLUGIN_ID, c).then(() => {
+                        config = c;
+                        if (!engine) return 'Saved. Engine settings were not changed (engine offline).';
+                        return api('PUT', 'MediaDownloader/EngineSettings', collectEngine()).then((e) => {
+                            engine = e;
+                            fillForm();
+                            return 'Saved plugin and engine settings.';
+                        }).catch((err) => 'Plugin settings saved, but the engine refused its settings: ' + err.message);
+                    }).then((text) => {
+                        msg('[data-save-result]', /refused|not changed/.test(text) ? 'wait' : 'ok', text);
+                        return api('GET', 'MediaDownloader/Health').then(renderStatus).catch(() => {});
+                    }).catch((err) => {
+                        msg('[data-save-result]', 'err', 'Save failed: ' + ((err && err.message) || err));
+                    });
                 }
 
                 function testConnection() {
-                    const result = $('#testConnResult');
-                    result.textContent = 'Testing\u2026';
-                    result.style.color = '';
-                    // Save the current URL/key first so the test uses them.
-                    config.EngineUrl = $('#engineUrl').value.trim();
-                    config.EngineApiKey = $('#engineApiKey').value.trim();
-                    return ApiClient.updatePluginConfiguration(pluginGuid, config).then(() => {
-                        return apiGet('MediaDownloader/Health');
+                    msg('[data-test-result]', 'wait', 'Saving the address and testing…');
+                    const c = collectPlugin();
+                    return ApiClient.updatePluginConfiguration(PLUGIN_ID, c).then(() => {
+                        config = c;
+                        return api('GET', 'MediaDownloader/Health');
                     }).then((h) => {
+                        renderStatus(h);
                         if (h.engine === 'online') {
-                            const q = h.health && h.health.queue ? h.health.queue : {};
-                            const vpn = h.health && h.health.vpn ? h.health.vpn : {};
-                            result.textContent = 'Online. VPN ' + (vpn.connected ? 'up' : 'DOWN') +
-                                ', queue ' + (q.total != null ? q.total : 0) +
-                                ', outbox waiting ' + (h.outbox ? h.outbox.waiting : 0) + '.';
-                            result.style.color = '#2e7d32';
+                            const vpn = (h.health && h.health.vpn) || {};
+                            msg('[data-test-result]', 'ok', 'Connected · engine v' + ((h.health && h.health.version) || '?') +
+                                ' · VPN ' + (vpn.connected ? 'connected' : 'DOWN') + ' · outbox ' + ((h.outbox && h.outbox.waiting) || 0) + ' waiting');
+                            if (!engine) {
+                                return api('GET', 'MediaDownloader/EngineSettings').then((e) => { engine = e; fillForm(); }).catch(() => {});
+                            }
                         } else {
-                            result.textContent = 'Offline: ' + (h.error || 'engine unreachable');
-                            result.style.color = '#c62828';
+                            msg('[data-test-result]', 'err', 'Not connected: ' + (h.error || 'engine unreachable'));
                         }
-                    }).catch((err) => {
-                        result.textContent = 'Test failed: ' + errText(err);
-                        result.style.color = '#c62828';
-                    });
+                    }).catch((err) => msg('[data-test-result]', 'err', 'Test failed: ' + err.message));
                 }
 
-                function collectPluginConfig() {
-                    config.EngineUrl = $('#engineUrl').value.trim();
-                    config.EngineApiKey = $('#engineApiKey').value.trim();
-                    config.TvLibrary = $('#tvLibrary').value;
-                    config.MoviesLibrary = $('#moviesLibrary').value;
-                    const animeVal = $('#animeLibrary').value;
-                    config.AnimeLibrary = (animeVal === 'same-as-tv' || animeVal === '') ? '' : animeVal;
-                    config.DefaultMinHeight = Number($('#defaultMinHeight').value) || 1080;
-                    config.DefaultMode = $('#defaultMode').value;
-                    return config;
+                // ---- drives ----
+                function driveRow(folder) {
+                    const total = folder.totalBytes || 0;
+                    const free = folder.freeBytes || 0;
+                    const pct = total > 0 ? Math.round((total - free) / total * 100) : 0;
+                    const low = total > 0 && free / total < 0.15;
+                    let pill;
+                    if (folder.pending) pill = '<span class="mdl-pill">Not checked</span>';
+                    else if (folder.writable && folder.roundTrip && folder.roundTrip.ok) pill = '<span class="mdl-pill green">' + (folder.marker ? 'Marker found' : 'Writable') + '</span>';
+                    else if (folder.writable) pill = '<span class="mdl-pill yellow">Write test failed</span>';
+                    else pill = '<span class="mdl-pill red" title="' + esc(folder.reason || '') + '">' + esc(!folder.exists ? 'Not mounted' : (folder.reason || 'Not writable')) + '</span>';
+                    return '<div class="mdl-drive"><div style="min-width:0;"><div class="mono" style="word-break:break-all;">' + esc(folder.jellyfin) + '</div>' +
+                        (folder.engine && folder.engine !== folder.jellyfin ? '<div class="mono faint" style="word-break:break-all;">engine: ' + esc(folder.engine) + '</div>' : '') +
+                        (folder.roundTrip && folder.roundTrip.error && !folder.pending && folder.roundTrip.error !== 'skipped' ? '<div class="small" style="color:var(--md-red)">' + esc(folder.roundTrip.error) + '</div>' : '') + '</div>' +
+                        '<div class="small">' + (total > 0 ? '<span style="color:' + (low ? 'var(--md-yellow)' : 'inherit') + '">' + fmtBytes(free) + ' free of ' + fmtBytes(total) + '</span><div class="mdl-bar ' + (low ? 'yellow' : '') + '"><i style="width:' + pct + '%"></i></div>' : '<span class="faint">' + (folder.pending ? 'Run Verify drives' : 'size unknown') + '</span>') + '</div>' +
+                        '<div style="text-align:right;">' + pill + '</div></div>';
                 }
-
-                function collectEngineConfig() {
-                    const mappings = [];
-                    const box = $('#pathMappings');
-                    const rows = box.querySelectorAll('div');
-                    rows.forEach((row) => {
-                        const inputs = row.querySelectorAll('input');
-                        if (inputs.length >= 2) {
-                            const j = inputs[0].value.trim();
-                            const e = inputs[1].value.trim();
-                            if (j || e) mappings.push({ jellyfin: j, engine: e });
-                        }
-                    });
-                    return {
-                        reserveBytes: Number($('#reserveBytes').value) || 0,
-                        fillMode: $('#fillMode').value,
-                        readOnly: $('#readOnly').checked,
-                        jellyfin: {
-                            baseUrl: $('#jellyfinBaseUrl').value.trim(),
-                            apiKey: $('#jellyfinApiKey').value.trim()
-                        },
-                        pathMappings: mappings
-                    };
+                function renderDrives(libs) {
+                    $('[data-drives]').innerHTML = libs.length ? libs.map((l) =>
+                        '<div class="mdl-lib"><div class="mdl-lib-h"><span><b>' + esc(l.name) + '</b> <span class="muted">· folders come from the Jellyfin library</span></span>' +
+                        (l.pending ? '' : '<span class="mdl-pill ' + (l.ok ? 'green' : 'red') + '">' + (l.ok ? 'OK' : 'Needs attention') + '</span>') + '</div>' +
+                        ((l.folders || []).map(driveRow).join('') || '<div class="mdl-drive faint">This library has no folders.</div>') + '</div>').join('')
+                        : '<div class="mdl-empty">No TV, Movies or Anime libraries found in Jellyfin.</div>';
                 }
-
-                function saveEngine() {
-                    const result = $('#engineSaveResult');
-                    result.textContent = 'Saving to engine\u2026';
-                    result.style.color = '';
-                    return apiPut('MediaDownloader/EngineSettings', collectEngineConfig()).then((data) => {
-                        engineSettings = data;
-                        result.textContent = 'Engine settings saved.';
-                        result.style.color = '#2e7d32';
-                    }).catch((err) => {
-                        result.textContent = 'Could not save engine settings (is it online?): ' + ((err && err.message) || err);
-                        result.style.color = '#c62828';
-                    });
+                function renderDrivesFromLibraries() {
+                    renderDrives(libraries.map((l) => ({
+                        name: l.name, pending: true,
+                        folders: (l.locations || []).map((p) => ({ jellyfin: p, engine: '', pending: true }))
+                    })));
                 }
-
-                function renderVerify(result) {
-                    const box = $('#verifyTable');
-                    const status = $('#verifyResult');
-                    box.innerHTML = '';
-                    if (!result || !Array.isArray(result.libraries) || !result.libraries.length) {
-                        status.textContent = 'No TV/Movies/Anime libraries found to verify.';
-                        status.style.color = '#c62828';
-                        return;
-                    }
-                    status.textContent = result.allOk
-                        ? 'All libraries verified - at least one drive in each is writable and a test file landed and read back.'
-                        : 'Some libraries have no writable drive yet. Check the red rows below.';
-                    status.style.color = result.allOk ? '#2e7d32' : '#c62828';
-
-                    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-                    const gb = (b) => (b && b > 0) ? (b / (1024 * 1024 * 1024)).toFixed(1) + ' GB' : 'n/a';
-                    const cell = (ok, label) => '<td style="padding:3px 8px;color:' + (ok ? '#2e7d32' : '#c62828') + '">' + (ok ? '\u2713 ' : '\u2717 ') + (label || '') + '</td>';
-
-                    result.libraries.forEach((lib) => {
-                        const wrap = document.createElement('div');
-                        wrap.style.margin = '0.5em 0 1em';
-                        const head = document.createElement('div');
-                        head.style.fontWeight = '600';
-                        head.style.marginBottom = '.25em';
-                        head.innerHTML = esc(lib.name) + ' &nbsp; <span style="color:' + (lib.ok ? '#2e7d32' : '#c62828') + '">' + (lib.ok ? 'OK' : 'NEEDS ATTENTION') + '</span>';
-                        wrap.appendChild(head);
-
-                        const table = document.createElement('table');
-                        table.style.width = '100%';
-                        table.style.borderCollapse = 'collapse';
-                        table.style.fontSize = '0.9em';
-                        table.innerHTML = '<tr style="text-align:left;color:#9aa0a6">' +
-                            '<th style="padding:3px 8px">Jellyfin path</th>' +
-                            '<th style="padding:3px 8px">Engine path</th>' +
-                            '<th style="padding:3px 8px">Mounted</th>' +
-                            '<th style="padding:3px 8px">Writable</th>' +
-                            '<th style="padding:3px 8px">Marker</th>' +
-                            '<th style="padding:3px 8px">Write test</th>' +
-                            '<th style="padding:3px 8px">Free</th></tr>';
-                        (lib.folders || []).forEach((f) => {
-                            const rt = f.roundTrip || {};
-                            const tr = document.createElement('tr');
-                            tr.innerHTML =
-                                '<td style="padding:3px 8px">' + esc(f.jellyfin) + '</td>' +
-                                '<td style="padding:3px 8px">' + esc(f.engine) + '</td>' +
-                                cell(!!f.isDir, f.isDir ? 'dir' : (f.exists ? 'not a dir' : 'missing')) +
-                                cell(!!f.writable, f.writable ? '' : (f.reason || 'no')) +
-                                cell(!!f.marker, '') +
-                                cell(!!rt.ok, rt.ok ? 'ok' : (rt.error || 'n/a')) +
-                                '<td style="padding:3px 8px">' + gb(f.freeBytes) + '</td>';
-                            table.appendChild(tr);
-                        });
-                        wrap.appendChild(table);
-                        box.appendChild(wrap);
-                    });
-                }
-
-                function runVerify() {
-                    const status = $('#verifyResult');
-                    const btn = $('#verifyBtn');
-                    status.textContent = 'Verifying drives on the engine\u2026';
-                    status.style.color = '';
-                    $('#verifyTable').innerHTML = '';
+                function verify() {
+                    const btn = $('[data-verify]');
                     btn.disabled = true;
-                    return apiPost('MediaDownloader/Verify', {}).then((data) => {
-                        renderVerify(data);
+                    msg('[data-verify-result]', 'wait', 'Verifying drives on the engine…');
+                    return api('POST', 'MediaDownloader/Verify', {}).then((r) => {
+                        const libs = (r && r.libraries) || [];
+                        renderDrives(libs);
+                        msg('[data-verify-result]', r.allOk ? 'ok' : 'err', !libs.length ? 'No libraries to verify.'
+                            : r.allOk ? 'Every library has a writable drive; a test file landed and read back.'
+                            : 'Some libraries have no writable drive yet - see the red rows.');
                     }).catch((err) => {
-                        status.textContent = 'Verify failed (engine offline?): ' + ((err && err.message) || err);
-                        status.style.color = '#c62828';
+                        msg('[data-verify-result]', 'err', 'Verify failed: ' + err.message);
                     }).then(() => { btn.disabled = false; });
                 }
 
-                // ---- wire up ----
-                $('#reserveBytes').addEventListener('input', updateReserveGb);
-                $('#testConnBtn').addEventListener('click', () => { testConnection(); });
-                $('#addMappingBtn').addEventListener('click', () => {
-                    if (!engineSettings) engineSettings = { pathMappings: [] };
-                    if (!Array.isArray(engineSettings.pathMappings)) engineSettings.pathMappings = [];
-                    engineSettings.pathMappings.push({ jellyfin: '', engine: '' });
-                    renderPathMappings();
+                // ---- events ----
+                root.addEventListener('click', (ev) => {
+                    const el = ev.target.closest('button, a');
+                    if (!el || !root.contains(el)) return;
+                    if (el.hasAttribute('data-overview')) { ev.preventDefault(); goOverview(el.getAttribute('data-overview')); return; }
+                    if (el.hasAttribute('data-toggle-key')) {
+                        const k = f('engineKey');
+                        k.type = k.type === 'password' ? 'text' : 'password';
+                        el.textContent = k.type === 'password' ? 'Show' : 'Hide';
+                        return;
+                    }
+                    if (el.hasAttribute('data-test')) { testConnection(); return; }
+                    if (el.hasAttribute('data-verify')) { verify(); return; }
+                    if (el.hasAttribute('data-add-map')) { maps.push({ jellyfin: '', engine: '' }); renderMaps(); return; }
+                    if (el.hasAttribute('data-del-map')) { maps.splice(Number(el.getAttribute('data-del-map')), 1); renderMaps(); return; }
+                    if (el.hasAttribute('data-discard')) { load(); return; }
                 });
-                $('#saveEngineBtn').addEventListener('click', () => { saveEngine(); });
-                $('#verifyBtn').addEventListener('click', () => { runVerify(); });
-
-                $('#configForm').addEventListener('submit', function (event) {
-                    collectPluginConfig();
-                    Dashboard.showLoadingMsg();
-                    ApiClient.updatePluginConfiguration(pluginGuid, config).then(function (result) {
-                        Dashboard.processPluginConfigurationUpdateResult(result);
-                    }).catch((err) => {
-                        Dashboard.hideLoadingMsg();
-                        alert('Save failed: ' + ((err && err.message) || err));
-                    });
-                    event.preventDefault();
-                    return false;
+                root.addEventListener('input', (ev) => {
+                    const el = ev.target;
+                    if (el.hasAttribute('data-map')) maps[Number(el.getAttribute('data-map'))][el.getAttribute('data-side')] = el.value;
                 });
+                $('[data-form]').addEventListener('submit', (ev) => { ev.preventDefault(); save(); return false; });
 
-                document.querySelector('#configPage').addEventListener('pageshow', () => loadPage());
+                let lastShow = 0;
+                function onShow() {
+                    if (Date.now() - lastShow < 800) return;
+                    lastShow = Date.now();
+                    detectTheme();
+                    load();
+                }
+                page.addEventListener('pageshow', onShow);
+                page.addEventListener('viewshow', onShow);
             })();
         </script>
     </div>

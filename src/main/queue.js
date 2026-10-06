@@ -165,6 +165,7 @@ class DownloadManager extends EventEmitter {
       label: it.label,
       status: it.status,
       progress: it.progress,
+      bytes: it.bytes || 0,
       error: it.error,
       attempts: it.attempts,
       finalPath: it.finalPath,

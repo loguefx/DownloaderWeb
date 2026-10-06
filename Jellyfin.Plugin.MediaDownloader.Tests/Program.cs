@@ -317,6 +317,30 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                 Check("F: every page's embedded resource exists in the assembly", allRes);
             }
 
+            // ---- G: outbox in a folder that does not exist yet ------------
+            // Jellyfin does not create the plugin data folder. The first Add()
+            // used to throw DirectoryNotFoundException, which the server's
+            // exception middleware reports as "404 Error processing request."
+            // on POST MediaDownloader/Enqueue.
+            {
+                var freshDir = Path.Combine(tempRoot, "not-created-yet", "Media Downloader");
+                bool gThrew = false;
+                try
+                {
+                    var fresh = new Outbox(freshDir);
+                    fresh.Add("g-1", Parse("{}"), "probe");
+                    fresh.NoteAttempt("g-1");
+                }
+                catch (Exception ex)
+                {
+                    gThrew = true;
+                    Console.WriteLine("   G threw: " + ex.GetType().Name + ": " + ex.Message);
+                }
+                Check("G: Add() into a missing data folder does not throw", !gThrew);
+                Check("G: outbox.json created in the new folder", File.Exists(Path.Combine(freshDir, "outbox.json")));
+                Check("G: entry survives a reload", !gThrew && new Outbox(freshDir).Get("g-1") != null);
+            }
+
             Console.WriteLine("HARNESS " + _passed + " passed, " + _failed + " failed");
             return _failed == 0 ? 0 : 1;
         }

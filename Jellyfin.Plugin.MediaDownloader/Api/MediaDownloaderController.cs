@@ -135,12 +135,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
         public async Task<IActionResult> Enqueue()
         {
-            // Read the raw body (avoids [FromBody] JsonElement binding issues in Jellyfin 12.x)
-            string rawBody;
-            using (var reader = new StreamReader(Request.Body))
-            {
-                rawBody = await reader.ReadToEndAsync().ConfigureAwait(false);
-            }
+            var rawBody = await ReadBodyTextAsync().ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(rawBody))
             {
                 return BadRequest(new { error = "job object required" });
@@ -222,7 +217,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
                 ["locations"] = new JsonArray(locations.Select(l => (JsonNode)l).ToArray())
             };
 
-            var title = Str(node, "title");
+            // "label" is what the Queue/Outbox lists show ("Silo - Season 2,
+            // 10 episodes"); "title" stays the bare series/movie name, because
+            // the engine names folders and files after it.
+            var title = Str(node, "label");
+            if (string.IsNullOrWhiteSpace(title)) title = Str(node, "title");
             if (string.IsNullOrWhiteSpace(title)) title = sourceUrl;
 
             // Store a detached JsonElement (the referenced System.Text.Json has
@@ -319,8 +318,9 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
         [HttpPost("Outbox/purge")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        public IActionResult OutboxPurge([FromBody] JsonElement body)
+        public async Task<IActionResult> OutboxPurge()
         {
+            var body = await ReadBodyAsync().ConfigureAwait(false);
             var state = Str(body, "state");
             if (state != Outbox.StateSent && state != Outbox.StateRejected)
             {
@@ -352,17 +352,25 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> QueueStop() =>
             await ProxyAsync(() => _engine.PostAsync("api/queue/stop")).ConfigureAwait(false);
 
-        [HttpDelete("Queue/{int id}")]
+        [HttpDelete("Queue/{id:int}")]
         public async Task<IActionResult> QueueRemove(int id) =>
             await ProxyAsync(() => _engine.DeleteAsync($"api/queue/{id}")).ConfigureAwait(false);
 
-        [HttpPost("Queue/{int id}/retry")]
+        [HttpPost("Queue/{id:int}/retry")]
         public async Task<IActionResult> QueueRetry(int id) =>
             await ProxyAsync(() => _engine.PostAsync($"api/queue/{id}/retry")).ConfigureAwait(false);
+
+        [HttpGet("Log")]
+        public async Task<IActionResult> Log([FromQuery] long since = 0) =>
+            await ProxyAsync(() => _engine.GetRawAsync("api/log?since=" + since)).ConfigureAwait(false);
 
         [HttpGet("Waiting")]
         public async Task<IActionResult> Waiting() =>
             await ProxyAsync(() => _engine.GetRawAsync("api/waiting")).ConfigureAwait(false);
+
+        [HttpDelete("Waiting/{key}")]
+        public async Task<IActionResult> WaitingRemove(string key) =>
+            await ProxyAsync(() => _engine.DeleteAsync("api/waiting/" + Uri.EscapeDataString(key ?? string.Empty))).ConfigureAwait(false);
 
         [HttpGet("Schedules")]
         public async Task<IActionResult> Schedules() =>
@@ -378,8 +386,14 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type)
         {
             var t = string.IsNullOrEmpty(type) ? "tv" : type;
-            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={t}")).ConfigureAwait(false);
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={Uri.EscapeDataString(t)}")).ConfigureAwait(false);
         }
+
+        [HttpGet("TmdbSeason")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season) =>
+            await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}")).ConfigureAwait(false);
 
         // ------------------------------------------------------------------
         // Title / search / duplicate check (the later pages use these; the
@@ -403,13 +417,55 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> Search([FromQuery] string q, [FromQuery] string type)
         {
             var t = string.IsNullOrEmpty(type) ? "all" : type;
-            return await ProxyAsync(() => _engine.GetRawAsync("api/search?q=" + Uri.EscapeDataString(q ?? string.Empty) + "&type=" + t)).ConfigureAwait(false);
+            return await ProxyAsync(() => _engine.GetRawAsync("api/search?q=" + Uri.EscapeDataString(q ?? string.Empty) + "&type=" + Uri.EscapeDataString(t))).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Duplicate check for the title page. Body:
+        /// { "series", "kind", "season", "episodes": [..], "minHeight", "library"? }.
+        /// The browser only knows library NAMES; the drive folders are filled
+        /// in here. With no library named, every TV/Movies/Anime library is
+        /// checked, so a show already filed under Anime is not downloaded
+        /// again into TV shows.
+        /// </summary>
         [HttpPost("LibraryCheck")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        public async Task<IActionResult> LibraryCheck([FromBody] JsonElement body) =>
-            await ProxyAsync(() => _engine.PostAsync("api/library/check", body)).ConfigureAwait(false);
+        public async Task<IActionResult> LibraryCheck()
+        {
+            JsonObject node;
+            try
+            {
+                node = JsonNode.Parse(await ReadBodyTextAsync().ConfigureAwait(false)) as JsonObject;
+            }
+            catch (Exception)
+            {
+                node = null;
+            }
+            if (node == null)
+            {
+                return BadRequest(new { error = "JSON object body required" });
+            }
+
+            if (!node.ContainsKey("locations"))
+            {
+                var libName = Str(node, "library");
+                var libs = ResolveLibraries(string.IsNullOrWhiteSpace(libName) ? null : new[] { libName });
+                var all = new JsonArray();
+                foreach (var lib in libs)
+                {
+                    foreach (var loc in lib["locations"].AsArray())
+                    {
+                        all.Add((JsonNode)loc.GetValue<string>());
+                    }
+                }
+                node["locations"] = all;
+            }
+            node.Remove("library");
+            if (!node.ContainsKey("minHeight")) node["minHeight"] = _plugin.Configuration.DefaultMinHeight;
+
+            var el = JsonSerializer.Deserialize<JsonElement>(node.ToJsonString());
+            return await ProxyAsync(() => _engine.PostAsync("api/library/check", el)).ConfigureAwait(false);
+        }
 
         /// <summary>
         /// Verify a library's drive folders (Settings &gt; Verify drives).
@@ -422,8 +478,9 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         [HttpPost("Verify")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status502BadGateway)]
-        public async Task<IActionResult> Verify([FromBody] JsonElement body)
+        public async Task<IActionResult> Verify()
         {
+            var body = await ReadBodyAsync().ConfigureAwait(false);
             string[] names = null;
             if (body.ValueKind == JsonValueKind.Object)
             {
@@ -456,12 +513,46 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
         [HttpPut("EngineSettings")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        public async Task<IActionResult> EngineSettingsPut([FromBody] JsonElement body) =>
-            await ProxyAsync(() => _engine.PutAsync("api/settings", body)).ConfigureAwait(false);
+        public async Task<IActionResult> EngineSettingsPut()
+        {
+            var body = await ReadBodyAsync().ConfigureAwait(false);
+            if (body.ValueKind != JsonValueKind.Object)
+            {
+                return BadRequest(new { error = "JSON object body required" });
+            }
+            return await ProxyAsync(() => _engine.PutAsync("api/settings", body)).ConfigureAwait(false);
+        }
 
         // ------------------------------------------------------------------
         // Helpers
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// The raw request body. Bodies are read by hand rather than with
+        /// [FromBody] JsonElement, which behaves differently across the
+        /// 10.10 / 10.11 / 12.x hosts this plugin is built for.
+        /// </summary>
+        private async Task<string> ReadBodyTextAsync()
+        {
+            using var reader = new StreamReader(Request.Body);
+            return await reader.ReadToEndAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>The body as a detached JsonElement; Undefined when empty or not JSON.</summary>
+        private async Task<JsonElement> ReadBodyAsync()
+        {
+            var raw = await ReadBodyTextAsync().ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(raw)) return default;
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                return doc.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                return default;
+            }
+        }
 
         /// <summary>
         /// Runs an engine call and turns engine failures into proper HTTP:
@@ -513,7 +604,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         {
             if (node == null) return string.Empty;
             var v = node[prop];
-            return v?.GetValue<string>() ?? string.Empty;
+            if (v == null) return string.Empty;
+            // GetValue<string>() throws on a number/bool/object (=> HTTP 500);
+            // a non-string value is read as its JSON text instead.
+            if (v is JsonValue jv && jv.TryGetValue<string>(out var str)) return str ?? string.Empty;
+            return v is JsonValue ? v.ToJsonString() : string.Empty;
         }
     }
 }

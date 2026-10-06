@@ -50,6 +50,22 @@ function onLog(msg) {
   manager.emit('log', msg);
 }
 
+// ---- recent activity (the plugin's Queue > Activity log panel) ----
+// Every queue/engine log line (manager 'log' events, which onLog also emits)
+// lands in a small ring buffer, so the plugin can poll GET /api/log instead
+// of holding an SSE stream open through Jellyfin.
+const LOG_MAX = 200;
+const recent = [];
+manager.on('log', (msg) => {
+  recent.push({ ts: Date.now(), msg: String(msg == null ? '' : msg) });
+  if (recent.length > LOG_MAX) recent.splice(0, recent.length - LOG_MAX);
+});
+
+function recentLog(since) {
+  const after = Number(since) || 0;
+  return { items: after ? recent.filter((l) => l.ts > after) : recent.slice() };
+}
+
 // ---- accepted-job dedupe (plugin can safely resend) ----
 
 function loadAccepted() {
@@ -241,7 +257,17 @@ async function submitJob(job) {
     return rec;
   };
 
-  if (scope === 'episodes') {
+  if (job.kind === 'movie') {
+    // A movie is one file with no season/episode: <Library>/<Title>/<Title>.mp4
+    // (organizer naming). Going through the episode path would name it
+    // "<Title> S1E1" and file it under "Season 1".
+    const r = await bulk.queueOne(
+      stamp({ url, series, season: null, episode: null, mode, outputRoot: staging }),
+      onLog
+    );
+    queued += r.queued;
+    skipped += r.skipped;
+  } else if (scope === 'episodes') {
     // Pick exact episodes. The pasted URL names one episode; the rest are
     // built from its template so S2E4..S2E11 all resolve.
     for (const sel of job.selections) {
@@ -284,7 +310,7 @@ async function submitJob(job) {
   }
 
   // "Keep watching this series" -> the watcher pulls new episodes daily.
-  if (job.watch) {
+  if (job.watch && job.kind !== 'movie') {
     const { template, season } = bulk.entryTemplate({ baseUrl: url, season: (ref && ref.season) || null });
     schedule.add({
       series,
@@ -299,7 +325,14 @@ async function submitJob(job) {
     onLog(`Watching "${series}" for new episodes.`);
   }
 
-  const summary = { queued, skipped, series, mode, scope, at: new Date().toISOString() };
+  const summary = {
+    queued,
+    skipped,
+    series,
+    mode,
+    scope: job.kind === 'movie' ? 'movie' : scope,
+    at: new Date().toISOString()
+  };
   if (job.jobId) {
     accepted[job.jobId] = summary;
     saveAccepted(accepted);
@@ -328,7 +361,9 @@ function queueStop() {
   return manager.stopAll('Stopped via API');
 }
 function queueRemove(id) {
-  manager.removeByIds([id]);
+  // Queue ids are numbers; the HTTP route hands us a string.
+  const n = Number(id);
+  manager.removeByIds([Number.isFinite(n) ? n : id]);
   return { removed: true };
 }
 function queueRetry(id) {
@@ -429,8 +464,9 @@ function settingsPut(patch) {
 async function libraryCheck(payload) {
   const series = String((payload && payload.series) || '').trim();
   if (!series) throw Object.assign(new Error('series is required'), { code: 'BAD_REQUEST', status: 400 });
-  const season = payload.season != null ? payload.season : null;
-  const episodes = Array.isArray(payload.episodes) && payload.episodes.length ? payload.episodes : [null];
+  const movie = payload.kind === 'movie';
+  const season = !movie && payload.season != null ? payload.season : null;
+  const episodes = !movie && Array.isArray(payload.episodes) && payload.episodes.length ? payload.episodes : [null];
   const locations = Array.isArray(payload.locations) ? payload.locations : [];
   const folders = [engineconfig.stagingPath(), ...locations.map((l) => placer.toEnginePath(l))];
 
@@ -442,7 +478,8 @@ async function libraryCheck(payload) {
     for (const folder of folders) {
       try {
         if (!folder) continue;
-        const f = ep != null ? organizer.existingEpisodeFile(folder, meta) : null;
+        // A movie (no episode) is matched on its exact <Title>/<Title>.mp4 path.
+        const f = ep != null || movie ? organizer.existingEpisodeFile(folder, meta) : null;
         if (f) {
           foundPath = f;
           break;
@@ -462,7 +499,7 @@ async function libraryCheck(payload) {
         height: probed.height || null,
         ours: library.isOurs(foundPath)
       });
-    } else if (ep != null && isQueued(series, season, ep)) {
+    } else if ((ep != null || movie) && isQueued(series, season, ep)) {
       out.push({ episode: ep, status: 'queued' });
     } else {
       out.push({ episode: ep, status: 'missing' });
@@ -513,5 +550,6 @@ module.exports = {
   libraryCheck,
   verifyDrives,
   onLog,
+  recentLog,
   stagingInfo
 };

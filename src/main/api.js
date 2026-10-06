@@ -10,10 +10,13 @@
 // Endpoints:
 //   GET    /api/health                      version, VPN state, queue, staging
 //   GET    /api/title?url=                  episode list + per-episode status
-//   GET    /api/search?q=&type=             (stub - site search adapters land later)
+//   GET    /api/search?q=&type=             TMDB multi-search (or the Jellyfin catalog)
+//   GET    /api/tmdb/info?tmdb=&type=       seasons + episode counts / movie details
+//   GET    /api/tmdb/season?tmdb=&season=   one season's episodes (name, runtime, air date)
 //   POST   /api/jobs                        queue a movie / series / episodes
 //   GET    /api/queue                       queue snapshot + counts
 //   GET    /api/events                      Server-Sent Events live updates
+//   GET    /api/log?since=                  last 200 log lines (polled by the plugin)
 //   POST   /api/queue/pause | /resume | /stop
 //   DELETE /api/queue/{id}
 //   POST   /api/queue/{id}/retry
@@ -214,8 +217,9 @@ async function searchTitles(q, type) {
       title: r.title || r.name || q,
       year: String((r.release_date || r.first_air_date || '') || '').slice(0, 4),
       type: r.media_type === 'movie' ? 'movie' : 'tv',
-      poster: r.poster_path ? `https://image.tmdb.org/t/p/w92${r.poster_path}` : '',
-      overview: (r.overview || '').slice(0, 120)
+      // w342: the plugin shows these as poster cards, not thumbnails.
+      poster: r.poster_path ? `https://image.tmdb.org/t/p/w342${r.poster_path}` : '',
+      overview: (r.overview || '').slice(0, 240)
     }));
 }
 
@@ -265,6 +269,29 @@ async function tmdbInfo(tmdbId, type) {
   };
 }
 
+// One season's episodes (name, runtime, air date). The plugin lists these on
+// the Choose episodes screen and greys out episodes that have not aired yet,
+// so a season is never cut short or padded with episodes that do not exist.
+async function tmdbSeason(tmdbId, seasonNo) {
+  const key = getTmdbKey();
+  if (!key) return null;
+  const body = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(seasonNo)}?language=en-US`, key);
+  if (!body || !Array.isArray(body.episodes)) return null;
+  return {
+    tmdb: String(tmdbId),
+    season: Number(seasonNo),
+    name: body.name || '',
+    episodes: body.episodes
+      .filter((e) => e && e.episode_number > 0)
+      .map((e) => ({
+        episode: e.episode_number,
+        name: e.name || '',
+        runtime: e.runtime || null,
+        airDate: e.air_date || null
+      }))
+  };
+}
+
 async function handle(req, res, u) {
   const parts = u.pathname.split('/').filter(Boolean);
   // parts: ['api', ...]
@@ -304,6 +331,23 @@ async function handle(req, res, u) {
         return;
       }
       const info = await tmdbInfo(tmdb, type);
+      if (!info) {
+        json(res, 404, { error: 'not found or TMDB key not configured' });
+        return;
+      }
+      json(res, 200, info);
+      return;
+    }
+
+    // ---- TMDB season (episode names + air dates) ----
+    if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'season') {
+      const tmdb = u.searchParams.get('tmdb') || '';
+      const season = parseInt(u.searchParams.get('season') || '', 10);
+      if (!tmdb || !(season >= 0)) {
+        json(res, 400, { error: 'tmdb and season are required' });
+        return;
+      }
+      const info = await tmdbSeason(tmdb, season);
       if (!info) {
         json(res, 404, { error: 'not found or TMDB key not configured' });
         return;
@@ -366,6 +410,12 @@ async function handle(req, res, u) {
         json(res, 200, service.queueRetry(id));
         return;
       }
+    }
+
+    // ---- recent log lines (polled by the plugin) ----
+    if (req.method === 'GET' && seg === 'log') {
+      json(res, 200, service.recentLog(u.searchParams.get('since')));
+      return;
     }
 
     // ---- events (SSE) ----

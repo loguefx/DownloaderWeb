@@ -3,514 +3,1667 @@
 <head>
     <meta charset="utf-8" />
     <title>Media Downloader</title>
-    <style>
-        .md-section { margin-bottom: 1.8em; }
-        .md-card {
-            background: rgba(255,255,255,.03);
-            border: 1px solid rgba(255,255,255,.08);
-            border-radius: .6em;
-            padding: 1.2em 1.4em;
-            margin-bottom: 1em;
-        }
-        .md-card h3 { margin: 0 0 .6em 0; font-size: 1.1em; font-weight: 600; }
-        .md-search-row { display: flex; gap: .6em; align-items: center; flex-wrap: wrap; }
-        .md-search-row input[type=text] { flex: 1; min-width: 220px; }
-        .md-results { margin-top: .8em; }
-        .md-results table { width: 100%; border-collapse: collapse; }
-        .md-results td { padding: .5em .6em; border-bottom: 1px solid rgba(255,255,255,.06); vertical-align: middle; }
-        .md-results tr:hover { background: rgba(255,255,255,.04); cursor: pointer; }
-        .md-results .md-select-btn {
-            background: #2196f3; color: #fff; border: none; border-radius: .3em;
-            padding: .35em .9em; cursor: pointer; font-size: .9em; font-weight: 500;
-        }
-        .md-results .md-select-btn:hover { background: #1976d2; }
-        .md-selected {
-            display: flex; gap: 1em; align-items: flex-start; margin-top: 1em;
-            padding: 1em; background: rgba(33,150,243,.08); border-radius: .5em;
-            border: 1px solid rgba(33,150,243,.2);
-        }
-        .md-selected img { width: 64px; border-radius: .3em; }
-        .md-selected .md-info { flex: 1; }
-        .md-selected .md-info strong { font-size: 1.05em; }
-        .md-selected .md-info span { color: #999; font-size: .9em; }
-        .md-actions { display: flex; gap: .6em; align-items: center; margin-top: .8em; flex-wrap: wrap; }
-        .md-btn {
-            background: #2196f3; color: #fff; border: none; border-radius: .35em;
-            padding: .55em 1.4em; cursor: pointer; font-size: .95em; font-weight: 500;
-        }
-        .md-btn:hover { background: #1976d2; }
-        .md-btn:disabled { opacity: .5; cursor: not-allowed; }
-        .md-btn-secondary { background: rgba(255,255,255,.1); }
-        .md-btn-secondary:hover { background: rgba(255,255,255,.18); }
-        .md-msg { font-size: .9em; margin-top: .4em; }
-        .md-msg.ok { color: #4caf50; }
-        .md-msg.err { color: #ef5350; }
-        .md-msg.wait { color: #ff9800; }
-        .md-queue-grid {
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-            gap: .5em; margin-top: .6em;
-        }
-        .md-queue-item { text-align: center; padding: .6em .3em; background: rgba(255,255,255,.04); border-radius: .4em; }
-        .md-queue-item .md-q-num { font-size: 1.4em; font-weight: 700; }
-        .md-queue-item .md-q-label { font-size: .75em; color: #999; margin-top: .2em; }
-        .md-warning {
-            padding: .7em 1em; border-radius: .4em; margin-bottom: .8em;
-            background: rgba(255,152,0,.1); border: 1px solid rgba(255,152,0,.3); color: #ffb74d; font-size: .9em;
-        }
-        .md-outbox-row { display: flex; justify-content: space-between; align-items: center; padding: .4em 0; border-bottom: 1px solid rgba(255,255,255,.05); }
-        .md-outbox-row .md-state-wait { color: #ff9800; }
-        .md-outbox-row .md-state-sent { color: #4caf50; }
-        .md-outbox-row .md-state-rej { color: #ef5350; }
-        .md-outbox-row button { background: none; border: 1px solid rgba(255,255,255,.2); color: #ccc; border-radius: .3em; padding: .2em .6em; cursor: pointer; font-size: .8em; }
-        .md-outbox-row button:hover { border-color: #ef5350; color: #ef5350; }
-    </style>
 </head>
 <body>
+    <!--
+        Media Downloader - Overview / Add title / Choose episodes / Queue.
+
+        Jellyfin mounts only this data-role="page" element, so the <style>
+        lives INSIDE it (a <style> in <head> is dropped, which is why the old
+        page rendered as unstyled browser defaults). Every rule is scoped to
+        .mdl so nothing leaks into the rest of the dashboard.
+    -->
     <div id="overviewPage" data-role="page" class="page type-interior pluginPage"
-         data-require="emby-button,emby-select">
+         data-require="emby-button">
         <div data-role="content">
             <div class="content-primary">
-                <!-- Banner -->
-                <div id="banner" style="padding:.8em 1em;border-radius:.5em;margin-bottom:1.2em;font-weight:600;"></div>
+<style>
+.mdl {
+    --md-card: rgba(255,255,255,.035);
+    --md-card-2: rgba(255,255,255,.055);
+    --md-hover: rgba(255,255,255,.07);
+    --md-line: rgba(255,255,255,.09);
+    --md-text: inherit;
+    --md-muted: rgba(255,255,255,.62);
+    --md-faint: rgba(255,255,255,.42);
+    --md-accent: #00a4dc;
+    --md-accent-ink: #fff;
+    --md-accent-soft: rgba(0,164,220,.14);
+    --md-green: #4ade80; --md-green-bg: rgba(74,222,128,.12); --md-green-line: rgba(74,222,128,.28);
+    --md-yellow: #fbbf24; --md-yellow-bg: rgba(251,191,36,.13); --md-yellow-line: rgba(251,191,36,.3);
+    --md-purple: #c4a1ff; --md-purple-bg: rgba(167,123,255,.15);
+    --md-red: #f87171; --md-red-bg: rgba(248,113,113,.13); --md-red-line: rgba(248,113,113,.3);
+    --md-blue: #5cc8f0; --md-blue-bg: rgba(0,164,220,.15);
+    --md-grey-bg: rgba(255,255,255,.08);
+    --md-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    max-width: 1280px; margin: 0 auto; padding: .5em 0 6em; line-height: 1.45; font-size: 15px;
+}
+.mdl.mdl--light {
+    --md-card: rgba(0,0,0,.03); --md-card-2: rgba(0,0,0,.05); --md-hover: rgba(0,0,0,.06);
+    --md-line: rgba(0,0,0,.12); --md-muted: rgba(0,0,0,.62); --md-faint: rgba(0,0,0,.45);
+    --md-grey-bg: rgba(0,0,0,.07); --md-green: #15803d; --md-yellow: #a16207; --md-purple: #7c3aed;
+    --md-red: #dc2626; --md-blue: #0369a1;
+}
+.mdl *, .mdl *::before, .mdl *::after { box-sizing: border-box; }
+.mdl [hidden] { display: none !important; }
+.mdl h1 { font-size: 1.85em; font-weight: 700; margin: 0 0 .2em; letter-spacing: -.01em; }
+.mdl h2 { font-size: 1.08em; font-weight: 650; margin: 0; }
+.mdl p { margin: 0; }
+.mdl a { color: var(--md-blue); text-decoration: none; cursor: pointer; }
+.mdl a:hover { text-decoration: underline; }
+.mdl .mono { font-family: var(--md-mono); font-size: .86em; }
+.mdl .muted { color: var(--md-muted); }
+.mdl .faint { color: var(--md-faint); }
+.mdl .small { font-size: .85em; }
 
-                <!-- ====== SEARCH & DOWNLOAD ====== -->
-                <div class="md-section">
-                    <div class="md-card">
-                        <h3>Search &amp; Download</h3>
-                        <div id="libWarning" class="md-warning" style="display:none;">
-                            ⚠ No target library is configured. Set a default in <strong>Media Downloader → Settings</strong>, or pick one below before queuing.
-                        </div>
-                        <div class="md-search-row">
-                            <input id="searchInput" type="text" class="emby-input" placeholder="Type a title… (e.g. Breaking Bad, Dune, One Piece)" autocomplete="off" />
-                            <select id="searchType" class="emby-select" style="min-width:110px;">
-                                <option value="all">All</option>
-                                <option value="tv">TV / Anime</option>
-                                <option value="movie">Movies</option>
-                            </select>
-                            <select id="jobLibrary" class="emby-select" style="min-width:150px;">
-                                <option value="">Library…</option>
-                            </select>
-                        </div>
+/* top bar */
+.mdl-top { display: flex; align-items: center; justify-content: space-between; gap: 1em; flex-wrap: wrap;
+    padding-bottom: .9em; border-bottom: 1px solid var(--md-line); margin-bottom: 1em; }
+.mdl-crumbs { color: var(--md-muted); font-size: .9em; }
+.mdl-crumbs b { color: inherit; font-weight: 600; }
+.mdl-crumbs .cur { color: var(--md-text); font-weight: 500; }
+.mdl-pills { display: flex; gap: .5em; flex-wrap: wrap; }
+.mdl-status { display: inline-flex; align-items: center; gap: .45em; padding: .3em .8em; border-radius: 999px;
+    border: 1px solid var(--md-line); background: var(--md-card); font-size: .84em; white-space: nowrap; }
+.mdl-status i { width: .5em; height: .5em; border-radius: 50%; background: var(--md-faint); display: inline-block; }
+.mdl-status.ok i { background: var(--md-green); box-shadow: 0 0 0 3px var(--md-green-bg); }
+.mdl-status.bad i { background: var(--md-red); box-shadow: 0 0 0 3px var(--md-red-bg); }
+.mdl-status.warn i { background: var(--md-yellow); }
 
-                        <!-- Results dropdown -->
-                        <div id="searchResults" class="md-results" style="display:none;"></div>
+/* tabs (plugin sub-navigation) */
+.mdl-nav { display: flex; gap: .3em; flex-wrap: wrap; margin-bottom: 1.6em; }
+.mdl-nav button, .mdl-nav a { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: .45em;
+    padding: .5em .95em; border-radius: .55em; color: var(--md-muted); font-size: .93em; font-weight: 500; }
+.mdl-nav button:hover, .mdl-nav a:hover { background: var(--md-hover); color: inherit; text-decoration: none; }
+.mdl-nav .on { background: var(--md-accent-soft); color: var(--md-blue); }
+.mdl-nav .count { background: var(--md-accent); color: #fff; border-radius: 999px; font-size: .75em; padding: .05em .55em; font-weight: 700; }
+.mdl-nav .count:empty { display: none; }
+.mdl-nav svg { width: 1.1em; height: 1.1em; }
 
-                        <!-- Selected item -->
-                        <div id="selectedPanel" class="md-selected" style="display:none;">
-                            <img id="selPoster" style="display:none;" />
-                            <div class="md-info">
-                                <strong id="selTitle"></strong><br/>
-                                <span id="selMeta"></span>
-                            </div>
-                            <div style="min-width:180px;">
-                                <div id="selSeasonRow" style="display:none;margin-bottom:.5em;">
-                                    <select id="selSeason" class="emby-select" style="width:100%;margin-bottom:.4em;"></select>
-                                    <select id="selEpisode" class="emby-select" style="width:100%;"></select>
-                                </div>
-                            </div>
-                        </div>
+/* page head */
+.mdl-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1em; flex-wrap: wrap; margin-bottom: 1.4em; }
+.mdl-head p { color: var(--md-muted); max-width: 46em; }
+.mdl-actions { display: flex; gap: .5em; flex-wrap: wrap; align-items: center; }
 
-                        <div class="md-actions">
-                            <button id="queueBtn" class="md-btn" type="button" disabled>Queue Download</button>
-                            <span id="queueMsg" class="md-msg"></span>
-                        </div>
+/* buttons */
+.mdl-btn { all: unset; box-sizing: border-box; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: .45em;
+    padding: .55em 1.05em; border-radius: .5em; font-size: .9em; font-weight: 600; line-height: 1.2;
+    background: var(--md-card-2); border: 1px solid var(--md-line); color: inherit; white-space: nowrap; }
+.mdl-btn:hover { background: var(--md-hover); }
+.mdl-btn:focus-visible { outline: 2px solid var(--md-accent); outline-offset: 2px; }
+.mdl-btn.primary { background: var(--md-accent); border-color: var(--md-accent); color: var(--md-accent-ink); }
+.mdl-btn.primary:hover { filter: brightness(1.1); }
+.mdl-btn.danger { color: var(--md-red); }
+.mdl-btn.sm { padding: .35em .7em; font-size: .82em; }
+.mdl-btn.icon { padding: .4em .6em; }
+.mdl-btn[disabled], .mdl-btn.is-disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
+.mdl-btn svg { width: 1.05em; height: 1.05em; }
+
+/* cards */
+.mdl-card { background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; padding: 1.15em 1.25em; }
+.mdl-card + .mdl-card { margin-top: 1em; }
+.mdl-grid-main > .mdl-card + .mdl-card { margin-top: 0; }
+.mdl-card-h { display: flex; justify-content: space-between; align-items: center; gap: .8em; margin-bottom: .9em; }
+.mdl-grid-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1.1em; align-items: start; }
+@media (max-width: 1000px) { .mdl-grid-main { grid-template-columns: minmax(0,1fr); } }
+
+/* stats */
+.mdl-stats { display: grid; grid-template-columns: repeat(5, minmax(0,1fr)); gap: .8em; margin-bottom: 1.1em; }
+@media (max-width: 900px) { .mdl-stats { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+.mdl-stat { background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; padding: .95em 1.05em; }
+.mdl-stat .k { font-size: .82em; color: var(--md-muted); }
+.mdl-stat .v { font-size: 1.9em; font-weight: 700; margin: .1em 0 .05em; }
+.mdl-stat .s { font-size: .8em; }
+.mdl-stat .s.blue { color: var(--md-blue); } .mdl-stat .s.yellow { color: var(--md-yellow); }
+.mdl-stat .s.green { color: var(--md-green); } .mdl-stat .s.red { color: var(--md-red); }
+
+/* status pills */
+.mdl-pill { display: inline-flex; align-items: center; gap: .3em; padding: .2em .6em; border-radius: .4em; font-size: .76em; font-weight: 650; white-space: nowrap; background: var(--md-grey-bg); color: var(--md-muted); }
+.mdl-pill.blue { background: var(--md-blue-bg); color: var(--md-blue); }
+.mdl-pill.green { background: var(--md-green-bg); color: var(--md-green); }
+.mdl-pill.yellow { background: var(--md-yellow-bg); color: var(--md-yellow); }
+.mdl-pill.purple { background: var(--md-purple-bg); color: var(--md-purple); }
+.mdl-pill.red { background: var(--md-red-bg); color: var(--md-red); }
+.mdl-badge { display: inline-block; font-size: .68em; font-weight: 800; letter-spacing: .08em; padding: .25em .55em; border-radius: .35em; text-transform: uppercase; background: rgba(0,0,0,.55); color: #fff; }
+.mdl-badge.movie { color: #fcd34d; } .mdl-badge.show { color: #7dd3fc; } .mdl-badge.anime { color: #d8b4fe; }
+
+/* progress */
+.mdl-bar { height: 4px; border-radius: 4px; background: var(--md-grey-bg); overflow: hidden; margin-top: .55em; }
+.mdl-bar > i { display: block; height: 100%; border-radius: 4px; background: var(--md-accent); transition: width .4s ease; }
+.mdl-bar.yellow > i { background: var(--md-yellow); } .mdl-bar.purple > i { background: var(--md-purple); }
+.mdl-bar.green > i { background: var(--md-green); } .mdl-bar.red > i { background: var(--md-red); }
+.mdl-bar.indet > i { width: 30% !important; animation: mdl-indet 1.4s ease-in-out infinite; }
+@keyframes mdl-indet { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+.mdl-bar.thick { height: 7px; }
+
+/* rows */
+.mdl-row { display: flex; align-items: center; gap: .8em; padding: .8em .9em; border: 1px solid var(--md-line); border-radius: .6em; background: var(--md-card); }
+.mdl-row + .mdl-row { margin-top: .5em; }
+.mdl-row .grow { flex: 1; min-width: 0; }
+.mdl-row .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-row .sub { font-size: .82em; color: var(--md-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-list-h { display: flex; justify-content: space-between; gap: 1em; font-size: .76em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--md-muted); margin: 1.2em .2em .55em; }
+.mdl-list-h:first-child { margin-top: 0; }
+.mdl-list-h span:last-child { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.mdl-empty { padding: 1.6em 1em; text-align: center; color: var(--md-muted); border: 1px dashed var(--md-line); border-radius: .6em; }
+.mdl-kv { display: flex; justify-content: space-between; gap: .8em; padding: .45em 0; font-size: .9em; }
+.mdl-kv + .mdl-kv { border-top: 1px solid var(--md-line); }
+
+/* callouts */
+.mdl-callout { display: flex; gap: .7em; align-items: flex-start; padding: .8em 1em; border-radius: .6em; border: 1px solid var(--md-line); background: var(--md-card-2); font-size: .92em; }
+.mdl-callout.green { background: var(--md-green-bg); border-color: var(--md-green-line); }
+.mdl-callout.yellow { background: var(--md-yellow-bg); border-color: var(--md-yellow-line); }
+.mdl-callout.red { background: var(--md-red-bg); border-color: var(--md-red-line); }
+.mdl-callout.blue { background: var(--md-blue-bg); border-color: rgba(0,164,220,.35); }
+.mdl-callout b { font-weight: 650; }
+.mdl-callout svg { flex: none; width: 1.15em; height: 1.15em; margin-top: .1em; }
+.mdl-callout.green svg { color: var(--md-green); } .mdl-callout.yellow svg { color: var(--md-yellow); }
+.mdl-callout.red svg { color: var(--md-red); } .mdl-callout.blue svg { color: var(--md-blue); }
+
+/* inputs */
+.mdl label.lbl { display: block; font-size: .84em; font-weight: 600; margin: 0 0 .35em; }
+.mdl input.inp, .mdl select.inp { width: 100%; padding: .6em .75em; border-radius: .5em; border: 1px solid var(--md-line);
+    background: rgba(0,0,0,.25); color: inherit; font: inherit; font-size: .95em; outline: none; }
+.mdl.mdl--light input.inp, .mdl.mdl--light select.inp { background: #fff; }
+.mdl select.inp option { background: #1d1f23; color: #eee; }
+.mdl input.inp:focus, .mdl select.inp:focus { border-color: var(--md-accent); box-shadow: 0 0 0 3px var(--md-accent-soft); }
+.mdl .field + .field { margin-top: 1em; }
+.mdl .hint { font-size: .8em; color: var(--md-muted); margin-top: .35em; }
+.mdl .check { display: flex; gap: .65em; align-items: flex-start; cursor: pointer; }
+.mdl .check input { margin: .2em 0 0; width: 1.05em; height: 1.05em; accent-color: var(--md-accent); flex: none; }
+.mdl .check b { display: block; font-size: .92em; }
+.mdl .check span { display: block; font-size: .8em; color: var(--md-muted); }
+.mdl-seg { display: inline-flex; background: rgba(0,0,0,.25); border: 1px solid var(--md-line); border-radius: .55em; padding: 3px; gap: 3px; }
+.mdl-seg button { all: unset; cursor: pointer; padding: .42em 1em; border-radius: .4em; font-size: .88em; font-weight: 600; color: var(--md-muted); text-align: center; }
+.mdl-seg button.on { background: var(--md-accent); color: #fff; }
+.mdl-seg.full { display: flex; } .mdl-seg.full button { flex: 1; }
+
+/* search */
+.mdl-search { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: .6em; align-items: end; margin-top: 1em; }
+.mdl-search .inp-wrap { position: relative; }
+.mdl-search .inp-wrap svg { position: absolute; left: .75em; top: 50%; transform: translateY(-50%); width: 1em; height: 1em; color: var(--md-faint); }
+.mdl-search .inp-wrap input { padding-left: 2.3em; }
+.mdl-results-h { display: flex; justify-content: space-between; align-items: baseline; gap: 1em; margin: 1.5em 0 .8em; }
+.mdl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 1em; }
+.mdl-tcard { display: flex; flex-direction: column; background: var(--md-card); border: 1px solid var(--md-line); border-radius: .8em; overflow: hidden; cursor: pointer; transition: transform .12s ease, border-color .12s ease; }
+.mdl-tcard:hover { transform: translateY(-2px); border-color: rgba(0,164,220,.55); }
+.mdl-poster { position: relative; aspect-ratio: 2 / 3; background: linear-gradient(160deg, #2a3442, #1d2129); overflow: hidden; }
+.mdl-poster img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mdl-poster .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 1em; text-align: center; color: rgba(255,255,255,.55); font-weight: 600; }
+.mdl-poster .mdl-badge { position: absolute; top: .6em; left: .6em; }
+.mdl-tcard .body { padding: .75em .85em .9em; display: flex; flex-direction: column; gap: .3em; flex: 1; }
+.mdl-tcard .name { font-weight: 650; line-height: 1.25; }
+.mdl-tcard .meta { font-size: .8em; color: var(--md-muted); }
+.mdl-tcard .ov { font-size: .78em; color: var(--md-faint); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.mdl-tcard .mdl-btn { margin-top: auto; width: 100%; }
+
+/* title hero */
+.mdl-back { display: inline-flex; align-items: center; gap: .4em; color: var(--md-muted) !important; margin-bottom: 1em; font-size: .92em; }
+.mdl-hero { display: grid; grid-template-columns: 170px minmax(0,1fr); gap: 1.4em; }
+@media (max-width: 640px) { .mdl-hero { grid-template-columns: 110px minmax(0,1fr); } }
+.mdl-hero .mdl-poster { border-radius: .6em; }
+.mdl-hero h1 { margin-top: .35em; }
+.mdl-hero .meta { color: var(--md-muted); margin-bottom: .6em; }
+.mdl-hero .ov { margin-bottom: 1em; max-width: 60em; }
+
+/* choose episodes */
+.mdl-modes { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: .6em; margin-bottom: 1em; }
+@media (max-width: 640px) { .mdl-modes { grid-template-columns: minmax(0,1fr); } }
+.mdl-mode { all: unset; cursor: pointer; display: flex; gap: .65em; padding: .8em .9em; border: 1px solid var(--md-line); border-radius: .6em; background: var(--md-card); }
+.mdl-mode:hover { background: var(--md-hover); }
+.mdl-mode i { flex: none; width: 1em; height: 1em; border-radius: 50%; border: 2px solid var(--md-faint); margin-top: .15em; }
+.mdl-mode.on { border-color: var(--md-accent); background: var(--md-accent-soft); }
+.mdl-mode.on i { border-color: var(--md-accent); background: radial-gradient(circle, var(--md-accent) 0 45%, transparent 50%); }
+.mdl-mode b { display: block; font-size: .93em; }
+.mdl-mode span { display: block; font-size: .8em; color: var(--md-muted); }
+.mdl-seasons { display: flex; gap: .5em; flex-wrap: wrap; margin-bottom: .9em; }
+.mdl-season { all: unset; cursor: pointer; padding: .55em .85em; border: 1px solid var(--md-line); border-radius: .55em; background: var(--md-card); min-width: 8.5em; }
+.mdl-season:hover { background: var(--md-hover); }
+.mdl-season b { display: block; font-size: .9em; }
+.mdl-season span { display: block; font-size: .74em; color: var(--md-muted); }
+.mdl-season b em { font-style: normal; font-weight: 400; color: var(--md-faint); font-size: .85em; }
+.mdl-season.on { border-color: var(--md-accent); background: var(--md-accent-soft); }
+.mdl-season.picked { border-color: var(--md-green-line); background: var(--md-green-bg); }
+.mdl-ep { display: grid; grid-template-columns: 1.3em 3.2em minmax(0,1fr) auto auto; align-items: center; gap: .75em; padding: .65em .9em; border: 1px solid var(--md-line); border-radius: .55em; cursor: pointer; background: var(--md-card); }
+.mdl-ep + .mdl-ep { margin-top: .4em; }
+.mdl-ep:hover { background: var(--md-hover); }
+.mdl-ep input { width: 1.05em; height: 1.05em; margin: 0; accent-color: var(--md-accent); }
+.mdl-ep .no { font-family: var(--md-mono); font-size: .82em; color: var(--md-muted); }
+.mdl-ep .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdl-ep .rt { font-size: .8em; color: var(--md-muted); }
+.mdl-ep.sel { border-color: rgba(0,164,220,.55); background: var(--md-accent-soft); }
+.mdl-ep.off { cursor: not-allowed; opacity: .55; }
+.mdl-ep.off:hover { background: var(--md-card); }
+.mdl-path { font-family: var(--md-mono); font-size: .8em; padding: .65em .8em; border-radius: .5em; background: rgba(0,0,0,.28); border: 1px solid var(--md-line); word-break: break-all; }
+.mdl.mdl--light .mdl-path { background: rgba(0,0,0,.04); }
+
+/* sticky footer */
+.mdl-foot { position: sticky; bottom: 0; z-index: 5; margin-top: 1.2em; display: flex; align-items: center; justify-content: space-between; gap: 1em; flex-wrap: wrap;
+    padding: .9em 1.2em; border: 1px solid var(--md-line); border-radius: .8em; background: rgba(22,24,28,.94); backdrop-filter: blur(8px); box-shadow: 0 -8px 24px rgba(0,0,0,.25); }
+.mdl.mdl--light .mdl-foot { background: rgba(255,255,255,.95); }
+.mdl-foot b { display: block; }
+.mdl-msg { font-size: .88em; }
+.mdl-msg.ok { color: var(--md-green); } .mdl-msg.err { color: var(--md-red); } .mdl-msg.wait { color: var(--md-yellow); }
+
+/* queue */
+.mdl-tabs { display: flex; gap: .2em; border-bottom: 1px solid var(--md-line); margin: -.2em 0 1em; overflow-x: auto; }
+.mdl-tabs button { all: unset; cursor: pointer; padding: .6em .85em; font-size: .9em; font-weight: 600; color: var(--md-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.mdl-tabs button.on { color: inherit; border-bottom-color: var(--md-accent); }
+.mdl-tabs button em { font-style: normal; font-size: .82em; background: var(--md-grey-bg); border-radius: 999px; padding: .05em .5em; margin-left: .35em; }
+.mdl-log { font-family: var(--md-mono); font-size: .76em; line-height: 1.6; background: rgba(0,0,0,.35); border: 1px solid var(--md-line); border-radius: .55em; padding: .8em .9em; height: 460px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.mdl.mdl--light .mdl-log { background: rgba(0,0,0,.04); }
+.mdl-log .ts { color: var(--md-faint); }
+.mdl-log .g { color: var(--md-green); } .mdl-log .y { color: var(--md-yellow); } .mdl-log .r { color: var(--md-red); } .mdl-log .b { color: var(--md-blue); }
+.mdl-disk { display: flex; align-items: center; gap: 1em; }
+.mdl-disk .grow { flex: 1; }
+.mdl-disk .mdl-bar { width: 180px; margin: 0; flex: none; }
+@media (max-width: 640px) { .mdl-disk { flex-wrap: wrap; } .mdl-disk .mdl-bar { width: 100%; } }
+.mdl-spin { display: inline-block; width: .95em; height: .95em; border: 2px solid var(--md-line); border-top-color: var(--md-accent); border-radius: 50%; animation: mdl-spin .8s linear infinite; vertical-align: -.15em; }
+@keyframes mdl-spin { to { transform: rotate(360deg); } }
+</style>
+
+<div class="mdl">
+    <!-- ====== Top bar: breadcrumb + engine / VPN status ====== -->
+    <div class="mdl-top">
+        <div class="mdl-crumbs">Plugins / <b>Media Downloader</b> / <span class="cur" data-crumb>Overview</span></div>
+        <div class="mdl-pills">
+            <span class="mdl-status" data-status-engine><i></i><span>Checking engine…</span></span>
+            <span class="mdl-status" data-status-vpn hidden><i></i><span>VPN</span></span>
+        </div>
+    </div>
+
+    <!-- ====== Plugin navigation ====== -->
+    <nav class="mdl-nav">
+        <button type="button" data-nav="overview">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Overview</button>
+        <button type="button" data-nav="add">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            Add title</button>
+        <button type="button" data-nav="queue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+            Queue <span class="count" data-nav-count></span></button>
+        <a data-settings-link href="#/configurationpage?name=Media%20Downloader">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+            Settings</a>
+    </nav>
+
+    <!-- =================================================================
+         OVERVIEW
+         ================================================================= -->
+    <section data-view="overview">
+        <div class="mdl-head">
+            <div>
+                <h1>Media Downloader</h1>
+                <p>Find shows, movies and anime, choose exactly what you want, and let the download engine fetch it.
+                   Finished files are verified and dropped straight into your Jellyfin libraries.</p>
+            </div>
+            <div class="mdl-actions">
+                <button type="button" class="mdl-btn" data-go="queue">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+                    Open queue</button>
+                <button type="button" class="mdl-btn primary" data-go="add">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+                    Add title</button>
+            </div>
+        </div>
+
+        <div data-ov-alert></div>
+
+        <div class="mdl-stats">
+            <div class="mdl-stat"><div class="k">In queue</div><div class="v" data-st="queue">–</div><div class="s blue" data-st="queue-sub">&nbsp;</div></div>
+            <div class="mdl-stat"><div class="k">Waiting for dub</div><div class="v" data-st="dub">–</div><div class="s yellow">Re-checked every 24 h</div></div>
+            <div class="mdl-stat"><div class="k">Finished</div><div class="v" data-st="done">–</div><div class="s green">Verified with ffprobe</div></div>
+            <div class="mdl-stat"><div class="k">Outbox</div><div class="v" data-st="outbox">–</div><div class="s muted" data-st="outbox-sub">Waiting to reach the engine</div></div>
+            <div class="mdl-stat"><div class="k">Failed</div><div class="v" data-st="failed">–</div><div class="s"><a data-go="queue" data-queue-tab="failed">Review in queue</a></div></div>
+        </div>
+
+        <div class="mdl-grid-main">
+            <div>
+                <div class="mdl-card">
+                    <div class="mdl-card-h"><h2>Now downloading</h2><a data-go="queue">View all</a></div>
+                    <div data-ov-active></div>
+                </div>
+            </div>
+            <div>
+                <div class="mdl-card">
+                    <div class="mdl-card-h"><h2>Staging disk</h2><span data-ov-disk-pill></span></div>
+                    <div data-ov-disk class="small muted">Engine offline.</div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-card-h"><h2>Library drives</h2><a data-settings-link href="#/configurationpage?name=Media%20Downloader">Manage</a></div>
+                    <div data-ov-libs class="small muted">Loading…</div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-card-h"><h2>Waiting for dub</h2><a data-go="queue" data-queue-tab="waiting">Manage</a></div>
+                    <div data-ov-dub class="small muted">Nothing is waiting for a dub.</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- =================================================================
+         ADD TITLE (search)
+         ================================================================= -->
+    <section data-view="add" hidden>
+        <div class="mdl-head">
+            <div>
+                <h1>Add title</h1>
+                <p>Search for a show, movie or anime, then choose exactly what to download.</p>
+            </div>
+        </div>
+        <div class="mdl-card">
+            <div class="mdl-seg" data-search-type>
+                <button type="button" data-type="all" class="on">All</button>
+                <button type="button" data-type="tv">TV shows &amp; anime</button>
+                <button type="button" data-type="movie">Movies</button>
+            </div>
+            <form class="mdl-search" data-search-form autocomplete="off">
+                <div>
+                    <label class="lbl" for="mdlSearchInput">Title</label>
+                    <div class="inp-wrap">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                        <input id="mdlSearchInput" class="inp" type="search" data-search-input placeholder="e.g. Silo, Dune, One Piece" />
                     </div>
                 </div>
+                <button type="submit" class="mdl-btn primary" style="padding:.68em 1.4em;">Search</button>
+            </form>
+            <div class="hint" data-search-hint>Results come from TMDB (or your Jellyfin catalog when the engine has no TMDB key).</div>
+        </div>
 
-                <!-- ====== ENGINE QUEUE ====== -->
-                <div class="md-section">
-                    <div class="md-card">
-                        <h3>Engine Queue</h3>
-                        <div class="md-actions" style="margin-top:0;margin-bottom:.6em;">
-                            <button id="refreshBtn" class="md-btn md-btn-secondary" type="button">↻ Refresh</button>
-                            <button id="pauseBtn" class="md-btn md-btn-secondary" type="button">Pause</button>
-                            <button id="resumeBtn" class="md-btn md-btn-secondary" type="button">Resume</button>
-                            <button id="stopBtn" class="md-btn md-btn-secondary" type="button">Stop All</button>
-                        </div>
-                        <div id="queueGrid" class="md-queue-grid"></div>
-                    </div>
-                </div>
+        <div class="mdl-results-h">
+            <div><h2 data-results-title></h2><div class="small muted" data-results-sub></div></div>
+        </div>
+        <div class="mdl-cards" data-results></div>
+    </section>
 
-                <!-- ====== OUTBOX ====== -->
-                <div class="md-section">
-                    <div class="md-card">
-                        <h3>Outbox <span style="font-weight:400;font-size:.85em;color:#999;">(delivered when engine is back)</span></h3>
-                        <div id="outboxList" style="margin-top:.5em;"></div>
-                        <div class="md-actions">
-                            <button id="purgeSentBtn" class="md-btn md-btn-secondary" type="button">Clear delivered</button>
-                            <button id="purgeRejectedBtn" class="md-btn md-btn-secondary" type="button">Clear rejected</button>
-                        </div>
-                    </div>
+    <!-- =================================================================
+         TITLE (choose episodes / movie)
+         ================================================================= -->
+    <section data-view="title" hidden>
+        <a class="mdl-back" data-go="add">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            Search results</a>
+
+        <div class="mdl-card">
+            <div class="mdl-hero">
+                <div class="mdl-poster" data-t-poster></div>
+                <div>
+                    <span class="mdl-badge" data-t-badge></span>
+                    <h1 data-t-name></h1>
+                    <div class="meta" data-t-meta></div>
+                    <p class="ov muted" data-t-ov></p>
+                    <div data-t-status></div>
                 </div>
+            </div>
+        </div>
+
+        <div class="mdl-grid-main" style="margin-top:1.1em;">
+            <!-- left: what to download -->
+            <div class="mdl-card" data-t-left></div>
+
+            <!-- right: options -->
+            <div class="mdl-card">
+                <h2 style="margin-bottom:1em;">Download options</h2>
+                <div class="field" data-opt-audio>
+                    <label class="lbl">Audio</label>
+                    <div class="mdl-seg full" data-mode-seg>
+                        <button type="button" data-mode="dub">DUB</button>
+                        <button type="button" data-mode="sub">SUB</button>
+                    </div>
+                    <div class="hint">Matters for anime sites. Episodes whose dub is not out yet go to the Waiting for dub list.</div>
+                </div>
+                <div class="field">
+                    <label class="lbl" for="mdlQuality">Quality</label>
+                    <select id="mdlQuality" class="inp" data-quality>
+                        <option value="1080">1080p (required)</option>
+                        <option value="720">720p or better</option>
+                        <option value="0">Best available</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label class="lbl" for="mdlLibrary">Save to library</label>
+                    <select id="mdlLibrary" class="inp" data-library></select>
+                    <div class="hint" data-library-hint></div>
+                </div>
+                <div class="field" data-opt-watch>
+                    <label class="check"><input type="checkbox" data-watch />
+                        <div><b>Keep watching for new episodes</b><span>Re-checks every 24 h and queues new episodes and late dubs.</span></div></label>
+                </div>
+                <div class="field">
+                    <label class="lbl">File will be saved as</label>
+                    <div class="mdl-path" data-saved-as>–</div>
+                    <div class="hint">Named like the web downloader. The engine picks the drive with room.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mdl-foot">
+            <div><b data-foot-title>Nothing selected</b><span class="small muted" data-foot-sub></span>
+                <div class="mdl-msg" data-foot-msg></div></div>
+            <div class="mdl-actions">
+                <button type="button" class="mdl-btn" data-go="add">Cancel</button>
+                <button type="button" class="mdl-btn primary" data-submit>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+                    <span data-submit-label>Add to queue</span></button>
+            </div>
+        </div>
+    </section>
+
+    <!-- =================================================================
+         QUEUE
+         ================================================================= -->
+    <section data-view="queue" hidden>
+        <div class="mdl-head">
+            <div>
+                <h1>Queue</h1>
+                <p>Series run one after another. Every file is verified before it reaches your library.</p>
+            </div>
+            <div class="mdl-actions">
+                <button type="button" class="mdl-btn" data-q-action="pause">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 5v14M15 5v14"/></svg>Pause all</button>
+                <button type="button" class="mdl-btn" data-q-action="resume">
+                    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>Resume</button>
+                <button type="button" class="mdl-btn danger" data-q-action="stop">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>Stop all</button>
+                <button type="button" class="mdl-btn primary" data-go="add">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>Add title</button>
+            </div>
+        </div>
+
+        <div data-q-vpn></div>
+        <div class="mdl-card" style="margin:.8em 0 1.1em;padding:.8em 1.1em;" data-q-disk>
+            <div class="mdl-disk small muted">Staging disk: engine offline.</div>
+        </div>
+
+        <div class="mdl-grid-main">
+            <div class="mdl-card">
+                <div class="mdl-tabs" data-q-tabs>
+                    <button type="button" data-qtab="queue" class="on">Queue<em data-qc="queue">0</em></button>
+                    <button type="button" data-qtab="waiting">Waiting for dub<em data-qc="waiting">0</em></button>
+                    <button type="button" data-qtab="failed">Failed<em data-qc="failed">0</em></button>
+                    <button type="button" data-qtab="outbox">Outbox<em data-qc="outbox">0</em></button>
+                    <button type="button" data-qtab="done">Finished<em data-qc="done">0</em></button>
+                </div>
+                <div data-q-toolbar></div>
+                <div data-q-list></div>
+            </div>
+            <div class="mdl-card">
+                <div class="mdl-card-h"><h2>Activity log</h2><button type="button" class="mdl-btn sm" data-log-clear>Clear</button></div>
+                <div class="mdl-log" data-log><span class="faint">No activity yet.</span></div>
+            </div>
+        </div>
+    </section>
+</div>
+
             </div>
         </div>
 
         <script type="text/javascript">
             (() => {
-                // Scope lookups to this page instance: Jellyfin keeps previously
-                // visited pages in the DOM, so a global lookup can hit a stale copy.
+                // Scope every lookup to THIS page instance: Jellyfin keeps
+                // previously visited pages in the DOM, so a global lookup can
+                // hit a stale copy.
                 const page = (document.currentScript && document.currentScript.closest('#overviewPage'))
                     || Array.prototype.slice.call(document.querySelectorAll('#overviewPage')).pop();
-                const $ = (s) => page.querySelector(s);
+                const root = page.querySelector('.mdl');
+                const $ = (s) => root.querySelector(s);
+                const $$ = (s) => Array.prototype.slice.call(root.querySelectorAll(s));
 
-                // --- API helpers ---
-                function apiGet(path) {
-                    return ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl(path), dataType: 'json' });
-                }
-                function apiPost(path, data) {
-                    return ApiClient.ajax({
-                        type: 'POST', url: ApiClient.getUrl(path),
-                        data: JSON.stringify(data || {}),
-                        contentType: 'application/json',
-                        dataType: 'json'
-                    });
-                }
-                function apiDelete(path) {
-                    return ApiClient.ajax({ type: 'DELETE', url: ApiClient.getUrl(path), dataType: 'json' });
-                }
+                const PLUGIN_ID = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
+                const SETTINGS_PAGE = 'Media Downloader';
+                // Vidsrc is the engine's primary, id-keyed source (TMDB ids);
+                // the engine walks its other sources from there.
+                const VIDSRC = 'https://vidsrc.sh/embed/';
 
-                // Extract error message from various rejection shapes
-                function errMsg(err) {
-                    if (!err) return 'Unknown error';
-                    if (typeof err === 'string') return err;
-                    if (err.message) return err.message;
-                    if (err.error) return err.error;
-                    // Jellyfin ApiClient sometimes rejects with the Response object
-                    if (err.status) return 'HTTP ' + err.status + (err.statusText ? ' ' + err.statusText : '');
-                    return String(err);
-                }
+                // ---------------------------------------------------------
+                // helpers
+                // ---------------------------------------------------------
+                const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g,
+                    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-                // --- Banner ---
-                function setBanner(ok, text) {
-                    const b = $('#banner');
-                    b.textContent = text;
-                    if (ok) { b.style.background = '#e8f5e9'; b.style.color = '#1b5e20'; b.style.borderLeft = '5px solid #2e7d32'; }
-                    else { b.style.background = '#fff3e0'; b.style.color = '#e65100'; b.style.borderLeft = '5px solid #ff9800'; }
+                function fmtBytes(b) {
+                    if (!(b > 0)) return '0 B';
+                    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+                    let i = 0;
+                    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+                    return (b >= 100 || i === 0 ? b.toFixed(0) : b.toFixed(1)) + ' ' + u[i];
                 }
-
-                // --- Queue display ---
-                function renderQueue(q) {
-                    const grid = $('#queueGrid');
-                    if (!q) { grid.innerHTML = ''; return; }
-                    const items = [
-                        ['queued', q.queued], ['downloading', q.downloading], ['verifying', q.verifying],
-                        ['placing', q.placing], ['waiting', q.waiting], ['failed', q.failed], ['done', q.done]
-                    ];
-                    grid.innerHTML = items.map(function(p) {
-                        return '<div class="md-queue-item"><div class="md-q-num">' + (p[1] != null ? p[1] : '-') + '</div><div class="md-q-label">' + p[0] + '</div></div>';
-                    }).join('');
+                function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+                function sanitizeName(name) {
+                    // Same rule as the engine's organizer.sanitize(): characters
+                    // illegal on Windows become a space; trailing dots trimmed.
+                    return String(name || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '');
+                }
+                function timeOf(ts) {
+                    const d = new Date(ts);
+                    return isNaN(d) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                }
+                function whenOf(iso) {
+                    const d = new Date(iso);
+                    if (isNaN(d)) return '';
+                    const same = d.toDateString() === new Date().toDateString();
+                    return same ? 'today ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleString();
                 }
 
-                // --- Outbox display ---
-                function renderOutbox(items) {
-                    const box = $('#outboxList');
-                    if (!items || !items.length) {
-                        box.innerHTML = '<div style="color:#888;padding:.5em 0;font-size:.9em;">Empty - nothing waiting.</div>';
-                        return;
+                // ApiClient.ajax rejects with the fetch Response on HTTP errors;
+                // read the controller's { error } message out of it so the user
+                // sees "Engine URL is not set" instead of "HTTP 400".
+                function readError(err) {
+                    if (!err) return Promise.resolve('Unknown error');
+                    if (typeof err === 'string') return Promise.resolve(err);
+                    if (err && typeof err.text === 'function' && err.status) {
+                        return err.text().then((t) => {
+                            try {
+                                const j = JSON.parse(t);
+                                if (j && (j.error || j.title)) return String(j.error || j.title);
+                            } catch (e) { /* not JSON */ }
+                            return 'HTTP ' + err.status + (t && t.length < 200 ? ' - ' + t : (err.statusText ? ' ' + err.statusText : ''));
+                        }).catch(() => 'HTTP ' + err.status);
                     }
-                    box.innerHTML = items.map(function(e, i) {
-                        const cls = e.state === 'waiting-to-send' ? 'md-state-wait' : e.state === 'sent' ? 'md-state-sent' : 'md-state-rej';
-                        const time = e.createdAt ? new Date(e.createdAt).toLocaleString() : '';
-                        return '<div class="md-outbox-row">' +
-                            '<span>' + (e.title || e.jobId) + '</span>' +
-                            '<span class="' + cls + '" style="font-size:.85em;">' + e.state + '</span>' +
-                            '<span style="font-size:.8em;color:#888;">' + time + '</span>' +
-                            '<button data-idx="' + i + '">Remove</button>' +
-                            '</div>';
-                    }).join('');
-                    box.querySelectorAll('button[data-idx]').forEach(function(btn) {
-                        btn.addEventListener('click', function() {
-                            const item = items[parseInt(btn.getAttribute('data-idx'))];
-                            apiDelete('MediaDownloader/Outbox/' + encodeURIComponent(item.jobId)).then(refresh).catch(function() {});
-                        });
-                    });
+                    if (err.message) return Promise.resolve(err.message);
+                    if (err.error) return Promise.resolve(String(err.error));
+                    if (err.status) return Promise.resolve('HTTP ' + err.status);
+                    return Promise.resolve(String(err));
+                }
+                function api(method, path, body) {
+                    const opts = { type: method, url: ApiClient.getUrl(path), dataType: 'json' };
+                    if (body !== undefined) {
+                        opts.data = JSON.stringify(body);
+                        opts.contentType = 'application/json';
+                    }
+                    return ApiClient.ajax(opts).catch((err) => readError(err).then((msg) => { throw new Error(msg); }));
+                }
+                const get = (p) => api('GET', p);
+                const post = (p, b) => api('POST', p, b === undefined ? {} : b);
+                const del = (p) => api('DELETE', p);
+
+                function goSettings() {
+                    const hash = '#/configurationpage?name=' + encodeURIComponent(SETTINGS_PAGE);
+                    try {
+                        if (window.Dashboard && typeof Dashboard.navigate === 'function') {
+                            Dashboard.navigate('configurationpage?name=' + encodeURIComponent(SETTINGS_PAGE));
+                            return;
+                        }
+                    } catch (e) { /* fall through */ }
+                    window.location.hash = hash;
                 }
 
+                // Light Jellyfin themes: flip the palette so text stays readable.
+                function detectTheme() {
+                    try {
+                        let el = page, bg = '';
+                        while (el && el !== document.documentElement) {
+                            bg = getComputedStyle(el).backgroundColor;
+                            if (bg && bg !== 'transparent' && !/rgba\(.*,\s*0\)$/.test(bg)) break;
+                            el = el.parentElement;
+                        }
+                        if (!bg || bg === 'transparent') bg = getComputedStyle(document.body).backgroundColor;
+                        const m = (bg || '').match(/\d+(\.\d+)?/g);
+                        if (m && m.length >= 3) {
+                            const lum = (0.299 * m[0] + 0.587 * m[1] + 0.114 * m[2]) / 255;
+                            root.classList.toggle('mdl--light', lum > 0.6);
+                        }
+                    } catch (e) { /* keep dark */ }
+                }
+
+                // ---------------------------------------------------------
+                // state
+                // ---------------------------------------------------------
+                const S = {
+                    view: 'overview',
+                    health: null,          // /Health response
+                    queue: null,           // { counts, items }
+                    outbox: null,          // { waiting, sent, rejected, items }
+                    waiting: [],           // waiting-for-dub entries
+                    log: [],
+                    logSince: 0,
+                    libraries: [],
+                    config: null,
+                    qtab: 'queue',
+                    searchType: 'all',
+                    results: [],
+                    lastQuery: '',
+                    t: null                // the open title
+                };
+
+                // ---------------------------------------------------------
+                // views
+                // ---------------------------------------------------------
+                const CRUMB = { overview: 'Overview', add: 'Add title', title: 'Title', queue: 'Queue' };
+                function show(view) {
+                    S.view = view;
+                    $$('[data-view]').forEach((s) => { s.hidden = s.getAttribute('data-view') !== view; });
+                    $$('[data-nav]').forEach((b) => {
+                        const v = b.getAttribute('data-nav');
+                        b.classList.toggle('on', v === view || (view === 'title' && v === 'add'));
+                    });
+                    $('[data-crumb]').textContent = view === 'title' && S.t ? S.t.title : CRUMB[view];
+                    if (view === 'add') setTimeout(() => { const i = $('[data-search-input]'); if (i && !S.results.length) i.focus(); }, 30);
+                    if (view === 'queue' || view === 'overview') refresh();
+                    window.scrollTo(0, 0);
+                }
+
+                // ---------------------------------------------------------
+                // status refresh (banner pills, overview, queue)
+                // ---------------------------------------------------------
+                let refreshing = null;
                 function refresh() {
-                    return apiGet('MediaDownloader/Health').then((h) => {
-                        const out = h.outbox || {};
-                        if (h.engine === 'online') {
-                            const vpn = (h.health && h.health.vpn) || {};
-                            const q = (h.health && h.health.queue) || {};
-                            setBanner(true, 'Engine online · VPN ' + (vpn.connected ? 'up' : 'DOWN') + ' · Queue ' + (q.total || 0) + ' · Outbox ' + (out.waiting || 0) + ' waiting');
-                            renderQueue(q);
-                        } else {
-                            setBanner(false, 'Engine offline · ' + (out.waiting || 0) + ' job(s) in outbox');
-                        }
-                        return apiGet('MediaDownloader/Outbox');
-                    }).then((o) => { renderOutbox(o.items); })
-                    .catch((err) => { setBanner(false, 'Plugin error: ' + errMsg(err)); });
-                }
-
-                // ====== SEARCH ======
-                let searchTimer = null;
-                let results = [];
-                let selected = null;
-
-                function doSearch() {
-                    const q = $('#searchInput').value.trim();
-                    if (q.length < 2) { hideResults(); return; }
-                    const type = $('#searchType').value;
-                    apiGet('MediaDownloader/Search?q=' + encodeURIComponent(q) + '&type=' + type)
-                        .then((r) => { results = (r && r.results) || []; showResults(); })
-                        .catch(() => { results = []; showResults(); });
-                }
-
-                function showResults() {
-                    const box = $('#searchResults');
-                    if (!results.length) {
-                        box.style.display = 'block';
-                        box.innerHTML = '<div style="padding:.5em;color:#999;">No results found.</div>';
-                        return;
-                    }
-                    box.style.display = 'block';
-                    var rows = '';
-                    for (var i = 0; i < results.length; i++) {
-                        var r = results[i];
-                        rows += '<tr data-idx="' + i + '">';
-                        rows += '<td style="font-weight:500;">' + (r.title || '') + '</td>';
-                        rows += '<td style="color:#999;width:60px;">' + (r.year || '') + '</td>';
-                        rows += '<td style="color:#999;width:70px;">' + (r.type === 'movie' ? 'Movie' : 'TV') + '</td>';
-                        rows += '<td style="width:70px;text-align:right;"><button class="md-select-btn" type="button">Select</button></td>';
-                        rows += '</tr>';
-                    }
-                    box.innerHTML = '<table><tbody>' + rows + '</tbody></table>';
-                    var trs = box.querySelectorAll('tr[data-idx]');
-                    for (var j = 0; j < trs.length; j++) {
-                        (function(tr) {
-                            tr.addEventListener('click', function() {
-                                var idx = parseInt(tr.getAttribute('data-idx'));
-                                selectResult(results[idx]);
-                            });
-                        })(trs[j]);
-                    }
-                }
-
-                function hideResults() {
-                    $('#searchResults').style.display = 'none';
-                    $('#searchResults').innerHTML = '';
-                    $('#selectedPanel').style.display = 'none';
-                    $('#queueBtn').disabled = true;
-                    $('#queueMsg').textContent = '';
-                    selected = null;
-                }
-
-                function selectResult(r) {
-                    hideResults(); // hide the list (also resets selected, so assign after)
-                    selected = r;
-                    // Show selected panel
-                    const panel = $('#selectedPanel');
-                    panel.style.display = 'flex';
-                    $('#selTitle').textContent = r.title + (r.year ? ' (' + r.year + ')' : '');
-                    $('#selMeta').textContent = r.type === 'movie' ? 'Movie' : 'TV Series / Anime';
-                    const img = $('#selPoster');
-                    if (r.poster) { img.src = r.poster; img.style.display = 'block'; } else { img.style.display = 'none'; }
-
-                    if (r.type === 'movie') {
-                        $('#selSeasonRow').style.display = 'none';
-                        $('#queueBtn').disabled = false;
-                        return;
-                    }
-
-                    // TV: show seasons immediately (no API call needed)
-                    // Try TmdbInfo in background for accurate episode counts;
-                    // show a sensible default right away so the UI never hangs.
-                    $('#selSeasonRow').style.display = 'block';
-                    // Default: 10 seasons × 24 eps (engine skips non-existent ones)
-                    selected.seasons = [];
-                    for (var i = 1; i <= 10; i++) selected.seasons.push({ season: i, episodes: 24 });
-                    renderSeasons();
-                    $('#queueBtn').disabled = false;
-
-                    // Background: try to get accurate season/episode counts
-                    apiGet('MediaDownloader/TmdbInfo?tmdb=' + r.tmdb + '&type=tv')
-                        .then(function(info) {
-                            if (info && info.seasons && info.seasons.length) {
-                                selected.seasons = info.seasons;
-                                renderSeasons();
+                    if (refreshing) return refreshing;
+                    refreshing = get('MediaDownloader/Health').then((h) => {
+                        S.health = h;
+                        const online = h && h.engine === 'online';
+                        const tasks = [
+                            get('MediaDownloader/Outbox').then((o) => { S.outbox = o; }).catch(() => {})
+                        ];
+                        if (online) {
+                            tasks.push(get('MediaDownloader/Queue').then((q) => { S.queue = q; }).catch(() => {}));
+                            tasks.push(get('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
+                            if (S.view === 'queue') {
+                                tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
+                                    const items = (l && l.items) || [];
+                                    if (items.length) {
+                                        S.log = S.log.concat(items).slice(-300);
+                                        S.logSince = items[items.length - 1].ts;
+                                    }
+                                }).catch(() => {}));
                             }
-                        })
-                        .catch(function() { /* keep defaults */ });
+                        } else if (!online) {
+                            S.queue = null;
+                        }
+                        return Promise.all(tasks);
+                    }).catch((err) => {
+                        S.health = { engine: 'error', error: err.message };
+                    }).then(() => {
+                        renderStatus();
+                        if (S.view === 'overview') renderOverview();
+                        if (S.view === 'queue') { renderQueue(); renderLog(); }
+                    }).finally(() => { refreshing = null; });
+                    return refreshing;
                 }
 
-                function renderSeasons() {
-                    var sel = $('#selSeason');
-                    sel.innerHTML = '';
-                    var allOpt = document.createElement('option');
-                    allOpt.value = 'all';
-                    allOpt.textContent = 'All Seasons';
-                    sel.appendChild(allOpt);
-                    var seasons = (selected && selected.seasons) || [];
-                    seasons.forEach(function(s) {
-                        var opt = document.createElement('option');
-                        opt.value = s.season;
-                        opt.textContent = 'Season ' + s.season + ' (' + s.episodes + ' eps)';
-                        sel.appendChild(opt);
-                    });
-                    if (!seasons.length) {
-                        var opt1 = document.createElement('option');
-                        opt1.value = '1'; opt1.textContent = 'Season 1';
-                        sel.appendChild(opt1);
-                    }
-                    updateEpisodes();
-                }
-
-                function updateEpisodes() {
-                    const seasonVal = $('#selSeason').value;
-                    const seasons = (selected && selected.seasons) || [];
-                    const sel = $('#selEpisode');
-                    if (seasonVal === 'all') {
-                        // All seasons: just show "All episodes"
-                        sel.innerHTML = '<option value="all">All episodes (all seasons)</option>';
-                        return;
-                    }
-                    const season = parseInt(seasonVal) || 1;
-                    const s = seasons.find((x) => x.season === season);
-                    const maxEp = s ? s.episodes : 24;
-                    sel.innerHTML = '<option value="all">All episodes (1–' + maxEp + ')</option>';
-                    for (let i = 1; i <= Math.min(maxEp, 120); i++) {
-                        const opt = document.createElement('option');
-                        opt.value = String(i); opt.textContent = 'Episode ' + i;
-                        sel.appendChild(opt);
-                    }
-                }
-
-                // ====== QUEUE DOWNLOAD ======
-                function queueDownload() {
-                    if (!selected) return;
-                    const library = $('#jobLibrary').value;
-
-                    // Check if a library is available
-                    const libOpts = $('#jobLibrary').options;
-                    const hasLibs = libOpts.length > 1; // more than just the placeholder
-                    if (!library && !hasLibs) {
-                        showMsg('err', 'No library available. Set one in Media Downloader → Settings first.');
-                        return;
-                    }
-
-                    const btn = $('#queueBtn');
-                    btn.disabled = true;
-                    showMsg('wait', 'Queuing…');
-
-                    let jobs = [];
-                    if (selected.type === 'movie') {
-                        jobs.push({
-                            sourceUrl: 'https://vidsrc.sh/embed/movie/' + selected.tmdb,
-                            title: selected.title,
-                            scope: 'episodes',
-                            selections: [{ season: 1, episodes: [1] }]
-                        });
+                function renderStatus() {
+                    const h = S.health || {};
+                    const eng = $('[data-status-engine]');
+                    const vpnEl = $('[data-status-vpn]');
+                    const online = h.engine === 'online';
+                    eng.className = 'mdl-status ' + (online ? 'ok' : 'bad');
+                    if (online) {
+                        const v = h.health && h.health.version ? ' · v' + h.health.version : '';
+                        eng.lastChild.textContent = 'Engine online' + v;
+                        eng.title = '';
                     } else {
-                        const seasonVal = $('#selSeason').value;
-                        const epVal = $('#selEpisode').value;
-                        const seasons = (selected.seasons || []);
-
-                        if (seasonVal === 'all') {
-                            // All seasons: queue every episode in every season
-                            var seasonList = seasons.length ? seasons : [{ season: 1, episodes: 24 }];
-                            for (var si = 0; si < seasonList.length; si++) {
-                                var s = seasonList[si];
-                                var maxEp = s.episodes || 24;
-                                for (var e = 1; e <= maxEp; e++) {
-                                    jobs.push({
-                                        sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + s.season + '-' + e,
-                                        title: selected.title + ' S' + s.season + 'E' + e,
-                                        scope: 'episodes',
-                                        selections: [{ season: s.season, episodes: [e] }]
-                                    });
-                                }
-                            }
-                        } else {
-                            var season = parseInt(seasonVal) || 1;
-                            var s2 = seasons.find(function(x) { return x.season === season; });
-                            var maxEp2 = s2 ? s2.episodes : 24;
-                            if (epVal === 'all') {
-                                for (var e2 = 1; e2 <= maxEp2; e2++) {
-                                    jobs.push({
-                                        sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + e2,
-                                        title: selected.title + ' S' + season + 'E' + e2,
-                                        scope: 'episodes',
-                                        selections: [{ season: season, episodes: [e2] }]
-                                    });
-                                }
-                            } else {
-                                var ep = parseInt(epVal) || 1;
-                                jobs.push({
-                                    sourceUrl: 'https://vidsrc.sh/embed/tv/' + selected.tmdb + '-' + season + '-' + ep,
-                                    title: selected.title + ' S' + season + 'E' + ep,
-                                    scope: 'episodes',
-                                    selections: [{ season: season, episodes: [ep] }]
-                                });
-                            }
-                        }
+                        eng.lastChild.textContent = h.engine === 'error' ? 'Plugin error' : 'Engine offline';
+                        eng.title = h.error || '';
                     }
-                    if (library) jobs.forEach((j) => { j.library = library; });
+                    const vpn = online && h.health ? h.health.vpn : null;
+                    vpnEl.hidden = !vpn;
+                    if (vpn) {
+                        vpnEl.className = 'mdl-status ' + (vpn.connected ? 'ok' : 'bad');
+                        vpnEl.lastChild.textContent = vpn.connected ? 'Mullvad VPN connected' : 'VPN down - downloads paused';
+                    }
+                    const active = activeCount();
+                    $('[data-nav-count]').textContent = active ? String(active) : '';
+                }
 
-                    const promises = jobs.map((j) => apiPost('MediaDownloader/Enqueue', j));
-                    Promise.all(promises)
-                        .then((res) => {
-                            const ok = res.filter((r) => r && (r.accepted || r.jobId)).length;
-                            showMsg('ok', '✓ Queued ' + ok + ' job' + (ok > 1 ? 's' : '') + (library ? ' → ' + library : ''));
-                            // Reset selection
-                            selected = null;
-                            $('#selectedPanel').style.display = 'none';
-                            $('#searchInput').value = '';
-                            $('#queueBtn').disabled = true;
-                            refresh();
+                const ACTIVE = ['queued', 'ready', 'paused', 'resolving', 'downloading', 'verifying', 'placing'];
+                function items() { return (S.queue && S.queue.items) || []; }
+                function activeCount() { return items().filter((i) => ACTIVE.indexOf(i.status) >= 0).length; }
+
+                function statusPill(status) {
+                    const map = {
+                        queued: ['', 'Queued'], ready: ['', 'Queued'], paused: ['', 'Paused'],
+                        resolving: ['yellow', 'Finding source'], downloading: ['blue', 'Downloading'],
+                        verifying: ['purple', 'Verifying'], placing: ['purple', 'Placing'],
+                        waiting: ['yellow', 'Waiting for dub'], failed: ['red', 'Failed'],
+                        done: ['green', 'Done'], skipped: ['', 'Skipped'], cancelled: ['', 'Cancelled']
+                    };
+                    const m = map[status] || ['', status || '?'];
+                    return '<span class="mdl-pill ' + m[0] + '">' + esc(m[1]) + '</span>';
+                }
+                function itemBar(it) {
+                    if (it.status === 'downloading') {
+                        if (it.progress == null) return '<div class="mdl-bar indet"><i></i></div>';
+                        return '<div class="mdl-bar"><i style="width:' + Math.round(Math.min(1, it.progress) * 100) + '%"></i></div>';
+                    }
+                    if (it.status === 'resolving') return '<div class="mdl-bar yellow indet"><i></i></div>';
+                    if (it.status === 'verifying' || it.status === 'placing') return '<div class="mdl-bar purple indet"><i></i></div>';
+                    return '';
+                }
+                function itemSub(it) {
+                    const bits = [];
+                    if (it.season != null || it.episode != null) bits.push(it.episode == null ? 'Movie' : 'S' + (it.season != null ? it.season : 1) + 'E' + it.episode);
+                    else bits.push('Movie');
+                    bits.push((it.mode || 'dub').toUpperCase());
+                    if (it.status === 'downloading' && it.progress != null) bits.push(Math.round(it.progress * 100) + '%' + (it.bytes ? ' · ' + fmtBytes(it.bytes) : ''));
+                    else if (it.bytes && it.status === 'done') bits.push(fmtBytes(it.bytes));
+                    if (it.status === 'resolving') bits.push('sources are tried in fallback order');
+                    if (it.status === 'verifying') bits.push('checking the file with ffprobe');
+                    if (it.error && (it.status === 'failed' || it.status === 'skipped' || it.status === 'waiting' || it.status === 'queued')) bits.push(it.error);
+                    if (it.attempts > 1) bits.push('attempt ' + it.attempts);
+                    return bits.join(' · ');
+                }
+
+                // ---------------------------------------------------------
+                // OVERVIEW
+                // ---------------------------------------------------------
+                function renderOverview() {
+                    const h = S.health || {};
+                    const online = h.engine === 'online';
+                    const counts = (S.queue && S.queue.counts) || (online && h.health && h.health.queue) || null;
+                    const ob = S.outbox || (h.outbox) || {};
+
+                    // alert: engine offline / not configured
+                    const alert = $('[data-ov-alert]');
+                    if (!online) {
+                        const msg = h.error || 'The engine is not reachable.';
+                        const notSet = /not set/i.test(msg);
+                        alert.innerHTML = '<div class="mdl-callout ' + (notSet ? 'yellow' : 'red') + '" style="margin-bottom:1.1em;">' + ICON.warn +
+                            '<div><b>' + (notSet ? 'Connect the download engine' : 'Engine offline') + '.</b> ' + esc(msg) +
+                            (notSet ? ' <a data-settings-link>Open Settings</a>' : (ob.waiting ? ' ' + plural(ob.waiting, 'job') + ' will be delivered when it is back.' : '')) +
+                            '</div></div>';
+                    } else if (h.health && h.health.vpn && !h.health.vpn.connected) {
+                        alert.innerHTML = '<div class="mdl-callout red" style="margin-bottom:1.1em;">' + ICON.shield +
+                            '<div><b>Mullvad VPN is down.</b> All downloads are paused and resume automatically when it reconnects.</div></div>';
+                    } else {
+                        alert.innerHTML = '';
+                    }
+
+                    const inQueue = counts ? (counts.queued || 0) + (counts.resolving || 0) + (counts.downloading || 0) + (counts.verifying || 0) + (counts.placing || 0) : null;
+                    $('[data-st="queue"]').textContent = inQueue == null ? '–' : inQueue;
+                    $('[data-st="queue-sub"]').textContent = counts ? (counts.downloading || 0) + ' downloading now' : 'Engine offline';
+                    $('[data-st="dub"]').textContent = online ? (S.waiting || []).length : '–';
+                    $('[data-st="done"]').textContent = counts ? (counts.done || 0) : '–';
+                    $('[data-st="outbox"]').textContent = ob.waiting != null ? ob.waiting : '–';
+                    $('[data-st="outbox-sub"]').textContent = ob.rejected ? ob.rejected + ' rejected by the engine' : 'Waiting to reach the engine';
+                    $('[data-st="outbox-sub"]').className = 's ' + (ob.rejected ? 'red' : 'muted');
+                    $('[data-st="failed"]').textContent = counts ? (counts.failed || 0) : '–';
+
+                    // now downloading
+                    const act = items().filter((i) => ['resolving', 'downloading', 'verifying', 'placing'].indexOf(i.status) >= 0);
+                    const next = items().filter((i) => i.status === 'queued' || i.status === 'ready').slice(0, Math.max(0, 4 - act.length));
+                    const list = act.concat(next);
+                    $('[data-ov-active]').innerHTML = list.length
+                        ? list.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
+                            '<div class="grow" style="min-width:0;"><div class="t">' + esc(it.label || it.series) + '</div><div class="sub">' + esc(itemSub(it)) + '</div></div>' +
+                            statusPill(it.status) + '</div>' + itemBar(it) + '</div>').join('')
+                        : '<div class="mdl-empty">' + (online ? 'Nothing is downloading right now.' : 'The engine is offline.') +
+                            '<div style="margin-top:.8em;"><button type="button" class="mdl-btn sm primary" data-go="add">Add a title</button></div></div>';
+
+                    // staging disk
+                    const st = online && h.health ? h.health.staging : null;
+                    if (st && st.totalBytes > 0) {
+                        const used = st.totalBytes - st.freeBytes;
+                        const pct = Math.round(used / st.totalBytes * 100);
+                        const low = st.freeBytes < 50 * 1024 * 1024 * 1024;
+                        $('[data-ov-disk-pill]').innerHTML = '<span class="mdl-pill ' + (low ? 'yellow' : 'green') + '">' + (low ? 'Low space' : 'Healthy') + '</span>';
+                        $('[data-ov-disk]').innerHTML = '<div class="mono faint" style="margin-bottom:.4em;word-break:break-all;">' + esc(st.path) + ' · engine PC</div>' +
+                            '<div class="mdl-bar thick ' + (low ? 'yellow' : '') + '"><i style="width:' + pct + '%"></i></div>' +
+                            '<div style="display:flex;justify-content:space-between;margin-top:.5em;"><span>Used ' + fmtBytes(used) + '</span><span>Free ' + fmtBytes(st.freeBytes) + ' of ' + fmtBytes(st.totalBytes) + '</span></div>' +
+                            (h.health.readOnly ? '<div class="mdl-callout yellow" style="margin-top:.7em;">' + ICON.warn + '<div>Read-only mode is on: nothing is placed in the libraries.</div></div>' : '');
+                    } else {
+                        $('[data-ov-disk-pill]').innerHTML = '';
+                        $('[data-ov-disk]').textContent = online ? 'No staging information.' : 'Engine offline.';
+                    }
+
+                    renderOverviewLibs();
+
+                    // waiting for dub (grouped by series + season)
+                    const groups = {};
+                    (S.waiting || []).forEach((w) => {
+                        const k = (w.series || w.label || '?') + '|' + (w.season != null ? w.season : '');
+                        (groups[k] = groups[k] || { series: w.series || w.label, season: w.season, eps: [] }).eps.push(w.episode);
+                    });
+                    const keys = Object.keys(groups);
+                    $('[data-ov-dub]').innerHTML = keys.length
+                        ? keys.slice(0, 6).map((k) => {
+                            const g = groups[k];
+                            const eps = g.eps.filter((e) => e != null).sort((a, b) => a - b);
+                            const range = eps.length ? 'S' + (g.season != null ? g.season : 1) + 'E' + eps[0] + (eps.length > 1 ? '–E' + eps[eps.length - 1] : '') : '';
+                            return '<div class="mdl-kv"><span>' + esc(g.series) + ' <span class="muted">' + esc(range) + '</span></span><b style="color:var(--md-yellow)">' + g.eps.length + '</b></div>';
+                        }).join('') + '<div class="hint" style="margin-top:.6em;">Each dub downloads automatically when it releases.</div>'
+                        : (online ? 'Nothing is waiting for a dub.' : 'Engine offline.');
+                }
+
+                function renderOverviewLibs() {
+                    const libs = S.libraries || [];
+                    const c = S.config || {};
+                    const roles = {};
+                    if (c.TvLibrary) roles[c.TvLibrary] = (roles[c.TvLibrary] || []).concat('TV default');
+                    if (c.MoviesLibrary) roles[c.MoviesLibrary] = (roles[c.MoviesLibrary] || []).concat('Movies default');
+                    if (c.AnimeLibrary) roles[c.AnimeLibrary] = (roles[c.AnimeLibrary] || []).concat('Anime default');
+                    $('[data-ov-libs]').innerHTML = libs.length
+                        ? libs.map((l) => '<div style="margin-bottom:.8em;"><div style="display:flex;justify-content:space-between;gap:.5em;"><b style="color:var(--md-text)">' + esc(l.name) + '</b>' +
+                            '<span class="faint">' + esc((roles[l.name] || []).join(', ') || l.collectionType) + '</span></div>' +
+                            ((l.locations || []).map((p) => '<div class="mono faint" style="word-break:break-all;">' + esc(p) + '</div>').join('') || '<div class="faint">No folders</div>') + '</div>').join('') +
+                          '<div class="hint">Every drive in every library is checked before anything is queued, so nothing on disk is downloaded twice.</div>'
+                        : 'No TV, Movies or Anime libraries found in Jellyfin.';
+                }
+
+                // ---------------------------------------------------------
+                // ADD TITLE (search)
+                // ---------------------------------------------------------
+                let searchSeq = 0;
+                function doSearch() {
+                    const q = $('[data-search-input]').value.trim();
+                    if (q.length < 2) {
+                        $('[data-results-title]').textContent = '';
+                        $('[data-results-sub]').textContent = 'Type at least 2 characters.';
+                        return;
+                    }
+                    const seq = ++searchSeq;
+                    S.lastQuery = q;
+                    $('[data-results-title]').innerHTML = '<span class="mdl-spin"></span> Searching for “' + esc(q) + '”…';
+                    $('[data-results-sub]').textContent = '';
+                    get('MediaDownloader/Search?q=' + encodeURIComponent(q) + '&type=' + S.searchType).then((r) => {
+                        if (seq !== searchSeq) return;
+                        S.results = (r && r.results) || [];
+                        renderResults();
+                    }).catch((err) => {
+                        if (seq !== searchSeq) return;
+                        S.results = [];
+                        $('[data-results-title]').textContent = 'Search failed';
+                        $('[data-results-sub]').textContent = err.message;
+                        $('[data-results]').innerHTML = '';
+                    });
+                }
+
+                function posterHtml(r, badge) {
+                    const ph = '<div class="ph">' + esc(r.title || '') + '</div>';
+                    const img = r.poster ? '<img loading="lazy" alt="" src="' + esc(r.poster) + '" onerror="this.remove()">' : '';
+                    return ph + img + (badge ? '<span class="mdl-badge ' + (r.type === 'movie' ? 'movie' : 'show') + '">' + (r.type === 'movie' ? 'Movie' : 'Show') + '</span>' : '');
+                }
+
+                function renderResults() {
+                    const q = S.lastQuery;
+                    const n = S.results.length;
+                    $('[data-results-title]').textContent = n ? plural(n, 'result') + ' for “' + q + '”' : 'No results for “' + q + '”';
+                    $('[data-results-sub]').textContent = n ? 'Open a title to see what is already in your libraries and pick what to download.' : 'Try a shorter title, or switch the type filter to All.';
+                    $('[data-results]').innerHTML = S.results.map((r, i) =>
+                        '<div class="mdl-tcard" data-open="' + i + '" tabindex="0" role="button">' +
+                            '<div class="mdl-poster">' + posterHtml(r, true) + '</div>' +
+                            '<div class="body"><div class="name">' + esc(r.title) + '</div>' +
+                            '<div class="meta">' + esc([r.year, r.type === 'movie' ? 'Movie' : 'Series'].filter(Boolean).join(' · ')) + '</div>' +
+                            (r.overview ? '<div class="ov">' + esc(r.overview) + '</div>' : '') +
+                            '<button type="button" class="mdl-btn sm" style="margin-top:.6em;">' + (r.type === 'movie' ? 'View movie' : 'Choose episodes') + '</button></div>' +
+                        '</div>').join('');
+                }
+
+                // ---------------------------------------------------------
+                // TITLE (choose episodes / movie)
+                // ---------------------------------------------------------
+                const STATUS_UI = {
+                    'in-library': ['green', 'In library'],
+                    'low-quality': ['yellow', 'Below quality · replace'],
+                    'queued': ['purple', 'Already queued'],
+                    'missing': ['blue', 'Available'],
+                    'unaired': ['', 'Not aired yet'],
+                    'checking': ['', 'Checking…']
+                };
+                const BLOCKED = { 'in-library': true, 'queued': true, 'unaired': true };
+
+                function libDefault(kind) {
+                    const c = S.config || {};
+                    const libs = S.libraries || [];
+                    const has = (n) => n && libs.some((l) => l.name === n);
+                    if (kind === 'movie') {
+                        if (has(c.MoviesLibrary)) return c.MoviesLibrary;
+                        const m = libs.find((l) => l.collectionType === 'movies');
+                        return m ? m.name : (libs[0] ? libs[0].name : '');
+                    }
+                    if (has(c.TvLibrary)) return c.TvLibrary;
+                    if (has(c.AnimeLibrary)) return c.AnimeLibrary;
+                    const t = libs.find((l) => l.collectionType === 'tvshows');
+                    return t ? t.name : (libs[0] ? libs[0].name : '');
+                }
+                const normPath = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+                function libraryOfPath(p) {
+                    const n = normPath(p);
+                    let best = null, bestLen = -1;
+                    (S.libraries || []).forEach((l) => (l.locations || []).forEach((loc) => {
+                        const ln = normPath(loc);
+                        if (ln && n.indexOf(ln + '/') === 0 && ln.length > bestLen) { best = l.name; bestLen = ln.length; }
+                    }));
+                    if (best) return best;
+                    // Engine paths may be mapped (Z:\tv vs /mnt/tv): match on the
+                    // library folder's last segment as a weaker hint.
+                    (S.libraries || []).forEach((l) => (l.locations || []).forEach((loc) => {
+                        const tail = normPath(loc).split('/').pop();
+                        if (!best && tail && n.indexOf('/' + tail + '/') >= 0) best = l.name;
+                    }));
+                    return best;
+                }
+
+                function openTitle(r) {
+                    const kind = r.type === 'movie' ? 'movie' : 'series';
+                    S.t = {
+                        r: r, kind: kind, tmdb: r.tmdb, title: r.title, year: r.year,
+                        info: null, infoError: null,
+                        seasons: [],            // [{ season, count, eps:[{episode,name,runtime,airDate}], status:{ep:status}, loaded, checked }]
+                        mode: 'full',           // full | season | episodes
+                        active: null,           // season shown in "episodes" mode
+                        picked: {},             // season -> true   ("season" mode)
+                        sel: {},                // season -> {ep:true}  ("episodes" mode)
+                        movieStatus: null,
+                        found: [],              // existing paths (for library hint)
+                        manual: { season: 1, from: 1, to: 1 },
+                        library: libDefault(kind),
+                        libraryLocked: false,
+                        modeAudio: ((S.config && S.config.DefaultMode) || 'dub'),
+                        quality: String((S.config && S.config.DefaultMinHeight != null) ? S.config.DefaultMinHeight : 1080),
+                        watch: false,
+                        busy: false,
+                        seq: (S.t ? S.t.seq : 0) + 1
+                    };
+                    $('[data-foot-msg]').textContent = '';
+                    $('[data-foot-msg]').className = 'mdl-msg';
+                    show('title');
+                    renderTitle();
+                    loadTitle(S.t);
+                }
+
+                function loadTitle(t) {
+                    const stale = () => S.t !== t;
+                    if (!t.tmdb) {
+                        t.noTmdb = true;
+                        t.infoError = 'This result has no TMDB id, so the engine has no way to find a source for it. Give the engine a TMDB key (engine.json "tmdbApiKey") and search again.';
+                        renderTitle();
+                        if (t.kind === 'movie') checkMovie(t);
+                        return;
+                    }
+                    get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv')).then((info) => {
+                        if (stale()) return;
+                        t.info = info || null;
+                        if (info && info.title) t.title = info.title;
+                        if (info && info.year) t.year = info.year;
+                        if (t.kind === 'series') {
+                            t.seasons = ((info && info.seasons) || []).filter((s) => s.season > 0).map((s) => ({
+                                season: s.season, count: s.episodes || 0, year: s.year,
+                                eps: null, status: {}, loaded: false, checked: false
+                            }));
+                            if (!t.seasons.length) t.infoError = 'TMDB lists no seasons for this title yet.';
+                            t.active = t.seasons.length ? t.seasons[0].season : null;
+                        }
+                        renderTitle();
+                        if (t.kind === 'movie') checkMovie(t); else loadSeasons(t);
+                    }).catch((err) => {
+                        if (stale()) return;
+                        t.infoError = 'Could not load seasons from TMDB (' + err.message + '). Enter the season and episodes by hand.';
+                        renderTitle();
+                        if (t.kind === 'movie') checkMovie(t);
+                    });
+                }
+
+                // Episodes (names, air dates) then the library check, a few
+                // seasons at a time, so a long series fills in progressively.
+                function loadSeasons(t) {
+                    const queue = t.seasons.slice();
+                    const worker = () => {
+                        const s = queue.shift();
+                        if (!s || S.t !== t) return Promise.resolve();
+                        return get('MediaDownloader/TmdbSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season)
+                            .then((d) => { if (d && d.episodes && d.episodes.length) s.eps = d.episodes; })
+                            .catch(() => { /* fall back to 1..count */ })
+                            .then(() => {
+                                if (!s.eps) {
+                                    s.eps = [];
+                                    for (let e = 1; e <= s.count; e++) s.eps.push({ episode: e, name: '', runtime: null, airDate: null });
+                                }
+                                s.count = s.eps.length;
+                                s.loaded = true;
+                                if (S.t === t) renderTitle();
+                                return checkSeason(t, s);
+                            })
+                            .then(worker);
+                    };
+                    return Promise.all([worker(), worker(), worker()]);
+                }
+
+                function checkSeason(t, s) {
+                    const eps = s.eps.map((e) => e.episode);
+                    if (!eps.length) { s.checked = true; return Promise.resolve(); }
+                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, minHeight: Number(t.quality) || 0 })
+                        .then((r) => {
+                            ((r && r.episodes) || []).forEach((e) => {
+                                s.status[e.episode] = e.status;
+                                if (e.path) t.found.push(e.path);
+                            });
                         })
-                        .catch((err) => { showMsg('err', errMsg(err)); })
-                        .finally(() => { btn.disabled = false; });
-                }
-
-                function showMsg(kind, text) {
-                    const el = $('#queueMsg');
-                    el.textContent = text;
-                    el.className = 'md-msg ' + (kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : 'wait');
-                }
-
-                // ====== EVENTS ======
-                $('#searchInput').addEventListener('input', () => {
-                    clearTimeout(searchTimer);
-                    searchTimer = setTimeout(doSearch, 350);
-                });
-                $('#searchInput').addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter') { clearTimeout(searchTimer); doSearch(); }
-                    if (e.key === 'Escape') hideResults();
-                });
-                $('#selSeason').addEventListener('change', updateEpisodes);
-                $('#queueBtn').addEventListener('click', queueDownload);
-
-                $('#refreshBtn').addEventListener('click', refresh);
-                $('#pauseBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/pause').then(refresh).catch(() => {}));
-                $('#resumeBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/resume').then(refresh).catch(() => {}));
-                $('#stopBtn').addEventListener('click', () => apiPost('MediaDownloader/Queue/stop').then(refresh).catch(() => {}));
-                $('#purgeSentBtn').addEventListener('click', () => {
-                    if (!confirm('Clear all delivered jobs?')) return;
-                    apiPost('MediaDownloader/Outbox/purge', { state: 'sent' }).then(refresh).catch(() => {});
-                });
-                $('#purgeRejectedBtn').addEventListener('click', () => {
-                    if (!confirm('Clear all rejected jobs?')) return;
-                    apiPost('MediaDownloader/Outbox/purge', { state: 'rejected' }).then(refresh).catch(() => {});
-                });
-
-                // ====== INIT ======
-                page.addEventListener('pageshow', () => {
-                    // Load libraries
-                    apiGet('MediaDownloader/Libraries').then((r) => {
-                        const libs = (r && r.libraries) || [];
-                        const sel = $('#jobLibrary');
-                        sel.innerHTML = '<option value="">Library…</option>';
-                        libs.forEach((lib) => {
-                            const opt = document.createElement('option');
-                            opt.value = lib.name;
-                            opt.textContent = lib.name + ' (' + (lib.collectionType || '') + ')';
-                            sel.appendChild(opt);
+                        .catch((err) => { t.checkError = err.message; })
+                        .then(() => {
+                            s.checked = true;
+                            if (S.t !== t) return;
+                            // A series already filed somewhere: keep new episodes
+                            // in that library so the show is not split.
+                            if (!t.libraryLocked && t.found.length) {
+                                const lib = libraryOfPath(t.found[0]);
+                                if (lib) { t.library = lib; t.libraryFromDisk = true; }
+                            }
+                            renderTitle();
                         });
-                        // Show warning if no libraries
-                        if (!libs.length) $('#libWarning').style.display = 'block';
-                    }).catch(() => { $('#libWarning').style.display = 'block'; });
-                    refresh();
+                }
+
+                function checkMovie(t) {
+                    if (!t.title) return;
+                    t.movieStatus = 'checking';
+                    renderTitle();
+                    post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'movie', minHeight: Number(t.quality) || 0 }).then((r) => {
+                        if (S.t !== t) return;
+                        const e = r && r.episodes && r.episodes[0];
+                        t.movieStatus = e ? e.status : 'missing';
+                        t.moviePath = e && e.path;
+                        t.movieHeight = e && e.height;
+                        if (e && e.path) {
+                            t.found.push(e.path);
+                            const lib = libraryOfPath(e.path);
+                            if (lib && !t.libraryLocked) { t.library = lib; t.libraryFromDisk = true; }
+                        }
+                        renderTitle();
+                    }).catch((err) => {
+                        if (S.t !== t) return;
+                        t.movieStatus = 'missing';
+                        t.checkError = err.message;
+                        renderTitle();
+                    });
+                }
+
+                const today = () => new Date().toISOString().slice(0, 10);
+                function epStatus(s, e) {
+                    if (e.airDate && e.airDate > today()) return 'unaired';
+                    if (!s.checked) return s.status[e.episode] || 'checking';
+                    return s.status[e.episode] || 'missing';
+                }
+                function availableEps(s) {
+                    if (!s.eps) {
+                        const out = [];
+                        for (let e = 1; e <= s.count; e++) out.push(e);
+                        return out;
+                    }
+                    return s.eps.filter((e) => !BLOCKED[epStatus(s, e)]).map((e) => e.episode);
+                }
+
+                // The selection the footer button will queue: [{season, episodes}]
+                function selection(t) {
+                    if (t.kind === 'movie') return [];
+                    if (!t.seasons.length) {
+                        const m = t.manual;
+                        const eps = [];
+                        for (let e = Math.max(1, m.from | 0); e <= Math.max(m.from | 0, m.to | 0) && eps.length < 500; e++) eps.push(e);
+                        return eps.length && m.season >= 0 ? [{ season: m.season | 0, episodes: eps }] : [];
+                    }
+                    const out = [];
+                    t.seasons.forEach((s) => {
+                        let eps = [];
+                        if (t.mode === 'full') eps = availableEps(s);
+                        else if (t.mode === 'season') eps = t.picked[s.season] ? availableEps(s) : [];
+                        else {
+                            const set = t.sel[s.season] || {};
+                            eps = availableEps(s).filter((e) => set[e]);
+                        }
+                        if (eps.length) out.push({ season: s.season, episodes: eps });
+                    });
+                    return out;
+                }
+
+                function renderTitle() {
+                    const t = S.t;
+                    if (!t) return;
+                    $('[data-crumb]').textContent = t.title;
+                    const info = t.info || {};
+                    $('[data-t-poster]').innerHTML = posterHtml({ title: t.title, poster: info.poster || t.r.poster, type: t.r.type }, false);
+                    const badge = $('[data-t-badge]');
+                    badge.className = 'mdl-badge ' + (t.kind === 'movie' ? 'movie' : 'show');
+                    badge.textContent = t.kind === 'movie' ? 'Movie' : 'Series';
+                    $('[data-t-name]').textContent = t.title;
+
+                    const meta = [t.year];
+                    if (t.kind === 'movie') {
+                        if (info.runtime) meta.push(Math.floor(info.runtime / 60) + ' h ' + (info.runtime % 60) + ' min');
+                    } else if (t.seasons.length) {
+                        const total = t.seasons.reduce((a, s) => a + (s.count || 0), 0);
+                        meta.push(plural(t.seasons.length, 'season'), plural(total, 'episode'));
+                    }
+                    $('[data-t-meta]').textContent = meta.filter(Boolean).join(' · ');
+                    $('[data-t-ov]').textContent = info.overview || t.r.overview || '';
+
+                    $('[data-t-status]').innerHTML = titleStatusHtml(t);
+                    $('[data-t-left]').innerHTML = t.kind === 'movie' ? movieLeftHtml(t) : seriesLeftHtml(t);
+
+                    // options
+                    $('[data-opt-watch]').hidden = t.kind === 'movie';
+                    $$('[data-mode]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-mode') === t.modeAudio));
+                    $('[data-quality]').value = t.quality;
+                    if ($('[data-quality]').value !== t.quality) { $('[data-quality]').value = '1080'; t.quality = '1080'; }
+                    $('[data-watch]').checked = !!t.watch;
+                    const libSel = $('[data-library]');
+                    libSel.innerHTML = (S.libraries || []).map((l) => '<option value="' + esc(l.name) + '">' + esc(l.name) + ' (' + esc(l.collectionType) + ')</option>').join('') ||
+                        '<option value="">No libraries - add one in Jellyfin</option>';
+                    libSel.value = t.library;
+                    $('[data-library-hint]').textContent = t.libraryFromDisk && !t.libraryLocked
+                        ? 'Picked because this title is already on disk there, so it is not split across libraries.'
+                        : 'Files land in this library\'s current folders. Adding a drive in Jellyfin is all that is needed.';
+                    $('[data-saved-as]').textContent = savedAs(t);
+
+                    renderFoot();
+                }
+
+                function titleStatusHtml(t) {
+                    if (t.checkError) {
+                        return '<div class="mdl-callout yellow">' + ICON.warn + '<div><b>Could not check your libraries.</b> ' + esc(t.checkError) +
+                            '<div class="small muted">The engine checks again before downloading, so nothing is fetched twice.</div></div></div>';
+                    }
+                    if (t.kind === 'movie') {
+                        if (!t.movieStatus || t.movieStatus === 'checking') return '<div class="small muted"><span class="mdl-spin"></span> Checking every library drive and the queue…</div>';
+                        if (t.movieStatus === 'in-library') return '<div class="mdl-callout green">' + ICON.copy + '<div><b>Already in your library. Nothing to download.</b>' +
+                            (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') +
+                            (t.movieHeight ? '<div class="small muted">' + t.movieHeight + 'p · checked with ffprobe just now</div>' : '') + '</div></div>';
+                        if (t.movieStatus === 'low-quality') return '<div class="mdl-callout yellow">' + ICON.copy + '<div><b>In your library, but below the quality floor' + (t.movieHeight ? ' (' + t.movieHeight + 'p)' : '') + '.</b>' +
+                            ' Downloading again replaces it with a better copy under the same name.' + (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') + '</div></div>';
+                        if (t.movieStatus === 'queued') return '<div class="mdl-callout blue">' + ICON.list + '<div><b>Already in the queue.</b> It will land in your library when it finishes.</div></div>';
+                        return '<div class="mdl-callout">' + ICON.check + '<div><b>Not in your libraries yet.</b> <span class="muted">Checked every TV, Movies and Anime drive plus the queue · just now</span></div></div>';
+                    }
+                    if (!t.seasons.length) return '';
+                    const loaded = t.seasons.filter((s) => s.checked);
+                    if (loaded.length < t.seasons.length) {
+                        return '<div class="small muted"><span class="mdl-spin"></span> Checking your libraries and the queue… (' + loaded.length + ' of ' + plural(t.seasons.length, 'season') + ')</div>';
+                    }
+                    let total = 0, have = 0, queued = 0, low = 0, unaired = 0;
+                    t.seasons.forEach((s) => (s.eps || []).forEach((e) => {
+                        const st = epStatus(s, e);
+                        total++;
+                        if (st === 'in-library') have++;
+                        else if (st === 'queued') queued++;
+                        else if (st === 'low-quality') low++;
+                        else if (st === 'unaired') unaired++;
+                    }));
+                    const aired = total - unaired;
+                    const pctHave = aired ? Math.round(have / aired * 100) : 0;
+                    const pctQ = aired ? Math.round(queued / aired * 100) : 0;
+                    const where = t.found.length ? (t.library ? t.library + ' library · ' : '') + '<span class="mono">' + esc(t.found[0].replace(/[\\/][^\\/]*[\\/][^\\/]*$/, '')) + '</span>' : '';
+                    const extra = [];
+                    if (queued) extra.push(plural(queued, 'episode') + ' already in the queue');
+                    if (low) extra.push(plural(low, 'episode') + ' below the quality floor can be replaced');
+                    if (unaired) extra.push(unaired + ' not aired yet');
+                    const color = have === aired && aired > 0 ? 'green' : (have || queued ? 'blue' : '');
+                    const head = have === aired && aired > 0
+                        ? 'Complete: all ' + aired + ' aired episodes are in your library'
+                        : have ? have + ' of ' + aired + ' episodes are already in your library, so they can\'t be selected'
+                        : 'None of the ' + aired + ' aired episodes are in your libraries yet';
+                    return '<div class="mdl-callout ' + color + '">' + ICON.copy + '<div style="flex:1;min-width:0;"><b>' + esc(head) + '</b>' +
+                        (where ? '<div class="small" style="margin-top:.2em;word-break:break-all;">' + where + '</div>' : '') +
+                        (extra.length ? '<div class="small" style="margin-top:.2em;">' + esc(extra.join(' · ')) + '.</div>' : '') +
+                        '<div class="mdl-bar" style="display:flex;"><i style="width:' + pctHave + '%;background:var(--md-green)"></i><i style="width:' + pctQ + '%;background:var(--md-purple)"></i></div>' +
+                        '<div class="small muted" style="margin-top:.35em;">Checked TV, Movies and Anime on every drive, plus the queue · just now</div></div></div>';
+                }
+
+                function movieLeftHtml(t) {
+                    const st = t.movieStatus;
+                    const rows = [
+                        ['Source', 'Vidsrc first, then the engine\'s other sources in fallback order'],
+                        ['Checked', 'Every TV, Movies and Anime drive, staging and the queue'],
+                        ['Verified', 'ffprobe confirms the stream and duration before the file is placed']
+                    ];
+                    return '<h2 style="margin-bottom:.8em;">Download</h2>' +
+                        (t.infoError ? '<div class="mdl-callout yellow" style="margin-bottom:.8em;">' + ICON.warn + '<div>' + esc(t.infoError) + '</div></div>' : '') +
+                        rows.map((r) => '<div class="mdl-kv"><span class="muted">' + esc(r[0]) + '</span><span style="text-align:right;">' + esc(r[1]) + '</span></div>').join('') +
+                        (st === 'in-library' ? '<div class="hint" style="margin-top:.8em;">Downloading again would create a duplicate, so it is turned off.</div>' : '');
+                }
+
+                function seriesLeftHtml(t) {
+                    let h = '<h2 style="margin-bottom:1em;">What do you want to download?</h2>';
+                    if (!t.seasons.length) {
+                        if (!t.infoError) return h + '<div class="small muted"><span class="mdl-spin"></span> Loading seasons from TMDB…</div>';
+                        if (t.noTmdb) return h + '<div class="mdl-callout yellow">' + ICON.warn + '<div>' + esc(t.infoError) + '</div></div>';
+                        const m = t.manual;
+                        return h + '<div class="mdl-callout yellow" style="margin-bottom:1em;">' + ICON.warn + '<div>' + esc(t.infoError) + '</div></div>' +
+                            '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8em;">' +
+                            '<div><label class="lbl">Season</label><input class="inp" type="number" min="0" value="' + m.season + '" data-manual="season"></div>' +
+                            '<div><label class="lbl">From episode</label><input class="inp" type="number" min="1" value="' + m.from + '" data-manual="from"></div>' +
+                            '<div><label class="lbl">To episode</label><input class="inp" type="number" min="1" value="' + m.to + '" data-manual="to"></div></div>' +
+                            '<div class="hint" style="margin-top:.6em;">Episodes that do not exist on the source fail and are listed under Queue › Failed.</div>';
+                    }
+                    const modes = [
+                        ['full', 'Full series', 'Every available episode across all seasons'],
+                        ['season', 'By season', 'Pick one or more whole seasons'],
+                        ['episodes', 'Specific episodes', 'Tick exactly the episodes you want']
+                    ];
+                    h += '<div class="mdl-modes">' + modes.map((m) => '<button type="button" class="mdl-mode' + (t.mode === m[0] ? ' on' : '') + '" data-tmode="' + m[0] + '"><i></i><div><b>' + m[1] + '</b><span>' + m[2] + '</span></div></button>').join('') + '</div>';
+
+                    // season chips
+                    h += '<div class="mdl-seasons">' + t.seasons.map((s) => {
+                        const avail = availableEps(s).length;
+                        let sub;
+                        if (!s.loaded) sub = 'Loading…';
+                        else if (t.mode === 'episodes') {
+                            const set = t.sel[s.season] || {};
+                            const n = availableEps(s).filter((e) => set[e]).length;
+                            sub = n + ' of ' + avail + ' selected · ' + s.count + ' on TMDB';
+                        } else sub = (s.checked ? avail + ' to get' : 'checking…') + ' · ' + s.count + ' on TMDB';
+                        let cls = 'mdl-season';
+                        if (t.mode === 'episodes' && t.active === s.season) cls += ' on';
+                        if (t.mode === 'season' && t.picked[s.season]) cls += ' picked';
+                        if (t.mode === 'full' && avail) cls += ' picked';
+                        return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>Season ' + s.season + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + '</b><span>' + esc(sub) + '</span></button>';
+                    }).join('') + '</div>';
+
+                    if (t.mode === 'full') {
+                        const n = selection(t).reduce((a, x) => a + x.episodes.length, 0);
+                        h += '<div class="mdl-callout">' + ICON.check + '<div>Every aired episode that is not already in your library or the queue: <b>' + plural(n, 'episode') + '</b> across ' + plural(t.seasons.length, 'season') + '.' +
+                             '<div class="small muted" style="margin-top:.2em;">Episode counts come from TMDB, so no season is cut short.</div></div></div>';
+                        return h;
+                    }
+                    if (t.mode === 'season') {
+                        h += '<div class="hint">Click seasons to add or remove them. Episodes already in your library or the queue are skipped.</div>';
+                        return h;
+                    }
+
+                    // specific episodes
+                    const s = t.seasons.find((x) => x.season === t.active) || t.seasons[0];
+                    if (!s) return h;
+                    if (!s.loaded) return h + '<div class="small muted"><span class="mdl-spin"></span> Loading season ' + s.season + '…</div>';
+                    const set = t.sel[s.season] || {};
+                    h += '<p class="small muted" style="margin-bottom:.7em;">Season ' + s.season + ' has ' + plural(s.count, 'episode') + ' on TMDB. Greyed-out episodes are already in your library, already queued, or not out yet.</p>' +
+                         '<div class="mdl-actions" style="margin-bottom:.8em;"><button type="button" class="mdl-btn sm" data-sel="all">Select all available</button><button type="button" class="mdl-btn sm" data-sel="none">Clear</button></div>';
+                    h += s.eps.map((e) => {
+                        const st = epStatus(s, e);
+                        const off = !!BLOCKED[st];
+                        const on = !off && !!set[e.episode];
+                        const ui = STATUS_UI[st] || ['', st];
+                        return '<label class="mdl-ep' + (off ? ' off' : '') + (on ? ' sel' : '') + '">' +
+                            '<input type="checkbox" data-ep="' + e.episode + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '>' +
+                            '<span class="no">E' + e.episode + '</span>' +
+                            '<span class="nm">' + esc(e.name || 'Episode ' + e.episode) + (e.airDate && st === 'unaired' ? ' <span class="faint small">· ' + esc(e.airDate) + '</span>' : '') + '</span>' +
+                            '<span class="rt">' + (e.runtime ? e.runtime + ' min' : '') + '</span>' +
+                            '<span class="mdl-pill ' + ui[0] + '">' + esc(ui[1]) + '</span></label>';
+                    }).join('');
+                    return h;
+                }
+
+                function savedAs(t) {
+                    const lib = (S.libraries || []).find((l) => l.name === t.library);
+                    const base = lib && lib.locations && lib.locations[0] ? lib.locations[0] : '<' + (t.library || 'Library') + '>';
+                    const sep = base.indexOf('\\') >= 0 && base.indexOf('/') < 0 ? '\\' : '/';
+                    const name = sanitizeName(t.title) || 'Title';
+                    const join = (...p) => p.join(sep).replace(/([\\/])\1+/g, '$1');
+                    if (t.kind === 'movie') return join(base, name, name + '.mp4');
+                    const sel = selection(t);
+                    const s = sel.length ? sel[0].season : (t.seasons[0] ? t.seasons[0].season : 1);
+                    const e = sel.length ? sel[0].episodes[0] : 1;
+                    return join(base, name, 'Season ' + s, name + ' S' + s + 'E' + e + '.mp4');
+                }
+
+                function renderFoot() {
+                    const t = S.t;
+                    const btn = $('[data-submit]');
+                    const qLabel = { '1080': '1080p', '720': '720p+', '0': 'best quality' }[t.quality] || t.quality + 'p';
+                    const sub = (t.kind === 'movie' ? '' : 'Audio ' + t.modeAudio.toUpperCase() + ' · ') + qLabel + ' · ' + (t.library || 'no library');
+                    let title, label, enabled;
+                    if (t.kind === 'movie') {
+                        const blocked = t.movieStatus === 'in-library' || t.movieStatus === 'queued';
+                        title = t.movieStatus === 'in-library' ? 'Already in your library' : t.movieStatus === 'queued' ? 'Already in the queue' : t.movieStatus === 'low-quality' ? 'Replace with a better copy' : 'Ready to queue';
+                        label = t.movieStatus === 'in-library' ? 'Already in library' : t.movieStatus === 'low-quality' ? 'Queue replacement' : 'Add movie to queue';
+                        enabled = !blocked && !!t.tmdb && t.movieStatus !== 'checking';
+                    } else {
+                        const n = selection(t).reduce((a, x) => a + x.episodes.length, 0);
+                        title = n ? plural(n, 'episode') + ' ready to queue' : 'Nothing selected';
+                        label = n ? 'Add ' + plural(n, 'episode') + ' to queue' : 'Add to queue';
+                        enabled = n > 0 && !!t.tmdb;
+                        if (!t.tmdb) title = 'This result has no TMDB id';
+                    }
+                    if (!t.library) { enabled = false; title = 'Pick a library first'; }
+                    $('[data-foot-title]').textContent = title;
+                    $('[data-foot-sub]').textContent = sub;
+                    $('[data-submit-label]').textContent = t.busy ? 'Queuing…' : label;
+                    btn.disabled = !enabled || t.busy;
+                    btn.classList.toggle('is-disabled', !enabled || t.busy);
+                }
+
+                function footMsg(kind, html) {
+                    const el = $('[data-foot-msg]');
+                    el.className = 'mdl-msg ' + kind;
+                    el.innerHTML = html;
+                }
+
+                // One job per season: the engine builds every episode URL from
+                // the season's first episode (vidsrc {id}-{season}-{episode}),
+                // and the series/movie name stays clean for folder naming.
+                function submitTitle() {
+                    const t = S.t;
+                    if (!t || t.busy) return;
+                    const base = {
+                        title: t.title,
+                        year: t.year ? Number(t.year) || undefined : undefined,
+                        tmdb: t.tmdb,
+                        mode: t.modeAudio,
+                        minHeight: Number(t.quality) || 0,
+                        library: t.library
+                    };
+                    let jobs = [];
+                    if (t.kind === 'movie') {
+                        jobs.push(Object.assign({}, base, {
+                            kind: 'movie',
+                            sourceUrl: VIDSRC + 'movie/' + encodeURIComponent(t.tmdb),
+                            scope: 'full',
+                            label: t.title + (t.year ? ' (' + t.year + ')' : '') + ' · Movie'
+                        }));
+                    } else {
+                        const sel = selection(t);
+                        jobs = sel.map((x, i) => Object.assign({}, base, {
+                            kind: 'series',
+                            sourceUrl: VIDSRC + 'tv/' + encodeURIComponent(t.tmdb) + '-' + x.season + '-' + x.episodes[0],
+                            scope: 'episodes',
+                            selections: [{ season: x.season, episodes: x.episodes }],
+                            // Keep watching from the newest season picked.
+                            watch: !!t.watch && i === sel.length - 1,
+                            label: t.title + ' · Season ' + x.season + ' · ' + (x.episodes.length === 1 ? 'E' + x.episodes[0] : plural(x.episodes.length, 'episode'))
+                        }));
+                    }
+                    if (!jobs.length) return;
+                    t.busy = true;
+                    renderFoot();
+                    footMsg('wait', '<span class="mdl-spin"></span> Sending ' + plural(jobs.length, 'job') + '…');
+                    let ok = 0;
+                    const total = jobs.reduce((a, j) => a + (j.selections ? j.selections[0].episodes.length : 1), 0);
+                    jobs.reduce((p, j) => p.then(() => post('MediaDownloader/Enqueue', j).then(() => { ok++; })), Promise.resolve())
+                        .then(() => {
+                            footMsg('ok', '✓ Queued ' + (t.kind === 'movie' ? t.title : plural(total, 'episode')) + ' → ' + esc(t.library) +
+                                '. <a data-go="queue">Open the queue</a>');
+                            refresh();
+                            // Re-check so the picker shows them as "Already queued".
+                            setTimeout(() => {
+                                if (S.t !== t) return;
+                                if (t.kind === 'movie') checkMovie(t);
+                                else t.seasons.forEach((s) => { s.status = {}; s.checked = false; checkSeason(t, s); });
+                                t.sel = {};
+                                t.picked = {};
+                            }, 2500);
+                        })
+                        .catch((err) => {
+                            footMsg('err', esc((ok ? ok + ' of ' + jobs.length + ' jobs queued, then: ' : 'Could not queue: ') + err.message));
+                        })
+                        .then(() => { t.busy = false; renderFoot(); });
+                }
+
+                // ---------------------------------------------------------
+                // QUEUE
+                // ---------------------------------------------------------
+                function renderQueue() {
+                    const h = S.health || {};
+                    const online = h.engine === 'online';
+                    const vpn = online && h.health ? h.health.vpn : null;
+                    $('[data-q-vpn]').innerHTML = !online
+                        ? '<div class="mdl-callout red">' + ICON.warn + '<div><b>Engine offline.</b> ' + esc(h.error || '') + '</div></div>'
+                        : vpn && vpn.connected
+                            ? '<div class="mdl-callout green">' + ICON.shield + '<div><b>Mullvad VPN connected.</b> Downloads pause the moment it drops and resume when it reconnects.</div></div>'
+                            : '<div class="mdl-callout red">' + ICON.shield + '<div><b>VPN down.</b> Every download is paused until Mullvad reconnects.</div></div>';
+
+                    const st = online && h.health ? h.health.staging : null;
+                    $('[data-q-disk]').innerHTML = st && st.totalBytes > 0
+                        ? '<div class="mdl-disk"><div class="grow small"><b>Staging disk: ' + fmtBytes(st.freeBytes) + ' free of ' + fmtBytes(st.totalBytes) + '.</b> <span class="muted">Downloads land here first and are checked before they move to a library drive.</span></div>' +
+                          '<div class="mdl-bar thick"><i style="width:' + Math.round((st.totalBytes - st.freeBytes) / st.totalBytes * 100) + '%"></i></div></div>'
+                        : '<div class="mdl-disk small muted">Staging disk: ' + (online ? 'no information.' : 'engine offline.') + '</div>';
+
+                    const all = items();
+                    const lists = {
+                        queue: all.filter((i) => ACTIVE.indexOf(i.status) >= 0),
+                        failed: all.filter((i) => i.status === 'failed'),
+                        done: all.filter((i) => i.status === 'done' || i.status === 'skipped')
+                    };
+                    const ob = (S.outbox && S.outbox.items) || [];
+                    $('[data-qc="queue"]').textContent = lists.queue.length;
+                    $('[data-qc="waiting"]').textContent = (S.waiting || []).length;
+                    $('[data-qc="failed"]').textContent = lists.failed.length;
+                    $('[data-qc="outbox"]').textContent = ob.filter((o) => o.state !== 'sent').length;
+                    $('[data-qc="done"]').textContent = lists.done.length;
+                    $$('[data-qtab]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-qtab') === S.qtab));
+
+                    const bar = $('[data-q-toolbar]');
+                    const box = $('[data-q-list]');
+                    bar.innerHTML = '';
+                    if (S.qtab === 'outbox') {
+                        bar.innerHTML = '<p class="small muted" style="margin-bottom:.8em;">Jobs are saved here first and delivered to the engine; while it is offline they wait and are retried every 30 s.</p>' +
+                            '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-purge="sent">Clear delivered</button><button type="button" class="mdl-btn sm" data-purge="rejected">Clear rejected</button></div>';
+                        box.innerHTML = ob.length ? ob.map((o) => {
+                            const pill = o.state === 'sent' ? '<span class="mdl-pill green">Delivered</span>' : o.state === 'rejected' ? '<span class="mdl-pill red">Rejected</span>' : '<span class="mdl-pill yellow">Waiting to send</span>';
+                            const sub = [whenOf(o.createdAt), o.attempts ? plural(o.attempts, 'attempt') : '', o.state !== 'sent' && o.message ? o.message : ''].filter(Boolean).join(' · ');
+                            return '<div class="mdl-row"><div class="grow"><div class="t">' + esc(o.title || o.jobId) + '</div><div class="sub" title="' + esc(o.message || '') + '">' + esc(sub) + '</div></div>' + pill +
+                                '<button type="button" class="mdl-btn icon sm" title="Remove" data-ob-del="' + esc(o.jobId) + '">✕</button></div>';
+                        }).join('') : '<div class="mdl-empty">The outbox is empty.</div>';
+                        return;
+                    }
+                    if (S.qtab === 'waiting') {
+                        const w = S.waiting || [];
+                        box.innerHTML = w.length ? w.map((x) => '<div class="mdl-row"><div class="grow"><div class="t">' + esc(x.label || x.series) + '</div><div class="sub">' +
+                            esc(['S' + (x.season != null ? x.season : 1) + 'E' + x.episode, (x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+                            '<span class="mdl-pill yellow">Waiting for dub</span><button type="button" class="mdl-btn icon sm" title="Stop waiting" data-wait-del="' + esc(x.key) + '">✕</button></div>').join('')
+                            : '<div class="mdl-empty">' + (online ? 'Nothing is waiting for a dub.' : 'Engine offline.') + '</div>';
+                        return;
+                    }
+                    const list = lists[S.qtab] || [];
+                    if (!list.length) {
+                        box.innerHTML = '<div class="mdl-empty">' + (!online ? 'Engine offline.' : S.qtab === 'queue' ? 'The queue is empty.' : S.qtab === 'failed' ? 'Nothing has failed.' : 'Nothing has finished in this session yet.') + '</div>';
+                        return;
+                    }
+                    // group by batch (one series/season or one movie)
+                    const groups = [];
+                    const byKey = {};
+                    list.forEach((it) => {
+                        const k = it.group || it.series || it.label;
+                        if (!byKey[k]) { byKey[k] = { items: [], series: it.series, season: it.season, mode: it.mode, movie: it.episode == null }; groups.push(byKey[k]); }
+                        byKey[k].items.push(it);
+                    });
+                    box.innerHTML = groups.map((g) => {
+                        const head = [g.series || 'Untitled', g.movie ? 'Movie' : (g.season != null ? 'Season ' + g.season : ''), g.movie ? '' : (g.mode || 'dub').toUpperCase()].filter(Boolean).join(' · ');
+                        const groupAll = all.filter((i) => (i.group || i.series || i.label) === (g.items[0].group || g.items[0].series || g.items[0].label));
+                        const left = groupAll.filter((i) => ACTIVE.indexOf(i.status) >= 0).length;
+                        const right = S.qtab === 'queue' ? left + ' of ' + groupAll.length + ' left' : plural(g.items.length, 'item');
+                        return '<div class="mdl-list-h"><span>' + esc(head) + '</span><span>' + esc(right) + '</span></div>' +
+                            g.items.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
+                                '<div class="grow" style="min-width:0;"><div class="t mono" style="font-size:.9em;">' + esc(it.label || it.series) + '</div><div class="sub" title="' + esc(it.error || '') + '">' + esc(itemSub(it)) + '</div></div>' +
+                                statusPill(it.status) +
+                                (it.status === 'failed' ? '<button type="button" class="mdl-btn sm" data-retry="' + it.id + '">Retry</button>' : '') +
+                                '<button type="button" class="mdl-btn icon sm" title="Remove from queue" data-remove="' + it.id + '">✕</button></div>' + itemBar(it) + '</div>').join('');
+                    }).join('');
+                }
+
+                function renderLog() {
+                    const box = $('[data-log]');
+                    if (!S.log.length) { box.innerHTML = '<span class="faint">No activity yet.</span>'; return; }
+                    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+                    box.innerHTML = S.log.map((l) => {
+                        const m = String(l.msg || '');
+                        let cls = '';
+                        if (/fail|error|could not|unavailable|timed out/i.test(m)) cls = 'r';
+                        else if (/waiting for dub|sub only|retry|retrying|paused|skipp/i.test(m)) cls = 'y';
+                        else if (/placed|completed|ffprobe ok|resolved|series complete/i.test(m)) cls = 'g';
+                        else if (/queued/i.test(m)) cls = 'b';
+                        return '<div><span class="ts">' + esc(timeOf(l.ts)) + '</span> <span class="' + cls + '">' + esc(m) + '</span></div>';
+                    }).join('');
+                    if (atBottom) box.scrollTop = box.scrollHeight;
+                }
+
+                // ---------------------------------------------------------
+                // icons (inline, no external assets)
+                // ---------------------------------------------------------
+                const ICON = {
+                    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
+                    shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>',
+                    copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+                    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>',
+                    list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>'
+                };
+
+                // ---------------------------------------------------------
+                // events (one delegated listener; the page DOM is re-rendered)
+                // ---------------------------------------------------------
+                root.addEventListener('click', (ev) => {
+                    // A whole search card is clickable (its inner button too).
+                    const card = ev.target.closest('[data-open]');
+                    if (card && root.contains(card)) {
+                        const r = S.results[Number(card.getAttribute('data-open'))];
+                        if (r) openTitle(r);
+                        return;
+                    }
+                    const el = ev.target.closest('button, a');
+                    if (!el || !root.contains(el)) return;
+
+                    if (el.hasAttribute('data-settings-link')) { ev.preventDefault(); goSettings(); return; }
+                    if (el.hasAttribute('data-nav')) { show(el.getAttribute('data-nav')); return; }
+                    if (el.hasAttribute('data-go')) {
+                        ev.preventDefault();
+                        const tab = el.getAttribute('data-queue-tab');
+                        if (tab) S.qtab = tab;
+                        show(el.getAttribute('data-go'));
+                        return;
+                    }
+                    if (el.hasAttribute('data-type')) {
+                        S.searchType = el.getAttribute('data-type');
+                        $$('[data-type]').forEach((b) => b.classList.toggle('on', b === el));
+                        if ($('[data-search-input]').value.trim().length >= 2) doSearch();
+                        return;
+                    }
+
+                    // title view
+                    const t = S.t;
+                    if (t && el.hasAttribute('data-tmode')) { t.mode = el.getAttribute('data-tmode'); renderTitle(); return; }
+                    if (t && el.hasAttribute('data-season')) {
+                        const sn = Number(el.getAttribute('data-season'));
+                        if (t.mode === 'full') {
+                            // Clicking a season while "Full series" is on means
+                            // "just this season".
+                            t.mode = 'season';
+                            t.picked = {};
+                            t.picked[sn] = true;
+                        } else if (t.mode === 'season') {
+                            t.picked[sn] = !t.picked[sn];
+                        } else {
+                            t.active = sn;
+                        }
+                        renderTitle();
+                        return;
+                    }
+                    if (t && el.hasAttribute('data-sel')) {
+                        const s = t.seasons.find((x) => x.season === t.active);
+                        if (!s) return;
+                        const set = {};
+                        if (el.getAttribute('data-sel') === 'all') availableEps(s).forEach((e) => { set[e] = true; });
+                        t.sel[s.season] = set;
+                        renderTitle();
+                        return;
+                    }
+                    if (t && el.hasAttribute('data-mode')) { t.modeAudio = el.getAttribute('data-mode'); renderTitle(); return; }
+                    if (el.hasAttribute('data-submit')) { submitTitle(); return; }
+
+                    // queue view
+                    if (el.hasAttribute('data-qtab')) { S.qtab = el.getAttribute('data-qtab'); renderQueue(); return; }
+                    if (el.hasAttribute('data-q-action')) {
+                        const a = el.getAttribute('data-q-action');
+                        if (a === 'stop' && !confirm('Stop every download and clear the engine queue?')) return;
+                        post('MediaDownloader/Queue/' + a).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-remove')) {
+                        del('MediaDownloader/Queue/' + Number(el.getAttribute('data-remove'))).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-retry')) {
+                        post('MediaDownloader/Queue/' + Number(el.getAttribute('data-retry')) + '/retry').then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-ob-del')) {
+                        del('MediaDownloader/Outbox/' + encodeURIComponent(el.getAttribute('data-ob-del'))).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-purge')) {
+                        const state = el.getAttribute('data-purge');
+                        if (!confirm(state === 'sent' ? 'Clear all delivered jobs from the outbox?' : 'Clear all rejected jobs from the outbox?')) return;
+                        post('MediaDownloader/Outbox/purge', { state: state }).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-wait-del')) {
+                        del('MediaDownloader/Waiting/' + encodeURIComponent(el.getAttribute('data-wait-del'))).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-log-clear')) { S.log = []; renderLog(); return; }
                 });
+
+                root.addEventListener('keydown', (ev) => {
+                    const card = ev.target.closest && ev.target.closest('[data-open]');
+                    if (card && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); card.click(); }
+                });
+
+                root.addEventListener('change', (ev) => {
+                    const t = S.t;
+                    const el = ev.target;
+                    if (t && el.hasAttribute('data-ep')) {
+                        const s = t.seasons.find((x) => x.season === t.active);
+                        if (!s) return;
+                        const set = t.sel[s.season] = t.sel[s.season] || {};
+                        set[Number(el.getAttribute('data-ep'))] = el.checked;
+                        renderTitle();
+                        return;
+                    }
+                    if (t && el.hasAttribute('data-manual')) {
+                        t.manual[el.getAttribute('data-manual')] = Math.max(0, parseInt(el.value, 10) || 0);
+                        if (t.manual.to < t.manual.from) t.manual.to = t.manual.from;
+                        renderTitle();
+                        return;
+                    }
+                    if (t && el.hasAttribute('data-library')) { t.library = el.value; t.libraryLocked = true; renderTitle(); return; }
+                    if (t && el.hasAttribute('data-quality')) {
+                        t.quality = el.value;
+                        // The quality floor changes what counts as "in library".
+                        if (t.kind === 'movie') checkMovie(t);
+                        else t.seasons.forEach((s) => { if (s.loaded) { s.checked = false; checkSeason(t, s); } });
+                        renderTitle();
+                        return;
+                    }
+                    if (t && el.hasAttribute('data-watch')) { t.watch = el.checked; return; }
+                });
+
+                $('[data-search-form]').addEventListener('submit', (ev) => { ev.preventDefault(); doSearch(); });
+
+                // ---------------------------------------------------------
+                // lifecycle: load once per show, poll while visible
+                // ---------------------------------------------------------
+                let timer = null;
+                let tick = 0;
+                function visible() { return document.body.contains(page) && !page.classList.contains('hide'); }
+                function startPolling() {
+                    stopPolling();
+                    timer = setInterval(() => {
+                        if (!visible()) { stopPolling(); return; }
+                        tick++;
+                        if (S.view === 'queue' || S.view === 'overview' || tick % 4 === 0) {
+                            refresh();
+                        }
+                    }, 4000);
+                }
+                function stopPolling() { if (timer) { clearInterval(timer); timer = null; } }
+
+                let lastShow = 0;
+                function onShow() {
+                    // Some Jellyfin versions fire both pageshow and viewshow.
+                    if (Date.now() - lastShow < 800) return;
+                    lastShow = Date.now();
+                    detectTheme();
+                    Promise.all([
+                        get('MediaDownloader/Libraries').then((r) => { S.libraries = (r && r.libraries) || []; }).catch(() => { S.libraries = []; }),
+                        ApiClient.getPluginConfiguration(PLUGIN_ID).then((c) => { S.config = c || {}; }).catch(() => { S.config = {}; })
+                    ]).then(() => {
+                        if (S.view === 'overview') renderOverviewLibs();
+                        if (S.view === 'title') renderTitle();
+                    });
+                    let want = null;
+                    try { want = sessionStorage.getItem('mdl-view'); sessionStorage.removeItem('mdl-view'); } catch (e) { /* private mode */ }
+                    if (want && CRUMB[want] && want !== 'title') S.view = want;
+                    show(S.view === 'title' && !S.t ? 'overview' : S.view);
+                    startPolling();
+                }
+                page.addEventListener('pageshow', onShow);
+                page.addEventListener('viewshow', onShow);
+                page.addEventListener('pagehide', stopPolling);
+                page.addEventListener('viewhide', stopPolling);
             })();
         </script>
     </div>

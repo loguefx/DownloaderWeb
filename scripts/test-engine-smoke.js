@@ -272,6 +272,45 @@ async function main() {
   // accepted-jobs dedupe file
   check('accepted-jobs.json written', fs.existsSync(path.join(DATA_DIR, 'accepted-jobs.json')));
 
+  // The plugin's vidsrc job: ONE job covers a season. The sample URL names
+  // episode 1; the rest are built from its {season}/{episode} template.
+  r = await req('POST', '/api/jobs', {
+    jobId: 'smoke-vidsrc',
+    kind: 'series',
+    title: 'Vid Show',
+    sourceUrl: 'https://vidsrc.sh/embed/tv/125988-2-1',
+    library: { id: 'lib1', name: 'Anime', locations: ['\\\\nas\\anime'] },
+    scope: 'episodes',
+    selections: [{ season: 2, episodes: [1, 2, 3] }]
+  }, { authorization: `Bearer ${KEY}` });
+  check('vidsrc season job queued 3', r.json && r.json.summary && r.json.summary.queued === 3, r.body.slice(0, 200));
+  const vid3 = manager.items.find((x) => x.series === 'Vid Show' && x.episode === 3);
+  check('vidsrc episode URL built from template', vid3 && vid3.url === 'https://vidsrc.sh/embed/tv/125988-2-3', vid3 && vid3.url);
+  check('vidsrc episode keeps season 2', vid3 && vid3.season === 2);
+
+  // A movie job: one unnumbered item, named <Title>, never "S1E1".
+  r = await req('POST', '/api/jobs', {
+    jobId: 'smoke-movie',
+    kind: 'movie',
+    title: 'Some Movie',
+    sourceUrl: 'https://vidsrc.sh/embed/movie/550',
+    library: { id: 'lib1', name: 'Anime', locations: ['\\\\nas\\anime'] },
+    scope: 'full'
+  }, { authorization: `Bearer ${KEY}` });
+  check('movie job queued 1', r.json && r.json.summary && r.json.summary.queued === 1, r.body.slice(0, 200));
+  const mv = manager.items.find((x) => x.series === 'Some Movie');
+  check('movie item has no season/episode', mv && mv.season == null && mv.episode == null, mv && JSON.stringify([mv.season, mv.episode]));
+  check('movie item label is the bare title', mv && mv.label === 'Some Movie', mv && mv.label);
+
+  r = await req('POST', '/api/library/check', { series: 'Some Movie', kind: 'movie', locations: [] }, { authorization: `Bearer ${KEY}` });
+  check('library/check sees a queued movie', r.json && r.json.episodes && r.json.episodes[0] && r.json.episodes[0].status === 'queued', r.body.slice(0, 200));
+
+  r = await req('GET', '/api/log', null, { authorization: `Bearer ${KEY}` });
+  check('GET /api/log returns recent lines', r.status === 200 && r.json && Array.isArray(r.json.items) && r.json.items.some((l) => /Queued/.test(l.msg)), r.body.slice(0, 200));
+
+  r = await req('DELETE', `/api/queue/${mv.id}`, null, { authorization: `Bearer ${KEY}` });
+  check('DELETE /api/queue/{id} removes the item', r.status === 200 && !manager.items.some((x) => x.id === mv.id));
+
   // settings round-trip
   r = await req('PUT', '/api/settings', { fillMode: 'spread' }, { authorization: `Bearer ${KEY}` });
   check('settings PUT -> 200 + applied', r.status === 200 && r.json.fillMode === 'spread', r.body.slice(0, 120));

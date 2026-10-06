@@ -37,11 +37,13 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
         public const string StateRejected = "rejected";
 
         private readonly object _gate = new object();
+        private readonly string _folder;
         private readonly string _file;
         private Dictionary<string, OutboxEntry> _entries;
 
         public Outbox(string dataFolder)
         {
+            _folder = dataFolder;
             _file = Path.Combine(dataFolder, "outbox.json");
             Load();
         }
@@ -66,6 +68,12 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
         {
             // Atomic: write a sibling .tmp and rename, so a crash never leaves
             // a half-written outbox (a lost outbox is a lost download request).
+            //
+            // The plugin data folder is NOT created by Jellyfin. Without this,
+            // the first write threw DirectoryNotFoundException, which Jellyfin's
+            // exception middleware turns into "404 Error processing request." -
+            // every Queue Download click failed while the job sat in memory only.
+            Directory.CreateDirectory(_folder);
             var tmp = _file + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(_entries, new JsonSerializerOptions { WriteIndented = true }));
             File.Move(tmp, _file, true);
