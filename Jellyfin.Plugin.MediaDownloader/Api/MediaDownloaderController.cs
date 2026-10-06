@@ -130,10 +130,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         // Jobs: always into the outbox first (Part 4)
         // ------------------------------------------------------------------
 
-        [HttpPost("Jobs")]
+        // NOTE: "Jobs" conflicts with an internal Jellyfin 12.x route. Using "Enqueue" instead.
+        [HttpPost("Enqueue")]
         [ProducesResponseType(StatusCodes.Status202Accepted)]
         [ProducesResponseType(StatusCodes.Status400BadRequest)]
-        public async Task<IActionResult> Jobs()
+        public async Task<IActionResult> Enqueue()
         {
             // Read the raw body (avoids [FromBody] JsonElement binding issues in Jellyfin 12.x)
             string rawBody;

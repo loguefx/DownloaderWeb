@@ -446,7 +446,7 @@
                     }
                     if (library) jobs.forEach((j) => { j.library = library; });
 
-                    const promises = jobs.map((j) => apiPost('MediaDownloader/Jobs', j));
+                    const promises = jobs.map((j) => apiPost('MediaDownloader/Enqueue', j));
                     Promise.all(promises)
                         .then((res) => {
                             const ok = res.filter((r) => r && (r.accepted || r.jobId)).length;
