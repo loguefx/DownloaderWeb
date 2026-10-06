@@ -254,6 +254,10 @@ function browserHeaders(detection) {
   if (!headerKey(headers, 'user-agent')) {
     headers['User-Agent'] = config.download.userAgent;
   }
+  // plainHttp (Vidsrc headless path): the CDN rejects session cookies and extra
+  // Referer/Origin headers with 403. Only User-Agent goes out — same as the
+  // vidsrc_dl.js verification which works reliably.
+  if (detection.plainHttp) return headers;
   // Never overwrite a sniffed Referer/Origin. Vidfast redirects .pro -> .vc and
   // the CDN 502s if we send the pre-redirect host.
   if (!headerKey(headers, 'referer') && detection.embedUrl) {
@@ -299,6 +303,9 @@ function ffmpegFileArg(p) {
 
 async function prepareDownloadHeaders(detection) {
   const headers = Object.assign({}, browserHeaders(detection));
+  // plainHttp (Vidsrc headless path): no session cookies — the CDN 403s on
+  // requests that carry Electron session cookies.
+  if (detection.plainHttp) return headers;
   if (!headerKey(headers, 'cookie')) {
     const refererKey = headerKey(headers, 'referer');
     const referer = refererKey ? headers[refererKey] : '';
@@ -541,11 +548,27 @@ async function downloadHls(detection, partPath, opts = {}) {
     } else {
       if (firstSeg && !detection.playerWebContentsId) {
         try {
-          const buf = await hlscheck.fetchBuffer(firstSeg, headers, {
-            timeoutMs: 20000,
-            signal,
-            playerWebContentsId: detection.playerWebContentsId
-          });
+          let buf;
+          if (detection.plainHttp) {
+            // Vidsrc CDN: use plain Node.js HTTP (no Electron session cookies).
+            // Same approach as vidsrc_dl.js verification which works reliably.
+            buf = await new Promise((resolve, reject) => {
+              const lib = firstSeg.startsWith('http:') ? require('http') : require('https');
+              const rq = lib.get(firstSeg, { headers: { 'User-Agent': ua }, timeout: 20000 }, (rs) => {
+                const c = [];
+                rs.on('data', (d) => c.push(d));
+                rs.on('end', () => resolve(Buffer.concat(c)));
+              });
+              rq.on('error', reject);
+              rq.setTimeout(20000, () => { rq.destroy(); reject(new Error('timeout')); });
+            });
+          } else {
+            buf = await hlscheck.fetchBuffer(firstSeg, headers, {
+              timeoutMs: 20000,
+              signal,
+              playerWebContentsId: detection.playerWebContentsId
+            });
+          }
           pngSeen = hlscheck.isPng(buf);
           if (pngSeen) disguised = true;
         } catch (e) {

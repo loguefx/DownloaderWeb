@@ -206,7 +206,12 @@ module.exports = {
         url: best.url,
         type: 'hls',
         headers: { 'User-Agent': vidsrcDl.UA },
-        embedUrl: best.url
+        embedUrl: best.url,
+        // Vidsrc CDNs reject requests that carry Electron session cookies or
+        // extra Referer/Origin headers (HTTP 403). The headless path (vidsrc_dl.js)
+        // uses plain https.get() with only User-Agent and works reliably. Flag the
+        // downloader to do the same: no session cookies, no Referer, no Origin.
+        plainHttp: true
       }
     };
   }
