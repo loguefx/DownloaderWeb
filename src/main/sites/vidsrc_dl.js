@@ -25,6 +25,29 @@ const https = require('https');
 const http = require('http');
 const { execFile } = require('child_process');
 const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// Cross-platform ffmpeg/ffprobe resolution (was hardcoded to /usr/bin/ which
+// doesn't exist on Windows — the engine PC). Use the main downloader's resolver
+// when available; fall back to PATH search.
+function getFfmpeg() {
+  try {
+    const dl = require('../downloader');
+    if (typeof dl.ffmpegPath === 'function') return dl.ffmpegPath();
+  } catch (e) { /* downloader not loaded yet */ }
+  // Fallback: search PATH
+  const name = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  return name;
+}
+function getFfprobe() {
+  try {
+    const dl = require('../downloader');
+    if (typeof dl.ffprobePath === 'function') return dl.ffprobePath();
+  } catch (e) { /* downloader not loaded yet */ }
+  const name = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
+  return name;
+}
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
@@ -132,7 +155,7 @@ function parseMaster(masterText, baseOrigin) {
 function probeResolution(bufPath) {
   return new Promise((resolve) => {
     execFile(
-      '/usr/bin/ffprobe',
+      getFfprobe(),
       ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', bufPath],
       { timeout: 20000 },
       (err, stdout) => {
@@ -228,7 +251,7 @@ function spawnFfmpeg(inputUrl, outPath, ua, opts) {
       '-movflags', '+faststart',
       outPath
     ];
-    execFile('/usr/bin/ffmpeg', args, { maxBuffer: 64 * 1024 * 1024 }, (err, so, se) => {
+    execFile(getFfmpeg(), args, { maxBuffer: 64 * 1024 * 1024 }, (err, so, se) => {
       if (opts && opts.signal && opts.signal.aborted) return reject(Object.assign(new Error('aborted'), { aborted: true }));
       if (err) return reject(new Error((se || so || err.message || 'ffmpeg failed').toString().trim().slice(-300)));
       resolve();
