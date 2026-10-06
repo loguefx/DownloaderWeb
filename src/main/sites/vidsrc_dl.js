@@ -209,7 +209,7 @@ async function pick1080(ref, onLog) {
           .find((l) => l && !l.startsWith('#'));
         if (!segLine) continue;
         const segUrl = segLine.startsWith('http') ? segLine : u.origin + (segLine.startsWith('/') ? '' : '/') + segLine;
-        const segPath = `/tmp/vs_verify_${i}_${v.height}.bin`;
+        const segPath = path.join(os.tmpdir(), `vs_verify_${i}_${v.height}.bin`);
         await new Promise((res, rej) => {
           const rq = (segUrl.startsWith('http:') ? http : https).get(
             segUrl,
@@ -287,7 +287,7 @@ module.exports = { pick1080, download, fetchStreamUrls, UA };
 if (require.main === module) {
   const [type, id, season, episode, out] = process.argv.slice(2);
   const ref = { type, tmdb: /^tt\d/.test(id) ? undefined : id, imdb: /^tt\d/.test(id) ? id : undefined, season, episode };
-  const outPath = out || '/tmp/vidsrc_out.mp4';
+  const outPath = out || path.join(os.tmpdir(), 'vidsrc_out.mp4');
   download(ref, outPath, { onLog: (m) => console.log('[vs]', m) })
     .then((r) => console.log('OK', JSON.stringify(r)))
     .catch((e) => { console.error('FAIL', e.message); process.exit(1); });
