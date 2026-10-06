@@ -46,5 +46,10 @@ const profile = buildProfile({
   episodeFromShowPage
 });
 
-profile.fallbackRank = 1;
+// Cloudflare-gated: the /play/ player page sits behind an interactive CF
+// checkbox. Bumped to rank 90 so CF-free sources (NontonGo, rank 2) are
+// tried first. Skipped entirely when config.download.skipCloudflareSites
+// is true (the default).
+profile.fallbackRank = 90;
+profile.cloudflare = true;
 module.exports = profile;

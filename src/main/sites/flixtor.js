@@ -13,11 +13,10 @@ module.exports = {
   name: 'Flixtor',
   match: [/flixtor\./i],
   minHeight: 1080,
-  // Pool order: Vidsrc 0 (CF-free primary), FMovies 1 (CF checkbox),
-  // NontonGo 2 (CF-free, proven quality), Flixtor 3, SolarMovie 4. Flixtor is
-  // CF-gated (403 challenge verified 2026), so it sits behind the CF-free
-  // sources.
-  fallbackRank: 3,
+  // Cloudflare-gated (403 challenge verified 2026). Bumped to rank 91 so
+  // CF-free sources are tried first. Skipped when skipCloudflareSites is true.
+  fallbackRank: 91,
+  cloudflare: true,
   mirrorUrls(pageUrl) {
     // flixtor.la was hijacked by a parked-domain news page (verified live),
     // so flixtor.to is the only usable host right now.

@@ -47,5 +47,7 @@ const profile = buildProfile({
   ]
 });
 
-profile.fallbackRank = 4; // behind Vidsrc (0), FMovies (1), NontonGo (2) and Flixtor (3)
+// All TLDs currently dead/parked. Bumped to rank 92 (last) so it never
+// wastes time before the live CF-free sources. Kept in case a TLD comes back.
+profile.fallbackRank = 92;
 module.exports = profile;

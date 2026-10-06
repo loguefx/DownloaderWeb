@@ -282,8 +282,20 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             // tried last (anime/region adapters). This was alphabetical before,
             // which burned through irrelevant catalogs and hit Cloudflare early.
             const rank = (c) => (c && c.fallbackRank != null ? c.fallbackRank : 99);
+            // Skip Cloudflare-gated sites by default (config.download.skipCloudflareSites
+            // defaults to true). The user does not want to click CF checkboxes.
+            // Set it to false in engine.json to re-enable them as last-resort.
+            const skipCf = config.download.skipCloudflareSites !== false;
             const cands = sites.profiles
-              .filter((c) => c && c.id !== (profile && profile.id) && typeof c.findTitle === 'function')
+              .filter((c) => {
+                if (!c || c.id === (profile && profile.id)) return false;
+                if (typeof c.findTitle !== 'function') return false;
+                if (skipCf && c.cloudflare) {
+                  log(`Skipping ${c.name || c.id} (Cloudflare-gated).`);
+                  return false;
+                }
+                return true;
+              })
               .sort((a, b) => rank(a) - rank(b));
             for (const cand of cands) {
               if (controller.signal.aborted) break;
