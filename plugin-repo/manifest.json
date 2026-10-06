@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.20",
+                "changelog": "Rename Jobs→Enqueue (route conflict with Jellyfin 12.x internal /Jobs route).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v20/MediaDownloader.12.1.0.20.zip",
+                "checksum": "bd9548069f410df18428543b9eadc4dc",
+                "timestamp": "2026-10-06T00:51:50.899Z"
+            },
+            {
                 "version": "12.1.0.19",
                 "changelog": "Fix Jobs 404: read raw request body instead of [FromBody] JsonElement (Jellyfin 12.x binding issue).",
                 "targetAbi": "12.1.0.0",
@@ -160,6 +168,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.20",
+                "changelog": "Rename Jobs→Enqueue (route conflict with Jellyfin 12.x internal /Jobs route).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v20/MediaDownloader.10.11.0.20.zip",
+                "checksum": "973a22c0365a29307215f63ffa73e154",
+                "timestamp": "2026-10-06T00:51:50.899Z"
+            },
+            {
                 "version": "10.11.0.19",
                 "changelog": "Fix Jobs 404: read raw request body instead of [FromBody] JsonElement (Jellyfin 12.x binding issue).",
                 "targetAbi": "10.11.0.0",
@@ -310,6 +326,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.20",
+                "changelog": "Rename Jobs→Enqueue (route conflict with Jellyfin 12.x internal /Jobs route).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v20/MediaDownloader.10.10.0.20.zip",
+                "checksum": "3fbbbee5dd93efe25a72bb5ba90116f3",
+                "timestamp": "2026-10-06T00:51:50.899Z"
             },
             {
                 "version": "10.10.0.19",
