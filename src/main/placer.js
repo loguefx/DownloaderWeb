@@ -265,11 +265,12 @@ async function placeItem(item, stagedPath) {
   // Already on the target drive?
   const already = organizer.existingEpisodeFile(pick.folder, meta);
   let replacePath = null;
-  if (already && path.resolve(already) !== path.resolve(finalPath)) {
+  if (already) {
     const probed = await require('./verify').verifyFile(already);
     const floor = item.minHeight || 0;
     if (probed.probeOk && (!floor || probed.height >= floor)) {
-      // Already in the library at good quality: just drop the staging copy.
+      // Already in the library at good quality (same path or different path):
+      // drop the staging copy and report done.
       try {
         fs.unlinkSync(staged);
       } catch (e) {
@@ -278,6 +279,7 @@ async function placeItem(item, stagedPath) {
       library.audit('already-in-library', finalPath, staged);
       return { placed: true, finalPath: already, existing: true, folder: pick.folder };
     }
+    // Low quality or unreadable: only replace if the engine placed it.
     if (library.isOurs(already)) replacePath = already;
   }
 
