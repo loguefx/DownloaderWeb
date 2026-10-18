@@ -367,7 +367,7 @@
             <div class="mdl-seg" data-browse-tabs>
                 <button type="button" data-btype="tv" class="on">TV Shows</button>
                 <button type="button" data-btype="movie">Movies</button>
-                <button type="button" data-btype="anime">Anime</button>
+                <button type="button" data-btype="anime">Anime (Aniwave)</button>
             </div>
             <div class="mdl-seg" data-browse-cat style="margin-top:.5em;">
                 <button type="button" data-bcat="trending" class="on">Trending this week</button>
@@ -701,7 +701,13 @@
                     } else {
                         grid.innerHTML += '<div class="mdl-browse-loading" style="padding:1em;">Loading more…</div>';
                     }
-                    var url = 'MediaDownloader/Browse?type=' + S.browseType + '&category=' + S.browseCat + '&page=' + S.browsePage;
+                    // Anime uses AniList API (free, no key needed, has all seasons)
+                    var url;
+                    if (S.browseType === 'anime') {
+                        url = 'MediaDownloader/Anime/Browse?category=' + S.browseCat + '&page=' + S.browsePage;
+                    } else {
+                        url = 'MediaDownloader/Browse?type=' + S.browseType + '&category=' + S.browseCat + '&page=' + S.browsePage;
+                    }
                     get(url).then(function (data) {
                         var results = (data && data.results) || [];
                         if (!append) S.browseResults = results;
@@ -718,10 +724,14 @@
                     var html = results.map(function (r) {
                         var rating = r.rating ? '<span class="rating">' + r.rating + '</span>' : '';
                         var year = r.year ? r.year : '';
-                        return '<div class="mdl-tcard" data-browse-open="' + r.tmdb + '" data-btype="' + r.type + '">'
+                        var eps = r.episodes ? ' · ' + r.episodes + ' ep' : '';
+                        // Anime cards use anilist id, TV/Movie use tmdb id
+                        var id = r.anilist || r.tmdb || '';
+                        var idAttr = r.anilist ? 'data-browse-anilist' : 'data-browse-open';
+                        return '<div class="mdl-tcard" ' + idAttr + '="' + id + '" data-btype="' + (r.type || S.browseType) + '">'
                             + '<div class="mdl-poster">' + rating + '<img src="' + esc(r.poster) + '" alt="" loading="lazy"/></div>'
                             + '<div class="body"><div class="name">' + esc(r.title) + '</div>'
-                            + (year ? '<div class="meta">' + esc(year) + '</div>' : '')
+                            + ((year || eps) ? '<div class="meta">' + esc(year) + eps + '</div>' : '')
                             + '</div></div>';
                     }).join('');
                     if (append) {
@@ -1662,7 +1672,6 @@
                     if (el.hasAttribute('data-browse-open')) {
                         var tmdb = el.getAttribute('data-browse-open');
                         var btype = el.getAttribute('data-btype') || 'tv';
-                        // Open the title detail view using the TMDB id
                         var titleCard = el.closest('.mdl-tcard');
                         var titleName = titleCard ? (titleCard.querySelector('.name') || {}).textContent : '';
                         var poster = titleCard ? (titleCard.querySelector('img') || {}).src : '';
@@ -1675,17 +1684,46 @@
                             infoError: ''
                         };
                         show('title');
-                        // Load the title info from the engine
                         get('MediaDownloader/TmdbInfo?tmdb=' + tmdb + '&type=' + (btype === 'anime' ? 'tv' : btype)).then(function (info) {
                             if (info) {
                                 S.t.title = info.title || S.t.title;
                                 S.t.poster = info.poster || S.t.poster;
                                 S.t.seasons = info.seasons || [];
-                                S.t.badge = info.type === 'movie' ? 'Movie' : (btype === 'anime' ? 'Anime' : 'TV');
+                                S.t.badge = info.type === 'movie' ? 'Movie' : 'TV';
                                 S.t.overview = info.overview || '';
                                 renderTitle();
                             }
                         }).catch(function () { renderTitle(); });
+                        return;
+                    }
+                    if (el.hasAttribute('data-browse-anilist')) {
+                        // Anime from AniList: use /Anime/Info for all seasons
+                        var titleCard = el.closest('.mdl-tcard');
+                        var titleName = titleCard ? (titleCard.querySelector('.name') || {}).textContent : '';
+                        var poster = titleCard ? (titleCard.querySelector('img') || {}).src : '';
+                        S.t = {
+                            anilist: el.getAttribute('data-browse-anilist'),
+                            type: 'tv',
+                            title: titleName || '',
+                            poster: poster || '',
+                            seasons: [],
+                            badge: 'Anime',
+                            infoError: ''
+                        };
+                        show('title');
+                        get('MediaDownloader/Anime/Info?title=' + encodeURIComponent(titleName)).then(function (info) {
+                            if (info) {
+                                S.t.title = info.title || S.t.title;
+                                S.t.poster = info.poster || S.t.poster;
+                                S.t.seasons = info.seasons || [];
+                                S.t.badge = 'Anime';
+                                S.t.overview = info.overview || '';
+                                renderTitle();
+                            }
+                        }).catch(function (err) {
+                            S.t.infoError = err.message || 'Failed to load anime info';
+                            renderTitle();
+                        });
                         return;
                     }
 

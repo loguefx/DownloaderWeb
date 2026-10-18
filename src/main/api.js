@@ -361,6 +361,184 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- anime browse (AniList API - free, no key needed) ----
+    if (req.method === 'GET' && seg === 'anime' && parts[2] === 'browse') {
+      const category = (u.searchParams.get('category') || 'trending').trim();
+      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10));
+      const perPage = 20;
+      const sort = category === 'popular' ? 'POPULARITY_DESC' : 'TRENDING_DESC';
+      const graphqlQuery = JSON.stringify({
+        query: `query($page: Int, $perPage: Int, $sort: MediaSort) {
+          Page(page: $page, perPage: $perPage) {
+            pageInfo { currentPage totalPages total }
+            Media(sort: $sort, type: ANIME, isAdult: false) {
+              id
+              title { english romaji }
+              coverImage { large }
+              description(asHtml: false)
+              episodes
+              season
+              seasonYear
+              averageScore
+            }
+          }
+        }`,
+        variables: { page, perPage, sort }
+      });
+      try {
+        const body = await new Promise((resolve, reject) => {
+          const https = require('https');
+          const req = https.request(
+            { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
+              'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(graphqlQuery)
+            }},
+            (res) => {
+              const chunks = [];
+              res.on('data', (d) => chunks.push(d));
+              res.on('end', () => {
+                try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+                catch (e) { reject(new Error('AniList returned non-JSON')); }
+              });
+            }
+          );
+          req.on('error', reject);
+          req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+          req.write(graphqlQuery);
+          req.end();
+        });
+        const pg = body && body.data && body.data.Page;
+        if (!pg || !Array.isArray(pg.Media)) {
+          json(res, 502, { error: 'AniList returned no results' });
+          return;
+        }
+        const results = pg.Media.map((m) => ({
+          anilist: String(m.id),
+          title: (m.title && (m.title.english || m.title.romaji)) || '',
+          poster: (m.coverImage && m.coverImage.large) || '',
+          episodes: m.episodes || 0,
+          season: m.season ? m.season.charAt(0) + m.season.slice(1).toLowerCase() : '',
+          year: m.seasonYear || '',
+          rating: m.averageScore ? Math.round(m.averageScore / 10) : null,
+          overview: (m.description || '').replace(/<[^>]+>/g, '').slice(0, 200)
+        })).filter((r) => r.title && r.poster);
+        const pi = pg.pageInfo || {};
+        json(res, 200, { results, page, total_pages: pi.totalPages || 1 });
+      } catch (e) {
+        json(res, 502, { error: 'AniList browse failed: ' + ((e && e.message) || e) });
+      }
+      return;
+    }
+
+    // ---- anime info (all seasons from AniList) ----
+    if (req.method === 'GET' && seg === 'anime' && parts[2] === 'info') {
+      const title = (u.searchParams.get('title') || '').trim();
+      if (!title) { json(res, 400, { error: 'title is required' }); return; }
+      const graphqlQuery = JSON.stringify({
+        query: `query($title: String) {
+          Media(search: $title, type: ANIME, sort: START_DATE) {
+            id
+            title { english romaji }
+            coverImage { large }
+            description(asHtml: false)
+            episodes
+            season
+            seasonYear
+            averageScore
+          }
+        }`,
+        variables: { title }
+      });
+      try {
+        const body = await new Promise((resolve, reject) => {
+          const https = require('https');
+          const req = https.request(
+            { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
+              'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(graphqlQuery)
+            }},
+            (res) => {
+              const chunks = [];
+              res.on('data', (d) => chunks.push(d));
+              res.on('end', () => {
+                try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+                catch (e) { reject(new Error('AniList returned non-JSON')); }
+              });
+            }
+          );
+          req.on('error', reject);
+          req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+          req.write(graphqlQuery);
+          req.end();
+        });
+        const media = body && body.data && body.data.Media;
+        if (!media) { json(res, 404, { error: 'Anime not found on AniList' }); return; }
+        // Also fetch relations to find other seasons
+        let seasons = [{
+          season: 1,
+          episodes: media.episodes || 0,
+          year: media.seasonYear || '',
+          title: (media.title && (media.title.english || media.title.romaji)) || '',
+          anilist: String(media.id)
+        }];
+        // Try to find sequel seasons
+        const relQuery = JSON.stringify({
+          query: `query($id: Int) {
+            Media(id: $id) {
+              relations { edges { relationType node { id title { english romaji } episodes seasonYear } } }
+            }
+          }`,
+          variables: { id: media.id }
+        });
+        try {
+          const relBody = await new Promise((resolve, reject) => {
+            const https = require('https');
+            const req = https.request(
+              { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
+                'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(relQuery)
+              }},
+              (res) => {
+                const chunks = [];
+                res.on('data', (d) => chunks.push(d));
+                res.on('end', () => {
+                  try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+                  catch (e) { reject(new Error('AniList relations failed')); }
+                });
+              }
+            );
+            req.on('error', reject);
+            req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+            req.write(relQuery);
+            req.end();
+          });
+          const edges = (relBody && relBody.data && relBody.data.Media &&
+            relBody.data.Media.relations && relBody.data.Media.relations.edges) || [];
+          let seasonNum = 1;
+          for (const edge of edges) {
+            if (!edge.node || !edge.relationType) continue;
+            if (!/SEQUEL|NEXT_SEASON|ADAPTATION/i.test(edge.relationType)) continue;
+            seasonNum++;
+            seasons.push({
+              season: seasonNum,
+              episodes: edge.node.episodes || 0,
+              year: edge.node.seasonYear || '',
+              title: (edge.node.title && (edge.node.title.english || edge.node.title.romaji)) || '',
+              anilist: String(edge.node.id)
+            });
+          }
+        } catch (e) { /* relations are optional */ }
+
+        json(res, 200, {
+          title: (media.title && (media.title.english || media.title.romaji)) || title,
+          poster: (media.coverImage && media.coverImage.large) || '',
+          overview: (media.description || '').replace(/<[^>]+>/g, '').slice(0, 400),
+          rating: media.averageScore ? Math.round(media.averageScore / 10) : null,
+          seasons
+        });
+      } catch (e) {
+        json(res, 502, { error: 'AniList info failed: ' + ((e && e.message) || e) });
+      }
+      return;
+    }
+
     // ---- TMDB info (seasons/episodes for a title) ----
     if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'info') {
       const tmdb = u.searchParams.get('tmdb') || '';

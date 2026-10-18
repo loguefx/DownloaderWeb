@@ -405,6 +405,24 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             return await ProxyAsync(() => _engine.GetRawAsync($"api/browse?type={Uri.EscapeDataString(t)}&category={Uri.EscapeDataString(c)}&page={page}")).ConfigureAwait(false);
         }
 
+        [HttpGet("Anime/Browse")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> AnimeBrowse([FromQuery] string category, [FromQuery] int page = 1)
+        {
+            var c = string.IsNullOrEmpty(category) ? "trending" : category;
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/anime/browse?category={Uri.EscapeDataString(c)}&page={page}")).ConfigureAwait(false);
+        }
+
+        [HttpGet("Anime/Info")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> AnimeInfo([FromQuery] string title)
+        {
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/anime/info?title={Uri.EscapeDataString(title ?? string.Empty)}")).ConfigureAwait(false);
+        }
+
         // ------------------------------------------------------------------
         // Title / search / duplicate check (the later pages use these; the
         // endpoints already exist on the engine)
