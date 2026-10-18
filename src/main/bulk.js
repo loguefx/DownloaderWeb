@@ -282,21 +282,16 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             // tried last (anime/region adapters). This was alphabetical before,
             // which burned through irrelevant catalogs and hit Cloudflare early.
             const rank = (c) => (c && c.fallbackRank != null ? c.fallbackRank : 99);
-            // Skip Cloudflare-gated sites by default (config.download.skipCloudflareSites
-            // defaults to true). The user does not want to click CF checkboxes.
-            // Set it to false in engine.json to re-enable them as last-resort.
-            const skipCf = config.download.skipCloudflareSites !== false;
-            const cands = sites.profiles
-              .filter((c) => {
-                if (!c || c.id === (profile && profile.id)) return false;
-                if (typeof c.findTitle !== 'function') return false;
-                if (skipCf && c.cloudflare) {
-                  log(`Skipping ${c.name || c.id} (Cloudflare-gated).`);
-                  return false;
-                }
-                return true;
-              })
+            // Two-phase fallback: try CF-free sites first. If ALL of them fail,
+            // fall back to the Cloudflare-gated sites as a last resort (one more
+            // chance to find 1080p). The user only sees the CF checkbox if every
+            // CF-free source has already failed.
+            const allCands = sites.profiles
+              .filter((c) => c && c.id !== (profile && profile.id) && typeof c.findTitle === 'function')
               .sort((a, b) => rank(a) - rank(b));
+            // Phase 1: CF-free sites only
+            let cands = allCands.filter((c) => !c.cloudflare);
+            if (!cands.length) cands = allCands; // no CF-free sites at all
             for (const cand of cands) {
               if (controller.signal.aborted) break;
               if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
@@ -334,9 +329,41 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               }
               outcome = await runResolve(pageUrl);
             }
+            // Phase 2: all CF-free sites failed. Try the Cloudflare-gated
+            // sites as a last resort. The user only sees the CF checkbox here
+            // because every CF-free source has already been tried.
+            if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
+              const cfCands = allCands.filter((c) => c.cloudflare);
+              if (cfCands.length) {
+                log('No CF-free source had it — trying Cloudflare-gated sites as last resort…');
+                for (const cand of cfCands) {
+                  if (controller.signal.aborted) break;
+                  if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
+                  let pageUrl = null;
+                  try {
+                    pageUrl = await cand.findTitle(ref, hooks, log);
+                  } catch (e) {
+                    log(`Last-resort search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
+                    continue;
+                  }
+                  if (!pageUrl) continue;
+                  log(`Last resort: found on ${cand.name || cand.id}; loading…`);
+                  try {
+                    await loadWithTimeout(win, pageUrl, 30000);
+                  } catch (e) {
+                    continue;
+                  }
+                  if (!(await passCloudflare(win, pageUrl, log))) {
+                    log(`Cloudflare did not clear on ${cand.name || cand.id}; giving up on this source.`);
+                    continue;
+                  }
+                  outcome = await runResolve(pageUrl);
+                }
+              }
+            }
           }
         }
-        if (!outcome) outcome = { status: 'failed', reason: 'No 1080p stream on this site' };
+        if (!outcome) outcome = { status: 'failed', reason: 'No 1080p stream on any source' };
         // Token CDNs (vidfast/peakstorm/embedmaster) only serve segments while
         // the player page is still open. Destroying it here made download fail
         // in ~1s with an empty playlist / net::ERR_FAILED.
