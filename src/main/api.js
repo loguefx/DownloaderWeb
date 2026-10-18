@@ -443,8 +443,8 @@ async function handle(req, res, u) {
       const graphqlQuery = JSON.stringify({
         query: `query($page: Int, $perPage: Int, $sort: MediaSort) {
           Page(page: $page, perPage: $perPage) {
-            pageInfo { currentPage totalPages total }
-            Media(sort: $sort, type: ANIME, isAdult: false) {
+            pageInfo { currentPage total }
+            media(sort: $sort, type: ANIME, isAdult: false) {
               id
               title { english romaji }
               coverImage { large }
@@ -480,11 +480,11 @@ async function handle(req, res, u) {
           req.end();
         });
         const pg = body && body.data && body.data.Page;
-        if (!pg || !Array.isArray(pg.Media)) {
+        if (!pg || !Array.isArray(pg.media)) {
           json(res, 502, { error: 'AniList returned no results' });
           return;
         }
-        const results = pg.Media.map((m) => ({
+        const results = pg.media.map((m) => ({
           anilist: String(m.id),
           title: (m.title && (m.title.english || m.title.romaji)) || '',
           poster: (m.coverImage && m.coverImage.large) || '',
@@ -495,7 +495,8 @@ async function handle(req, res, u) {
           overview: (m.description || '').replace(/<[^>]+>/g, '').slice(0, 200)
         })).filter((r) => r.title && r.poster);
         const pi = pg.pageInfo || {};
-        json(res, 200, { results, page, total_pages: pi.totalPages || 1 });
+        const totalPages = pi.total ? Math.ceil(pi.total / perPage) : 1;
+        json(res, 200, { results, page, total_pages: totalPages });
       } catch (e) {
         json(res, 502, { error: 'AniList browse failed: ' + ((e && e.message) || e) });
       }
@@ -517,6 +518,7 @@ async function handle(req, res, u) {
             season
             seasonYear
             averageScore
+            relations { edges { relationType node { id title { english romaji } episodes seasonYear } } }
           }
         }`,
         variables: { title }
@@ -544,7 +546,6 @@ async function handle(req, res, u) {
         });
         const media = body && body.data && body.data.Media;
         if (!media) { json(res, 404, { error: 'Anime not found on AniList' }); return; }
-        // Also fetch relations to find other seasons
         let seasons = [{
           season: 1,
           episodes: media.episodes || 0,
@@ -552,52 +553,21 @@ async function handle(req, res, u) {
           title: (media.title && (media.title.english || media.title.romaji)) || '',
           anilist: String(media.id)
         }];
-        // Try to find sequel seasons
-        const relQuery = JSON.stringify({
-          query: `query($id: Int) {
-            Media(id: $id) {
-              relations { edges { relationType node { id title { english romaji } episodes seasonYear } } }
-            }
-          }`,
-          variables: { id: media.id }
-        });
-        try {
-          const relBody = await new Promise((resolve, reject) => {
-            const https = require('https');
-            const req = https.request(
-              { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
-                'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(relQuery)
-              }},
-              (res) => {
-                const chunks = [];
-                res.on('data', (d) => chunks.push(d));
-                res.on('end', () => {
-                  try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-                  catch (e) { reject(new Error('AniList relations failed')); }
-                });
-              }
-            );
-            req.on('error', reject);
-            req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-            req.write(relQuery);
-            req.end();
+        // Relations are already included in the query above
+        const edges = (media.relations && media.relations.edges) || [];
+        let seasonNum = 1;
+        for (const edge of edges) {
+          if (!edge.node || !edge.relationType) continue;
+          if (!/SEQUEL|NEXT_SEASON/i.test(edge.relationType)) continue;
+          seasonNum++;
+          seasons.push({
+            season: seasonNum,
+            episodes: edge.node.episodes || 0,
+            year: edge.node.seasonYear || '',
+            title: (edge.node.title && (edge.node.title.english || edge.node.title.romaji)) || '',
+            anilist: String(edge.node.id)
           });
-          const edges = (relBody && relBody.data && relBody.data.Media &&
-            relBody.data.Media.relations && relBody.data.Media.relations.edges) || [];
-          let seasonNum = 1;
-          for (const edge of edges) {
-            if (!edge.node || !edge.relationType) continue;
-            if (!/SEQUEL|NEXT_SEASON|ADAPTATION/i.test(edge.relationType)) continue;
-            seasonNum++;
-            seasons.push({
-              season: seasonNum,
-              episodes: edge.node.episodes || 0,
-              year: edge.node.seasonYear || '',
-              title: (edge.node.title && (edge.node.title.english || edge.node.title.romaji)) || '',
-              anilist: String(edge.node.id)
-            });
-          }
-        } catch (e) { /* relations are optional */ }
+        }
 
         json(res, 200, {
           title: (media.title && (media.title.english || media.title.romaji)) || title,
