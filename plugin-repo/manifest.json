@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.25",
+                "changelog": "Fix: AniList season merge now applies to search results too (not just browse). Browse tab with Anime (Aniwave) tab.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v25/MediaDownloader.12.1.0.25.zip",
+                "checksum": "21481044578a19306ab9af5573393a4b",
+                "timestamp": "2026-10-18T10:12:49.320Z"
+            },
+            {
                 "version": "12.1.0.24",
                 "changelog": "Browse tab (TMDB+AniList anime), Cloudflare skip, Vidsrc 403 fix, placer overwrite fix, API throttle, two-phase fallback",
                 "targetAbi": "12.1.0.0",
@@ -192,6 +200,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.25",
+                "changelog": "Fix: AniList season merge now applies to search results too (not just browse). Browse tab with Anime (Aniwave) tab.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v25/MediaDownloader.10.11.0.25.zip",
+                "checksum": "998e6571d502dc5a96bb14afa099c7b2",
+                "timestamp": "2026-10-18T10:12:49.320Z"
+            },
+            {
                 "version": "10.11.0.24",
                 "changelog": "Browse tab (TMDB+AniList anime), Cloudflare skip, Vidsrc 403 fix, placer overwrite fix, API throttle, two-phase fallback",
                 "targetAbi": "10.11.0.0",
@@ -374,6 +390,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.25",
+                "changelog": "Fix: AniList season merge now applies to search results too (not just browse). Browse tab with Anime (Aniwave) tab.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v25/MediaDownloader.10.10.0.25.zip",
+                "checksum": "04a30e57ff4c9322425dfe4af7136135",
+                "timestamp": "2026-10-18T10:12:49.320Z"
             },
             {
                 "version": "10.10.0.24",
