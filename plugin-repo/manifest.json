@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.24",
+                "changelog": "Browse tab (TMDB+AniList anime), Cloudflare skip, Vidsrc 403 fix, placer overwrite fix, API throttle, two-phase fallback",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v24/MediaDownloader.12.1.0.24.zip",
+                "checksum": "63ba6ff151f6a89161541a416fa83c38",
+                "timestamp": "2026-10-18T09:37:44.077Z"
+            },
+            {
                 "version": "12.1.0.22",
                 "changelog": "Claude redesign: cleaner pages, fix Enqueue 404 (raw body reader), add TmdbSeason endpoint, improve label handling.",
                 "targetAbi": "12.1.0.0",
@@ -184,6 +192,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.24",
+                "changelog": "Browse tab (TMDB+AniList anime), Cloudflare skip, Vidsrc 403 fix, placer overwrite fix, API throttle, two-phase fallback",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v24/MediaDownloader.10.11.0.24.zip",
+                "checksum": "68ce63f7fc43a82d2ca62ec9c22381a6",
+                "timestamp": "2026-10-18T09:37:44.077Z"
+            },
+            {
                 "version": "10.11.0.22",
                 "changelog": "Claude redesign: cleaner pages, fix Enqueue 404 (raw body reader), add TmdbSeason endpoint, improve label handling.",
                 "targetAbi": "10.11.0.0",
@@ -358,6 +374,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.24",
+                "changelog": "Browse tab (TMDB+AniList anime), Cloudflare skip, Vidsrc 403 fix, placer overwrite fix, API throttle, two-phase fallback",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v24/MediaDownloader.10.10.0.24.zip",
+                "checksum": "e1ddac1958f8ec1622d65f4b8e096bf7",
+                "timestamp": "2026-10-18T09:37:44.077Z"
             },
             {
                 "version": "10.10.0.22",
