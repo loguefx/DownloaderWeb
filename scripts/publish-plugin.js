@@ -41,7 +41,7 @@ function fail(msg) {
 function getToken() {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   if (fs.existsSync(CRED_FILE)) {
-    const m = fs.readFileSync(CRED_FILE, 'utf8').match(/https:\/\/x-access-token:([^@]+)@github\.com/);
+    const m = fs.readFileSync(CRED_FILE, 'utf8').match(/https:\/\/[^:]+:([^@]+)@github\.com/);
     if (m) return m[1];
   }
   fail('No GitHub token found. Set GITHUB_TOKEN or add it to ~/.git-credentials.');
