@@ -1597,12 +1597,78 @@
                 // ---------------------------------------------------------
                 // events (one delegated listener; the page DOM is re-rendered)
                 // ---------------------------------------------------------
+                // Browse grid cards are plain divs (data-browse-open /
+                // data-browse-anilist), not buttons — open them before the
+                // `button, a` filter below, which would skip them entirely.
+                function openBrowseCard(card) {
+                    if (card.hasAttribute('data-browse-open')) {
+                        const tmdb = card.getAttribute('data-browse-open');
+                        const btype = card.getAttribute('data-btype') || 'tv';
+                        const titleName = (card.querySelector('.name') || {}).textContent || '';
+                        const poster = (card.querySelector('img') || {}).src || '';
+                        S.t = {
+                            tmdb: tmdb,
+                            type: btype === 'anime' ? 'tv' : btype,
+                            title: titleName,
+                            poster: poster,
+                            seasons: [],
+                            infoError: ''
+                        };
+                        show('title');
+                        get('MediaDownloader/TmdbInfo?tmdb=' + tmdb + '&type=' + (btype === 'anime' ? 'tv' : btype)).then(function (info) {
+                            if (info) {
+                                S.t.title = info.title || S.t.title;
+                                S.t.poster = info.poster || S.t.poster;
+                                S.t.seasons = info.seasons || [];
+                                S.t.badge = info.type === 'movie' ? 'Movie' : 'TV';
+                                S.t.overview = info.overview || '';
+                                renderTitle();
+                            }
+                        }).catch(function () { renderTitle(); });
+                        return;
+                    }
+                    if (card.hasAttribute('data-browse-anilist')) {
+                        // Anime from AniList: use /Anime/Info for all seasons
+                        const titleName = (card.querySelector('.name') || {}).textContent || '';
+                        const poster = (card.querySelector('img') || {}).src || '';
+                        S.t = {
+                            anilist: card.getAttribute('data-browse-anilist'),
+                            type: 'tv',
+                            title: titleName,
+                            poster: poster,
+                            seasons: [],
+                            badge: 'Anime',
+                            infoError: ''
+                        };
+                        show('title');
+                        get('MediaDownloader/Anime/Info?title=' + encodeURIComponent(titleName)).then(function (info) {
+                            if (info) {
+                                S.t.title = info.title || S.t.title;
+                                S.t.poster = info.poster || S.t.poster;
+                                S.t.seasons = info.seasons || [];
+                                S.t.badge = 'Anime';
+                                S.t.overview = info.overview || '';
+                                renderTitle();
+                            }
+                        }).catch(function (err) {
+                            S.t.infoError = err.message || 'Failed to load anime info';
+                            renderTitle();
+                        });
+                        return;
+                    }
+                }
+
                 root.addEventListener('click', (ev) => {
                     // A whole search card is clickable (its inner button too).
                     const card = ev.target.closest('[data-open]');
                     if (card && root.contains(card)) {
                         const r = S.results[Number(card.getAttribute('data-open'))];
                         if (r) openTitle(r);
+                        return;
+                    }
+                    const browseCard = ev.target.closest('[data-browse-open], [data-browse-anilist]');
+                    if (browseCard && root.contains(browseCard)) {
+                        openBrowseCard(browseCard);
                         return;
                     }
                     const el = ev.target.closest('button, a');
@@ -1669,63 +1735,6 @@
                         return;
                     }
                     if (el.hasAttribute('data-browse-more')) { loadBrowse(true); return; }
-                    if (el.hasAttribute('data-browse-open')) {
-                        var tmdb = el.getAttribute('data-browse-open');
-                        var btype = el.getAttribute('data-btype') || 'tv';
-                        var titleCard = el.closest('.mdl-tcard');
-                        var titleName = titleCard ? (titleCard.querySelector('.name') || {}).textContent : '';
-                        var poster = titleCard ? (titleCard.querySelector('img') || {}).src : '';
-                        S.t = {
-                            tmdb: tmdb,
-                            type: btype === 'anime' ? 'tv' : btype,
-                            title: titleName || '',
-                            poster: poster || '',
-                            seasons: [],
-                            infoError: ''
-                        };
-                        show('title');
-                        get('MediaDownloader/TmdbInfo?tmdb=' + tmdb + '&type=' + (btype === 'anime' ? 'tv' : btype)).then(function (info) {
-                            if (info) {
-                                S.t.title = info.title || S.t.title;
-                                S.t.poster = info.poster || S.t.poster;
-                                S.t.seasons = info.seasons || [];
-                                S.t.badge = info.type === 'movie' ? 'Movie' : 'TV';
-                                S.t.overview = info.overview || '';
-                                renderTitle();
-                            }
-                        }).catch(function () { renderTitle(); });
-                        return;
-                    }
-                    if (el.hasAttribute('data-browse-anilist')) {
-                        // Anime from AniList: use /Anime/Info for all seasons
-                        var titleCard = el.closest('.mdl-tcard');
-                        var titleName = titleCard ? (titleCard.querySelector('.name') || {}).textContent : '';
-                        var poster = titleCard ? (titleCard.querySelector('img') || {}).src : '';
-                        S.t = {
-                            anilist: el.getAttribute('data-browse-anilist'),
-                            type: 'tv',
-                            title: titleName || '',
-                            poster: poster || '',
-                            seasons: [],
-                            badge: 'Anime',
-                            infoError: ''
-                        };
-                        show('title');
-                        get('MediaDownloader/Anime/Info?title=' + encodeURIComponent(titleName)).then(function (info) {
-                            if (info) {
-                                S.t.title = info.title || S.t.title;
-                                S.t.poster = info.poster || S.t.poster;
-                                S.t.seasons = info.seasons || [];
-                                S.t.badge = 'Anime';
-                                S.t.overview = info.overview || '';
-                                renderTitle();
-                            }
-                        }).catch(function (err) {
-                            S.t.infoError = err.message || 'Failed to load anime info';
-                            renderTitle();
-                        });
-                        return;
-                    }
 
                     // queue view
                     if (el.hasAttribute('data-qtab')) { S.qtab = el.getAttribute('data-qtab'); renderQueue(); return; }
