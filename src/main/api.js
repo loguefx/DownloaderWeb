@@ -257,6 +257,25 @@ async function tmdbInfo(tmdbId, type) {
     imdb = String((ext && ext.imdb_id) || '');
   } catch (e) { /* optional */ }
 
+  // AniList season merge: TMDB often lists anime sequels as separate entries.
+  // If TMDB only has 1 season, check AniList for additional seasons (sequels)
+  // and merge them in. This fixes shows like "As a Reincarnated Aristocrat"
+  // where Season 2 exists on Aniwave but TMDB only lists Season 1.
+  if (seasons.length <= 1) {
+    try {
+      const anilistResult = await anilistSearchSeasons(body.name || '');
+      if (anilistResult && anilistResult.length > seasons.length) {
+        // Merge: keep TMDB seasons, add AniList extras
+        for (const s of anilistResult) {
+          if (!seasons.some((existing) => existing.season === s.season)) {
+            seasons.push(s);
+          }
+        }
+        seasons.sort((a, b) => a.season - b.season);
+      }
+    } catch (e) { /* AniList merge is best-effort */ }
+  }
+
   return {
     tmdb: String(body.id),
     imdb,
@@ -267,6 +286,60 @@ async function tmdbInfo(tmdbId, type) {
     overview: (body.overview || '').slice(0, 300),
     seasons
   };
+}
+
+// Query AniList for a title and return its seasons (including sequels via relations).
+async function anilistSearchSeasons(title) {
+  if (!title || title.length < 3) return null;
+  const https = require('https');
+  const graphqlCall = (query, variables) => new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ query, variables });
+    const req = https.request(
+      { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
+        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload)
+      }},
+      (res) => {
+        const chunks = [];
+        res.on('data', (d) => chunks.push(d));
+        res.on('end', () => {
+          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+          catch (e) { reject(e); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(payload);
+    req.end();
+  });
+
+  // Search for the anime on AniList
+  const search = await graphqlCall(
+    `query($title: String) { Media(search: $title, type: ANIME, sort: START_DATE) { id title { english romaji } episodes seasonYear } }`,
+    { title }
+  );
+  const media = search && search.data && search.data.Media;
+  if (!media) return null;
+
+  let seasons = [{ season: 1, episodes: media.episodes || 0, year: media.seasonYear || '' }];
+
+  // Fetch relations to find sequels
+  try {
+    const rel = await graphqlCall(
+      `query($id: Int) { Media(id: $id) { relations { edges { relationType node { id episodes seasonYear } } } } }`,
+      { id: media.id }
+    );
+    const edges = (rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [];
+    let n = 1;
+    for (const edge of edges) {
+      if (!edge.node || !edge.relationType) continue;
+      if (!/SEQUEL|NEXT_SEASON/i.test(edge.relationType)) continue;
+      n++;
+      seasons.push({ season: n, episodes: edge.node.episodes || 0, year: edge.node.seasonYear || '' });
+    }
+  } catch (e) { /* relations optional */ }
+
+  return seasons;
 }
 
 // One season's episodes (name, runtime, air date). The plugin lists these on
