@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.27",
+                "changelog": "Fix: Browse tab cards (Trending/Most popular) now open on click — they were divs and the click handler only matched buttons. Full flow works: browse -> title -> seasons -> queue at 1080p.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v27/MediaDownloader.12.1.0.27.zip",
+                "checksum": "ac97d08e9c388066c6b5536bf140f441",
+                "timestamp": "2026-10-18T10:37:47.481Z"
+            },
+            {
                 "version": "12.1.0.26",
                 "changelog": "Fix AniList API field names (was returning no results). Anime browse + season merge now working.",
                 "targetAbi": "12.1.0.0",
@@ -208,6 +216,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.27",
+                "changelog": "Fix: Browse tab cards (Trending/Most popular) now open on click — they were divs and the click handler only matched buttons. Full flow works: browse -> title -> seasons -> queue at 1080p.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v27/MediaDownloader.10.11.0.27.zip",
+                "checksum": "a1c1f0d188a6684764440bf14e00a091",
+                "timestamp": "2026-10-18T10:37:47.480Z"
+            },
+            {
                 "version": "10.11.0.26",
                 "changelog": "Fix AniList API field names (was returning no results). Anime browse + season merge now working.",
                 "targetAbi": "10.11.0.0",
@@ -406,6 +422,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.27",
+                "changelog": "Fix: Browse tab cards (Trending/Most popular) now open on click — they were divs and the click handler only matched buttons. Full flow works: browse -> title -> seasons -> queue at 1080p.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v27/MediaDownloader.10.10.0.27.zip",
+                "checksum": "be53f096ad40f29d07efbd067be3e76a",
+                "timestamp": "2026-10-18T10:37:47.480Z"
             },
             {
                 "version": "10.10.0.26",
