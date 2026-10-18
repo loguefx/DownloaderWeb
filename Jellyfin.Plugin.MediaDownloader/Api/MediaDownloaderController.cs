@@ -395,6 +395,16 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season) =>
             await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}")).ConfigureAwait(false);
 
+        [HttpGet("Browse")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> Browse([FromQuery] string type, [FromQuery] string category, [FromQuery] int page = 1)
+        {
+            var t = string.IsNullOrEmpty(type) ? "tv" : type;
+            var c = string.IsNullOrEmpty(category) ? "trending" : category;
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/browse?type={Uri.EscapeDataString(t)}&category={Uri.EscapeDataString(c)}&page={page}")).ConfigureAwait(false);
+        }
+
         // ------------------------------------------------------------------
         // Title / search / duplicate check (the later pages use these; the
         // endpoints already exist on the engine)

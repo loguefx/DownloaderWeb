@@ -195,6 +195,14 @@
 .mdl-tcard .name { font-weight: 650; line-height: 1.25; }
 .mdl-tcard .meta { font-size: .8em; color: var(--md-muted); }
 .mdl-tcard .ov { font-size: .78em; color: var(--md-faint); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* browse */
+.mdl-browse-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: .9em; }
+.mdl-browse-grid .mdl-tcard { cursor: pointer; }
+.mdl-browse-loading { grid-column: 1 / -1; text-align: center; padding: 3em 0; color: var(--md-muted); font-size: 1.05em; }
+.mdl-browse-grid .mdl-tcard .rating { position: absolute; top: .5em; right: .5em; background: rgba(0,0,0,.72); color: #ffd54f; font-size: .78em; font-weight: 700; padding: .2em .55em; border-radius: .45em; }
+.mdl-browse-grid .mdl-tcard .name { font-size: .92em; }
+.mdl-browse-grid .mdl-tcard .meta { font-size: .78em; }
 .mdl-tcard .mdl-btn { margin-top: auto; width: 100%; }
 
 /* title hero */
@@ -277,6 +285,9 @@
         <button type="button" data-nav="overview">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
             Overview</button>
+        <button type="button" data-nav="browse">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            Browse</button>
         <button type="button" data-nav="add">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
             Add title</button>
@@ -339,6 +350,35 @@
                     <div data-ov-dub class="small muted">Nothing is waiting for a dub.</div>
                 </div>
             </div>
+        </div>
+    </section>
+
+    <!-- =================================================================
+         BROWSE (popular / trending)
+         ================================================================= -->
+    <section data-view="browse" hidden>
+        <div class="mdl-head">
+            <div>
+                <h1>Browse</h1>
+                <p>Popular and trending titles from TMDB. Click one to open it and queue episodes.</p>
+            </div>
+        </div>
+        <div class="mdl-card" style="margin-bottom:1em;">
+            <div class="mdl-seg" data-browse-tabs>
+                <button type="button" data-btype="tv" class="on">TV Shows</button>
+                <button type="button" data-btype="movie">Movies</button>
+                <button type="button" data-btype="anime">Anime</button>
+            </div>
+            <div class="mdl-seg" data-browse-cat style="margin-top:.5em;">
+                <button type="button" data-bcat="trending" class="on">Trending this week</button>
+                <button type="button" data-bcat="popular">Most popular</button>
+            </div>
+        </div>
+        <div class="mdl-browse-grid" data-browse-grid>
+            <div class="mdl-browse-loading">Loading…</div>
+        </div>
+        <div style="text-align:center;margin-top:1em;">
+            <button type="button" class="mdl-btn" data-browse-more>Load more</button>
         </div>
     </section>
 
@@ -624,13 +664,17 @@
                     searchType: 'all',
                     results: [],
                     lastQuery: '',
-                    t: null                // the open title
+                    t: null,                // the open title
+                    browseType: 'tv',
+                    browseCat: 'trending',
+                    browsePage: 1,
+                    browseResults: []
                 };
 
                 // ---------------------------------------------------------
                 // views
                 // ---------------------------------------------------------
-                const CRUMB = { overview: 'Overview', add: 'Add title', title: 'Title', queue: 'Queue' };
+                const CRUMB = { overview: 'Overview', browse: 'Browse', add: 'Add title', title: 'Title', queue: 'Queue' };
                 function show(view) {
                     S.view = view;
                     $$('[data-view]').forEach((s) => { s.hidden = s.getAttribute('data-view') !== view; });
@@ -641,7 +685,54 @@
                     $('[data-crumb]').textContent = view === 'title' && S.t ? S.t.title : CRUMB[view];
                     if (view === 'add') setTimeout(() => { const i = $('[data-search-input]'); if (i && !S.results.length) i.focus(); }, 30);
                     if (view === 'queue' || view === 'overview') refresh();
+                    if (view === 'browse' && !S.browseResults.length) loadBrowse();
                     window.scrollTo(0, 0);
+                }
+
+                // ---------------------------------------------------------
+                // browse (TMDB trending / popular)
+                // ---------------------------------------------------------
+                function loadBrowse(append) {
+                    var grid = $('[data-browse-grid]');
+                    if (!append) {
+                        S.browseResults = [];
+                        S.browsePage = 1;
+                        grid.innerHTML = '<div class="mdl-browse-loading">Loading…</div>';
+                    } else {
+                        grid.innerHTML += '<div class="mdl-browse-loading" style="padding:1em;">Loading more…</div>';
+                    }
+                    var url = 'MediaDownloader/Browse?type=' + S.browseType + '&category=' + S.browseCat + '&page=' + S.browsePage;
+                    get(url).then(function (data) {
+                        var results = (data && data.results) || [];
+                        if (!append) S.browseResults = results;
+                        else S.browseResults = S.browseResults.concat(results);
+                        S.browsePage++;
+                        renderBrowse(results, append, (data && data.total_pages) || 1);
+                    }).catch(function (err) {
+                        grid.innerHTML = '<div class="mdl-browse-loading" style="color:var(--md-red);">' + esc(err.message || 'Failed to load') + '</div>';
+                    });
+                }
+
+                function renderBrowse(results, append, totalPages) {
+                    var grid = $('[data-browse-grid]');
+                    var html = results.map(function (r) {
+                        var rating = r.rating ? '<span class="rating">' + r.rating + '</span>' : '';
+                        var year = r.year ? r.year : '';
+                        return '<div class="mdl-tcard" data-browse-open="' + r.tmdb + '" data-btype="' + r.type + '">'
+                            + '<div class="mdl-poster">' + rating + '<img src="' + esc(r.poster) + '" alt="" loading="lazy"/></div>'
+                            + '<div class="body"><div class="name">' + esc(r.title) + '</div>'
+                            + (year ? '<div class="meta">' + esc(year) + '</div>' : '')
+                            + '</div></div>';
+                    }).join('');
+                    if (append) {
+                        // Remove the "Loading more" indicator and append
+                        var loadEl = grid.querySelector('.mdl-browse-loading:last-child');
+                        if (loadEl) loadEl.remove();
+                        grid.insertAdjacentHTML('beforeend', html);
+                    } else {
+                        grid.innerHTML = html || '<div class="mdl-browse-loading">No results found.</div>';
+                    }
+                    $('[data-browse-more]').style.display = S.browsePage <= totalPages ? '' : 'none';
                 }
 
                 // ---------------------------------------------------------
@@ -1553,6 +1644,50 @@
                     }
                     if (t && el.hasAttribute('data-mode')) { t.modeAudio = el.getAttribute('data-mode'); renderTitle(); return; }
                     if (el.hasAttribute('data-submit')) { submitTitle(); return; }
+
+                    // browse view
+                    if (el.hasAttribute('data-btype')) {
+                        S.browseType = el.getAttribute('data-btype');
+                        $$('[data-btype]').forEach((b) => b.classList.toggle('on', b === el));
+                        loadBrowse();
+                        return;
+                    }
+                    if (el.hasAttribute('data-bcat')) {
+                        S.browseCat = el.getAttribute('data-bcat');
+                        $$('[data-bcat]').forEach((b) => b.classList.toggle('on', b === el));
+                        loadBrowse();
+                        return;
+                    }
+                    if (el.hasAttribute('data-browse-more')) { loadBrowse(true); return; }
+                    if (el.hasAttribute('data-browse-open')) {
+                        var tmdb = el.getAttribute('data-browse-open');
+                        var btype = el.getAttribute('data-btype') || 'tv';
+                        // Open the title detail view using the TMDB id
+                        var titleCard = el.closest('.mdl-tcard');
+                        var titleName = titleCard ? (titleCard.querySelector('.name') || {}).textContent : '';
+                        var poster = titleCard ? (titleCard.querySelector('img') || {}).src : '';
+                        S.t = {
+                            tmdb: tmdb,
+                            type: btype === 'anime' ? 'tv' : btype,
+                            title: titleName || '',
+                            poster: poster || '',
+                            seasons: [],
+                            infoError: ''
+                        };
+                        show('title');
+                        // Load the title info from the engine
+                        get('MediaDownloader/TmdbInfo?tmdb=' + tmdb + '&type=' + (btype === 'anime' ? 'tv' : btype)).then(function (info) {
+                            if (info) {
+                                S.t.title = info.title || S.t.title;
+                                S.t.poster = info.poster || S.t.poster;
+                                S.t.seasons = info.seasons || [];
+                                S.t.badge = info.type === 'movie' ? 'Movie' : (btype === 'anime' ? 'Anime' : 'TV');
+                                S.t.overview = info.overview || '';
+                                renderTitle();
+                            }
+                        }).catch(function () { renderTitle(); });
+                        return;
+                    }
 
                     // queue view
                     if (el.hasAttribute('data-qtab')) { S.qtab = el.getAttribute('data-qtab'); renderQueue(); return; }

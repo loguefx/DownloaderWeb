@@ -322,6 +322,45 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- browse (TMDB trending / popular) ----
+    if (req.method === 'GET' && seg === 'browse') {
+      const type = (u.searchParams.get('type') || 'tv').trim(); // tv | movie | anime
+      const category = (u.searchParams.get('category') || 'trending').trim(); // trending | popular
+      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10));
+      const key = getTmdbKey();
+      if (!key) {
+        json(res, 503, { error: 'TMDB API key not configured on the engine' });
+        return;
+      }
+      // Anime = TV with Animation genre (16)
+      const isAnime = type === 'anime';
+      const mediaType = isAnime ? 'tv' : type; // tv or movie
+      const genreParam = isAnime ? '&with_genres=16' : '';
+      const base = category === 'popular'
+        ? `/${mediaType}/popular`
+        : `/trending/${mediaType}/week`;
+      try {
+        const body = await tmdbFetch(`${base}?language=en-US&page=${page}${genreParam}`, key);
+        if (!body || !Array.isArray(body.results)) {
+          json(res, 502, { error: 'TMDB returned no results' });
+          return;
+        }
+        const results = body.results.slice(0, 20).map((r) => ({
+          tmdb: String(r.id),
+          type: isAnime ? 'anime' : (mediaType === 'tv' ? 'tv' : 'movie'),
+          title: r.title || r.name || '',
+          year: (r.release_date || r.first_air_date || '').slice(0, 4),
+          poster: r.poster_path ? `https://image.tmdb.org/t/p/w342${r.poster_path}` : '',
+          rating: r.vote_average != null ? Math.round(r.vote_average * 10) / 10 : null,
+          overview: (r.overview || '').slice(0, 200)
+        })).filter((r) => r.title && r.poster);
+        json(res, 200, { results, page, total_pages: body.total_pages || 1 });
+      } catch (e) {
+        json(res, 502, { error: 'TMDB browse failed: ' + ((e && e.message) || e) });
+      }
+      return;
+    }
+
     // ---- TMDB info (seasons/episodes for a title) ----
     if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'info') {
       const tmdb = u.searchParams.get('tmdb') || '';
