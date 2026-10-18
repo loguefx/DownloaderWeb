@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.26",
+                "changelog": "Fix AniList API field names (was returning no results). Anime browse + season merge now working.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v26/MediaDownloader.12.1.0.26.zip",
+                "checksum": "cd79286ea962c2f41037ecc10109bffe",
+                "timestamp": "2026-10-18T10:26:29.101Z"
+            },
+            {
                 "version": "12.1.0.25",
                 "changelog": "Fix: AniList season merge now applies to search results too (not just browse). Browse tab with Anime (Aniwave) tab.",
                 "targetAbi": "12.1.0.0",
@@ -200,6 +208,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.26",
+                "changelog": "Fix AniList API field names (was returning no results). Anime browse + season merge now working.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v26/MediaDownloader.10.11.0.26.zip",
+                "checksum": "f035ff258e5c361bd9e2fc6744ea58e1",
+                "timestamp": "2026-10-18T10:26:29.101Z"
+            },
+            {
                 "version": "10.11.0.25",
                 "changelog": "Fix: AniList season merge now applies to search results too (not just browse). Browse tab with Anime (Aniwave) tab.",
                 "targetAbi": "10.11.0.0",
@@ -390,6 +406,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.26",
+                "changelog": "Fix AniList API field names (was returning no results). Anime browse + season merge now working.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v26/MediaDownloader.10.10.0.26.zip",
+                "checksum": "6e858bd22b5a4f808fe47ebcc992bb05",
+                "timestamp": "2026-10-18T10:26:29.101Z"
             },
             {
                 "version": "10.10.0.25",
