@@ -53,7 +53,19 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const API_BASE = 'https://data.vidsrc.sh/api.php';
 
+// Simple throttle: minimum 800ms between Vidsrc API calls to avoid 429.
+// When 40+ episodes resolve simultaneously the API rate-limits us.
+let _lastApiCall = 0;
+const API_MIN_INTERVAL_MS = 800;
+function throttleApi() {
+  const now = Date.now();
+  const wait = Math.max(0, _lastApiCall + API_MIN_INTERVAL_MS - now);
+  if (wait > 0) return new Promise((r) => setTimeout(r, wait));
+  return Promise.resolve();
+}
+
 function request(url, headers, timeoutMs) {
+  _lastApiCall = Date.now();
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const lib = u.protocol === 'http:' ? http : https;
@@ -107,6 +119,7 @@ async function decryptStreamUrls(encrypted, vs) {
 }
 
 async function fetchStreamUrls(ref) {
+  await throttleApi();
   let qs;
   if (ref.type === 'movie') {
     qs = 'type=movie&' + (ref.imdb ? 'imdb=' + ref.imdb : 'tmdb=' + ref.tmdb);
@@ -181,6 +194,7 @@ async function pick1080(ref, onLog) {
     }
     let token;
     try {
+      await throttleApi();
       token = parseToken((await request(u.origin + '/generate.php', {}, 20000)).body.toString('utf8'));
     } catch (e) {
       onLog && onLog(`Vidsrc: source[${i}] ${u.host} — generate.php failed (${e.message}).`);
@@ -192,6 +206,7 @@ async function pick1080(ref, onLog) {
     }
     let master;
     try {
+      await throttleApi();
       master = (await request(urls[i] + '?token=' + encodeURIComponent(token), {}, 25000)).body.toString('utf8');
     } catch (e) {
       onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master failed (${e.message}).`);
