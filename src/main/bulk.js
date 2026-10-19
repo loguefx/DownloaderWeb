@@ -175,7 +175,8 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             return await Promise.race([
               dubselect.selectDubAndResolve(win.webContents, pageUrl, log, mode, {
                 signal: attempt.signal,
-                skipSources: extra.skipSources || []
+                skipSources: extra.skipSources || [],
+                anime: !!extra.anime
               }),
               new Promise((_, reject) => {
                 onStall = () => {
@@ -332,7 +333,17 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             // Phase 2: all CF-free sites failed. Try the Cloudflare-gated
             // sites as a last resort. The user only sees the CF checkbox here
             // because every CF-free source has already been tried.
-            if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
+            //
+            // OFF BY DEFAULT: config.download.skipCloudflareSites. Those
+            // catalogs park a "Just a moment…" window on the user's screen
+            // waiting for a checkbox click, which the user does not want to
+            // have to do by hand. When skipped, an episode with no 1080p copy
+            // on any CF-free source is simply reported as "no 1080p source"
+            // instead of burning time on a challenge.
+            const skipCf = !!(config.download && config.download.skipCloudflareSites);
+            if (skipCf) {
+              log('All Cloudflare-free sources had no 1080p copy; skipping the Cloudflare-gated catalogs (skipCloudflareSites).');
+            } else if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
               const cfCands = allCands.filter((c) => c.cloudflare);
               if (cfCands.length) {
                 log('No CF-free source had it — trying Cloudflare-gated sites as last resort…');
@@ -827,6 +838,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         stopRunOnFail,
         library: opts.library || null,
         minHeight: Number(opts.minHeight) || 0,
+        anime: !!opts.anime,
         jobId: opts.jobId || null,
         url,
         template,
@@ -835,7 +847,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         skipSources: [],
         onUnavailable: () => pending.add(spec)
       };
-      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources }));
+      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime }));
       const added = manager.add(rec);
       if (added) queued += 1;
     }
@@ -892,6 +904,7 @@ async function queueOne(entry, onLog = () => {}) {
     stopRunOnFail: false,
     library: (entry && entry.library) || null,
     minHeight: Number((entry && entry.minHeight) || 0),
+    anime: !!(entry && entry.anime),
     jobId: (entry && entry.jobId) || null,
     url,
     baseUrl: url,
@@ -899,7 +912,7 @@ async function queueOne(entry, onLog = () => {}) {
     skipSources: [],
     onUnavailable: () => pending.add(spec)
   };
-  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources }));
+  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime }));
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {

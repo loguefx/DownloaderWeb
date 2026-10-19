@@ -324,6 +324,9 @@ class DownloadManager extends EventEmitter {
   }
 
   _minHeight(item) {
+    // Anime: no resolution floor (the source's own resolution, often 720p,
+    // is accepted). TV/movies keep the profile's 1080p floor.
+    if (item && item.anime) return 0;
     const url = String((item && (item.url || item.baseUrl)) || '');
     const profile = url ? sites.resolve(url) : null;
     return (profile && profile.minHeight) || 0;
@@ -526,7 +529,8 @@ class DownloadManager extends EventEmitter {
                   season: item.season,
                   episode: item.episode,
                   url: item.url || item.baseUrl || '',
-                  baseUrl: item.baseUrl || item.url || ''
+                  baseUrl: item.baseUrl || item.url || '',
+                  anime: !!item.anime
                 },
                 { onLog: (m) => this._log(m) }
               );
@@ -854,6 +858,7 @@ class DownloadManager extends EventEmitter {
           stopRunOnFail: it.stopRunOnFail,
           library: it.library || null,
           minHeight: it.minHeight || 0,
+          anime: !!it.anime,
           jobId: it.jobId || null,
           status: it.status,
           attempts: it.attempts || 0,
@@ -909,6 +914,7 @@ class DownloadManager extends EventEmitter {
             stopRunOnFail: rec.stopRunOnFail,
             library: rec.library || null,
             minHeight: Number(rec.minHeight) || 0,
+            anime: !!rec.anime,
             jobId: rec.jobId || null,
             skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],
             expectedDuration: rec.expectedDuration || 0,

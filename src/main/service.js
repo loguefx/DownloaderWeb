@@ -234,6 +234,9 @@ async function submitJob(job) {
   const lib = job.library && Array.isArray(job.library.locations) ? job.library : null;
   const minHeight = Number(job.minHeight) || 0;
   const scope = job.scope || 'full';
+  // Anime: the plugin sends anime:true and minHeight 0, so the source's own
+  // resolution (often 720p) is accepted. TV/movies keep the 1080p floor.
+  const anime = !!job.anime;
 
   // Part 5: sign each library folder with the .mediadownloader marker so a
   // dropped NAS share can never silently collect finished files at its mount
@@ -254,6 +257,7 @@ async function submitJob(job) {
     rec.library = lib;
     rec.minHeight = minHeight;
     rec.jobId = job.jobId || null;
+    rec.anime = anime;
     return rec;
   };
 
@@ -303,6 +307,7 @@ async function submitJob(job) {
       stopRunOnFail: false,
       library: lib,
       minHeight,
+      anime,
       jobId: job.jobId || null
     });
     queued += r.queued;

@@ -1038,8 +1038,13 @@
 
                 function openTitle(r) {
                     const kind = r.type === 'movie' ? 'movie' : 'series';
+                    // Anime: accept whatever resolution the source has (often
+                    // 720p). TV/movies stay on the 1080p floor. Set from the
+                    // result (anime browse card / AniList) or the active tab.
+                    const anime = !!(r.anime || r.anilist || S.browseType === 'anime' || S.searchType === 'anime');
                     S.t = {
                         r: r, kind: kind, tmdb: r.tmdb, title: r.title, year: r.year,
+                        anime: anime,
                         info: null, infoError: null,
                         seasons: [],            // [{ season, count, eps:[{episode,name,runtime,airDate}], status:{ep:status}, loaded, checked }]
                         mode: 'full',           // full | season | episodes
@@ -1437,7 +1442,10 @@
                         year: t.year ? Number(t.year) || undefined : undefined,
                         tmdb: t.tmdb,
                         mode: t.modeAudio,
-                        minHeight: Number(t.quality) || 0,
+                        // Anime: no minimum-resolution floor (source is usually
+                        // 720p). TV/movies keep the 1080p floor from `minHeight`.
+                        anime: !!t.anime,
+                        minHeight: t.anime ? 0 : (Number(t.quality) || 0),
                         library: t.library
                     };
                     let jobs = [];

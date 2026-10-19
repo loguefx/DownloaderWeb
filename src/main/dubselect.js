@@ -1290,7 +1290,9 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   const cancelled = () => !!(signal && signal.aborted);
   const profile = sites.resolve(url || '');
   const dub = sites.dubConfig(profile);
-  const minHeight = profile.minHeight || 0;
+  // Anime: accept whatever resolution the source serves (often 720p) instead
+  // of the profile's 1080p floor. TV/movies (opts.anime falsy) keep the floor.
+  const minHeight = opts.anime ? 0 : (profile.minHeight || 0);
   if (profile.id !== 'generic') onLog(`Using site profile: ${profile.name}`);
   try {
     await hlscheck.installPlayerCdpTap(wc);

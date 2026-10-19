@@ -194,12 +194,13 @@ module.exports = {
       `Vidsrc (headless): resolving ${ref.title || tmdb || imdb} ` +
         `${isMovie ? '(movie)' : `S${season}E${episode}`} via direct API…`
     );
-    const best = await vidsrcDl.pick1080(dlRef, onLog);
+    // Anime: accept the source's own resolution (often 720p) instead of 1080p.
+    const minH = ref.anime ? 0 : 1080;
+    const best = await vidsrcDl.pick1080(dlRef, onLog, minH);
     if (!best) {
-      // No 1080p on any Vidsrc source. Return a distinct status so the queue
-      // can log clearly and cap retries (the browser fallback will likely hit
-      // Cloudflare on the other sites, so retrying 6× wastes hours).
-      onLog(`Vidsrc (headless): no 1080p on any source for ${ref.title || dlRef.tmdb || dlRef.imdb}.`);
+      // No copy at/above the floor on any Vidsrc source. Return a distinct
+      // status so the queue can log clearly and cap retries.
+      onLog(`Vidsrc (headless): no ${minH ? minH + 'p' : 'usable'} stream on any source for ${ref.title || dlRef.tmdb || dlRef.imdb}.`);
       return { status: 'no_quality' };
     }
     onLog(`Vidsrc (headless): locked ${best.realWidth}x${best.realHeight} from ${best.host}.`);

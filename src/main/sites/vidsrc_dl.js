@@ -180,8 +180,11 @@ function probeResolution(bufPath) {
   });
 }
 
-// Return a verified >=1080p variant playlist URL, or null if none found.
-async function pick1080(ref, onLog) {
+// Return a verified variant playlist URL at or above `minH` (default 1080),
+// or null if none found. Anime passes minH 0 to accept the source's own
+// resolution (often 720p) instead of requiring 1080p.
+async function pick1080(ref, onLog, minH = 1080) {
+  const min = Math.max(0, Number(minH) || 0);
   const { urls, meta } = await fetchStreamUrls(ref);
   onLog && onLog(`Vidsrc: ${meta.title} — ${urls.length} source(s) available.`);
   let best = null;
@@ -215,7 +218,7 @@ async function pick1080(ref, onLog) {
     const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
     if (!variants.length) continue;
     for (const v of variants) {
-      if (v.height < 1080) break;
+      if (v.height < min) break;
       try {
         const idx = (await request(v.url, {}, 20000)).body.toString('utf8');
         const segLine = idx
@@ -243,7 +246,7 @@ async function pick1080(ref, onLog) {
         });
         const pr = await probeResolution(segPath);
         onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
-        if (pr.ok && pr.height >= 1080) {
+        if (pr.ok && pr.height >= min) {
           best = { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta };
           break;
         }
@@ -277,8 +280,9 @@ function spawnFfmpeg(inputUrl, outPath, ua, opts) {
 // Resolve + download a 1080p episode/movie to outPath. Returns probe info.
 async function download(ref, outPath, opts = {}) {
   const onLog = opts.onLog || (() => {});
-  const best = await pick1080(ref, onLog);
-  if (!best) throw new Error('No 1080p stream found on Vidsrc for ' + (ref.title || ref.tmdb || ref.imdb));
+  const min = Math.max(0, Number(opts.minHeight) || 1080);
+  const best = await pick1080(ref, onLog, min);
+  if (!best) throw new Error('No stream at/above ' + min + 'p found on Vidsrc for ' + (ref.title || ref.tmdb || ref.imdb));
   onLog(`Vidsrc: downloading ${best.realWidth}x${best.realHeight} from ${best.host} → ${outPath}`);
   const p = require('path');
   const base = p.basename(outPath).replace(/\.[^.]+$/, '');
@@ -287,9 +291,9 @@ async function download(ref, outPath, opts = {}) {
   await spawnFfmpeg(best.url, tmp, UA, opts);
   if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('aborted'), { aborted: true });
   const pr = await probeResolution(tmp);
-  if (!pr.ok || pr.height < 1080) {
+  if (!pr.ok || pr.height < min) {
     try { fs.unlinkSync(tmp); } catch (e) {}
-    throw new Error(`Downloaded file is ${pr.width}x${pr.height}, not 1080p`);
+    throw new Error(`Downloaded file is ${pr.width}x${pr.height}, not ${min}p`);
   }
   fs.renameSync(tmp, outPath);
   onLog(`Vidsrc: done → ${outPath} (${pr.width}x${pr.height})`);
