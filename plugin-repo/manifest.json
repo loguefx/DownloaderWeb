@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.30",
+                "changelog": "Add Cloudflare solver card to plugin Settings (auto, no checkbox); engine: serialize Vidsrc + 429 backoff + relay Play-driver + solver-gated CF catalogs",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v30/MediaDownloader.12.1.0.30.zip",
+                "checksum": "c1302d42bddf4278af609e2e012e8fee",
+                "timestamp": "2026-10-19T21:46:24.682Z"
+            },
+            {
                 "version": "12.1.0.29",
                 "changelog": "No more Cloudflare popups (engine stops trying checkbox-gated catalogs by default). Anime downloads at whatever resolution the source has (often 720p) instead of being rejected for not being 1080p. TV/movies still require 1080p.",
                 "targetAbi": "12.1.0.0",
@@ -232,6 +240,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.30",
+                "changelog": "Add Cloudflare solver card to plugin Settings (auto, no checkbox); engine: serialize Vidsrc + 429 backoff + relay Play-driver + solver-gated CF catalogs",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v30/MediaDownloader.10.11.0.30.zip",
+                "checksum": "fd30a25fdd69e4646da685d8fffc0b1b",
+                "timestamp": "2026-10-19T21:46:24.682Z"
+            },
+            {
                 "version": "10.11.0.29",
                 "changelog": "No more Cloudflare popups (engine stops trying checkbox-gated catalogs by default). Anime downloads at whatever resolution the source has (often 720p) instead of being rejected for not being 1080p. TV/movies still require 1080p.",
                 "targetAbi": "10.11.0.0",
@@ -454,6 +470,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.30",
+                "changelog": "Add Cloudflare solver card to plugin Settings (auto, no checkbox); engine: serialize Vidsrc + 429 backoff + relay Play-driver + solver-gated CF catalogs",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v30/MediaDownloader.10.10.0.30.zip",
+                "checksum": "b9d4a06018c1b845d9e62e1bc1a2a561",
+                "timestamp": "2026-10-19T21:46:24.682Z"
             },
             {
                 "version": "10.10.0.29",
