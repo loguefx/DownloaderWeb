@@ -430,6 +430,32 @@
             </fieldset>
         </div>
 
+        <!-- ===== Cloudflare solver ===== -->
+        <div class="mdl-card" data-solver-card>
+            <div class="mdl-card-h" style="margin-bottom:.5em;">
+                <h2 style="display:inline-flex;align-items:center;gap:.7em;">Cloudflare solver
+                    <span class="mdl-status" data-solver-status><i></i><span>…</span></span></h2>
+                <button type="button" class="mdl-btn sm" data-test-solver>Test solver</button>
+            </div>
+            <p class="muted">Optional <b>FlareSolverr</b> endpoint. When set, the Cloudflare “Just a moment…” checks on the
+               fallback catalogs (FMovies, Flixtor) are solved automatically <em>in the solver's own browser</em> —
+               you never see or click a checkbox, and those catalogs become a working 1080p backup.
+               Leave blank to skip them (no popups, exactly as it is now).</p>
+            <div class="mdl-form2">
+                <div>
+                    <label class="lbl" for="mdlSolverUrl">Solver request endpoint</label>
+                    <input id="mdlSolverUrl" class="inp mono" type="text" data-f="solverUrl"
+                           placeholder="http://192.168.0.218:8191/v1/request" spellcheck="false" />
+                </div>
+            </div>
+            <div class="mdl-actions" style="margin-top:1em;">
+                <span class="mdl-msg small" data-solver-result></span>
+            </div>
+            <div class="hint">Run FlareSolverr on the engine PC (or any machine it can reach):
+               <span class="mono">docker run -d -p 8191:8191 ghcr.io/FlareSolverr/FlareSolverr:latest</span>,
+               then point this at <span class="mono">http://localhost:8191/v1/request</span>.</div>
+        </div>
+
         <!-- ===== File naming ===== -->
         <div class="mdl-card">
             <h2 style="margin-bottom:.5em;">File naming</h2>
@@ -582,9 +608,57 @@
                     const on = !!engine;
                     $('[data-engine-fields]').disabled = !on;
                     $('[data-engine-fields]').style.opacity = on ? '' : '.5';
+                    const sf = f('solverUrl');
+                    if (sf) sf.disabled = !on;
+                    const sc = $('[data-solver-card]');
+                    if (sc) sc.style.opacity = on ? '' : '.6';
                     $('[data-engine-note]').innerHTML = on
                         ? 'Stored in the engine\'s own <span class="mono">engine.json</span> and edited here while the engine is online.'
                         : '<span style="color:var(--md-yellow)">The engine is offline, so these cannot be read or changed right now.</span> Save the connection above, then reload this page.';
+                }
+
+                // Cloudflare solver status pill: configured / reachable / not tested.
+                function renderSolver(cf) {
+                    const el = $('[data-solver-status]');
+                    if (!el) return;
+                    const label = el.lastElementChild;
+                    cf = cf || (engine && engine.cloudflare) || {};
+                    if (!cf.solverUrl) {
+                        el.className = 'mdl-status';
+                        label.textContent = 'Not set';
+                        el.title = 'No solver configured; Cloudflare-gated catalogs are skipped (no popups).';
+                        return;
+                    }
+                    if (cf.reachable === true) {
+                        el.className = 'mdl-status ok';
+                        label.textContent = 'Configured · reachable';
+                        el.title = cf.solverUrl;
+                    } else if (cf.reachable === false) {
+                        el.className = 'mdl-status bad';
+                        label.textContent = 'Configured · unreachable';
+                        el.title = cf.solverUrl + ' — the engine cannot reach it. Is FlareSolverr running?';
+                    } else {
+                        el.className = 'mdl-status warn';
+                        label.textContent = 'Configured · not tested';
+                        el.title = cf.solverUrl + ' — click Test solver to check reachability.';
+                    }
+                }
+
+                // Save the URL (only the cloudflare setting, non-destructive),
+                // then re-read engine settings which runs the live reachability probe.
+                function testSolver() {
+                    const solverUrl = f('solverUrl').value.trim();
+                    if (!engine) { msg('[data-solver-result]', 'err', 'Engine is offline - save the connection above first.'); return Promise.resolve(); }
+                    msg('[data-solver-result]', 'wait', 'Testing the solver…');
+                    return api('PUT', 'MediaDownloader/EngineSettings', { cloudflare: { solverUrl: solverUrl } })
+                        .then(() => api('GET', 'MediaDownloader/EngineSettings'))
+                        .then((e) => { engine = e; renderSolver(e.cloudflare); return e.cloudflare || {}; })
+                        .then((cf) => {
+                            if (!cf.solverUrl) msg('[data-solver-result]', 'err', 'No solver URL set.');
+                            else if (cf.reachable) msg('[data-solver-result]', 'ok', 'Solver is up and reachable — Cloudflare-gated catalogs (FMovies, Flixtor) will now be used as a popup-free backup.');
+                            else msg('[data-solver-result]', 'err', 'Configured but unreachable (' + cf.solverUrl + '). Is FlareSolverr running and reachable from the engine?');
+                        })
+                        .catch((err) => msg('[data-solver-result]', 'err', 'Test failed: ' + err.message));
                 }
 
                 function fillForm() {
@@ -608,9 +682,11 @@
                     f('jfUrl').value = (e.jellyfin && e.jellyfin.baseUrl) || '';
                     f('jfKey').value = '';
                     f('jfKey').placeholder = e.jellyfin && e.jellyfin.apiKey ? 'set - leave blank to keep it' : 'not set';
+                    f('solverUrl').value = (e.cloudflare && e.cloudflare.solverUrl) || '';
                     maps = Array.isArray(e.pathMappings) ? e.pathMappings.map((m) => ({ jellyfin: m.jellyfin || '', engine: m.engine || '' })) : [];
                     renderMaps();
                     renderEngineState();
+                    renderSolver(e.cloudflare);
                 }
 
                 function load() {
@@ -647,7 +723,8 @@
                         fillMode: f('fillMode').value,
                         readOnly: f('readOnly').checked,
                         pathMappings: maps.map((m) => ({ jellyfin: m.jellyfin.trim(), engine: m.engine.trim() })).filter((m) => m.jellyfin || m.engine),
-                        jellyfin: { baseUrl: f('jfUrl').value.trim() }
+                        jellyfin: { baseUrl: f('jfUrl').value.trim() },
+                        cloudflare: { solverUrl: (f('solverUrl') ? f('solverUrl').value.trim() : '') }
                     };
                     const staging = f('stagingPath').value.trim();
                     if (staging && staging !== (engine && engine.stagingPath)) out.stagingPath = staging;
@@ -755,6 +832,7 @@
                         return;
                     }
                     if (el.hasAttribute('data-test')) { testConnection(); return; }
+                    if (el.hasAttribute('data-test-solver')) { testSolver(); return; }
                     if (el.hasAttribute('data-verify')) { verify(); return; }
                     if (el.hasAttribute('data-add-map')) { maps.push({ jellyfin: '', engine: '' }); renderMaps(); return; }
                     if (el.hasAttribute('data-del-map')) { maps.splice(Number(el.getAttribute('data-del-map')), 1); renderMaps(); return; }
