@@ -128,25 +128,50 @@ async function fetchStreamUrls(ref) {
     qs = `type=tv&${idpart}&season=${ref.season}&episode=${ref.episode}`;
   }
   const url = `${API_BASE}?${qs}&stream_urls`;
-  const r = await request(url, {}, 30000);
-  let j;
-  try {
-    j = JSON.parse(r.body.toString('utf8'));
-  } catch (e) {
-    throw new Error('Vidsrc API did not return JSON (HTTP ' + r.status + '): ' + r.body.toString('utf8').slice(0, 120));
+  // The Vidsrc API rate-limits (HTTP 429) and intermittently 403s bursts behind
+  // a VPN. Retry a few times with backoff before giving up on the fast path; a
+  // persistent 403 ("invalid api token") falls through to the browser relay path.
+  const RETRYABLE = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      const backoff = 1200 * attempt + Math.floor(Math.random() * 800);
+      await new Promise((rs) => setTimeout(rs, backoff));
+    }
+    let r;
+    try {
+      r = await request(url, {}, 30000);
+    } catch (netErr) {
+      lastErr = netErr;
+      continue;
+    }
+    const bodyText = r.body.toString('utf8');
+    let j;
+    try {
+      j = JSON.parse(bodyText);
+    } catch (e) {
+      lastErr = new Error('Vidsrc API did not return JSON (HTTP ' + r.status + '): ' + bodyText.slice(0, 120));
+      if (RETRYABLE.has(r.status)) continue;
+      throw lastErr;
+    }
+    if (String(j.status_code) !== '200') {
+      lastErr = new Error('Vidsrc API status ' + j.status_code);
+      if (RETRYABLE.has(r.status)) continue;
+      throw lastErr;
+    }
+    let urls = j.data && j.data.stream_urls;
+    const meta = {
+      title: (j.data && j.data.title) || ref.title || '',
+      season: (j.data && j.data.season) || ref.season || '',
+      episode: (j.data && j.data.episode) || ref.episode || '',
+    };
+    if (typeof urls === 'string' && j.vs && j.vs.wasm_url) {
+      urls = await decryptStreamUrls(urls, j.vs);
+    }
+    if (!Array.isArray(urls) || !urls.length) throw new Error('Vidsrc API returned no stream urls');
+    return { urls, meta };
   }
-  if (String(j.status_code) !== '200') throw new Error('Vidsrc API status ' + j.status_code);
-  let urls = j.data && j.data.stream_urls;
-  const meta = {
-    title: (j.data && j.data.title) || ref.title || '',
-    season: (j.data && j.data.season) || ref.season || '',
-    episode: (j.data && j.data.episode) || ref.episode || '',
-  };
-  if (typeof urls === 'string' && j.vs && j.vs.wasm_url) {
-    urls = await decryptStreamUrls(urls, j.vs);
-  }
-  if (!Array.isArray(urls) || !urls.length) throw new Error('Vidsrc API returned no stream urls');
-  return { urls, meta };
+  throw lastErr || new Error('Vidsrc API request failed after retries');
 }
 
 // Parse a master playlist into variants: [{ width, height, bandwidth, url }].

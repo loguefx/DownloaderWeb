@@ -772,6 +772,23 @@ class DownloadManager extends EventEmitter {
         this._log(`Error on "${item.label}" (attempt ${item.attempts}): ${err.message}`);
         item.status = 'queued';
         this._emit();
+        // A target file that already exists in the library is a terminal state,
+        // not a transient error: re-downloading cannot change the outcome, so
+        // retrying it forever (the old 28× "Refusing to overwrite" loop) just
+        // hangs the queue. Stop and surface a clear, actionable message.
+        const existsConflict =
+          /Refusing to (overwrite|replace)\b/i.test(err.message || '');
+        if (existsConflict) {
+          item.status = 'failed';
+          item.error = err.message;
+          this._log(
+            `"${item.label}": ${err.message} — the target is already present, so I stopped ` +
+              'retrying (this is not a download failure; the file is in the library).'
+          );
+          this._emit();
+          this._pruneGroupIfComplete(item.group);
+          return { fatal: false };
+        }
         const wrongRes = /downloaded \d+p, not \d+p/.test(err.message || '');
         if (wrongRes) {
           const max = Math.max(1, config.download.maxRetries || 6);

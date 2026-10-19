@@ -1232,22 +1232,43 @@ async function resolveEmbedStandalone(
 
 // Videm's play control is #bigplay. A coordinate click misses it while the
 // window is parked off-screen, so press the button from the page itself.
+//
+// Vidsrc's 2026 relay (rotating host, e.g. stellarconductornexus.com) puts its
+// big-play in a NESTED relay iframe and exposes the real player via
+//   window.CFG = { playerUrl: '/embed/player/tv/<id>?vs=<token>', autoStart }  
+// with a start() that swaps the landing page for the player iframe. When a play
+// button is not found on a page, drive that relay handshake instead of giving up.
 async function clickEmbeddedPlay(wc) {
   if (!wc || wc.isDestroyed()) return;
   try {
     await wc.executeJavaScript(
       `(() => {
-        const sels = ['#bigplay', '#bPlay', '.vjs-big-play-button', '.jw-icon-playback', '[aria-label="Play"]', '[title="Play"]'];
+        const sels = ['#bigplay', '#bigPlay', '#bPlay', '.vjs-big-play-button', '.jw-icon-playback', '.jw-bigplay', '[aria-label="Play"]', '[title="Play"]'];
+        let clicked = false;
         for (const sel of sels) {
           const el = document.querySelector(sel);
           if (!el) continue;
-          try { el.click(); } catch (e) {}
+          try { el.click(); clicked = true; } catch (e) {}
         }
         const v = document.querySelector('video');
-        if (!v) return;
-        v.muted = true;
-        const p = v.play();
-        if (p && p.catch) p.catch(() => {});
+        if (v) {
+          try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+        }
+        // No play button and no live video: this is a relay landing page.
+        if (clicked) return;
+        if (v) return;
+        try {
+          if (typeof window.start === 'function') { try { window.start(); } catch (e) {} }
+        } catch (e) {}
+        // Fall back to jumping straight at the real player URL. Guard with a flag
+        // so the nudge loop does not re-navigate every tick (which would reset the
+        // player and never let hls.js start).
+        try {
+          if (window.CFG && window.CFG.playerUrl && !window.__wvdRelayNav) {
+            window.__wvdRelayNav = true;
+            window.location.href = window.CFG.playerUrl;
+          }
+        } catch (e) {}
       })()`,
       true
     );
@@ -1268,8 +1289,13 @@ function nudgePlayer(wc, webContentsId, windowMs, signal = null) {
       if (wc.isDestroyed() || sniffer.best(webContentsId)) return;
       await clickPlayerArea(wc);
       await clickEmbeddedPlay(wc);
+      // The Vidsrc relay's Play button / CFG lives in a NESTED iframe, not the
+      // top page, so drive the embedded play on every related frame too — not
+      // just a coordinate click on the top one (that misses the relay).
       sniffer.forEachRelated(webContentsId, (other) => {
-        if (other !== wc) clickPlayerArea(other);
+        if (other === wc) return;
+        clickPlayerArea(other);
+        clickEmbeddedPlay(other);
       });
       await delay(1800);
     }
