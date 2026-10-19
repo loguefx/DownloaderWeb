@@ -8,6 +8,7 @@ const { BrowserWindow, session } = require('electron');
 const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
+const cfsolve = require('./cfsolve');
 const vpn = require('./vpn');
 const library = require('./library');
 const { createDiscoverWindow, destroyOwned, passCloudflare } = require('./discoverwindow');
@@ -340,10 +341,21 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             // have to do by hand. When skipped, an episode with no 1080p copy
             // on any CF-free source is simply reported as "no 1080p source"
             // instead of burning time on a challenge.
-            const skipCf = !!(config.download && config.download.skipCloudflareSites);
+            //
+            // EXCEPTION: when a Cloudflare solver is configured (cfsolve.enabled)
+            // the challenge is cleared automatically in the solver's own browser
+            // and the clearance cookies are imported — no on-screen checkbox.
+            // In that case these catalogs are a legitimate, popup-free backup,
+            // so we try them instead of skipping.
+            const solverOn = cfsolve.enabled();
+            const skipCf =
+              !!(config.download && config.download.skipCloudflareSites) && !solverOn;
             if (skipCf) {
               log('All Cloudflare-free sources had no 1080p copy; skipping the Cloudflare-gated catalogs (skipCloudflareSites).');
             } else if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
+              if (solverOn) {
+                log('Cloudflare solver configured; using it to clear the CF-gated catalogs (no checkbox).');
+              }
               const cfCands = allCands.filter((c) => c.cloudflare);
               if (cfCands.length) {
                 log('No CF-free source had it — trying Cloudflare-gated sites as last resort…');

@@ -47,7 +47,13 @@ function defaults() {
     reserveBytes: 50 * 1024 * 1024 * 1024,
     fillMode: 'order',
     pathMappings: [],
-    jellyfin: { baseUrl: '', apiKey: '' }
+    jellyfin: { baseUrl: '', apiKey: '' },
+    // Cloudflare solver (FlareSolverr-compatible) request endpoint, e.g.
+    // http://<solver-host>:8191/v1/request. Empty = off (checkbox-gated
+    // catalogs are skipped). When set, challenged pages are cleared
+    // automatically (no on-screen checkbox) and those catalogs become a
+    // popup-free backup source.
+    cloudflare: { solverUrl: '' }
   };
 }
 
@@ -67,6 +73,7 @@ const engineconfig = {
       this._data = Object.assign(defaults(), raw || {});
       // Keep the shape stable as new fields are added.
       this._data.jellyfin = Object.assign({ baseUrl: '', apiKey: '' }, (raw || {}).jellyfin || {});
+      this._data.cloudflare = Object.assign({ solverUrl: '' }, (raw || {}).cloudflare || {});
       this._data.pathMappings = Array.isArray(this._data.pathMappings) ? this._data.pathMappings : [];
     } catch (e) {
       this._data = defaults();
@@ -79,6 +86,9 @@ const engineconfig = {
   set(patch) {
     const next = Object.assign(this.get(), patch || {});
     if (patch && patch.jellyfin) next.jellyfin = Object.assign(this.get().jellyfin, patch.jellyfin);
+    if (patch && patch.cloudflare) {
+      next.cloudflare = Object.assign(this.get().cloudflare || { solverUrl: '' }, patch.cloudflare);
+    }
     if (!Array.isArray(next.pathMappings)) next.pathMappings = [];
     this._data = next;
     this._persist();

@@ -37,6 +37,7 @@ const watcher = require('./watcher');
 const library = require('./library');
 const placer = require('./placer');
 const engineconfig = require('./engineconfig');
+const cfsolve = require('./cfsolve');
 const { episodeRefFromUrl } = require('./sites/findtitle');
 
 const ACCEPTED_JOBS_FILE = path.join(app.getPath('userData'), 'accepted-jobs.json');
@@ -131,7 +132,8 @@ function health() {
     vpn: vpn.status(),
     readOnly: library.isReadOnly(),
     queue: queueCounts(),
-    staging: stagingInfo()
+    staging: stagingInfo(),
+    cloudflare: { configured: cfsolve.enabled(), solverUrl: cfsolve.solverBase() }
   };
 }
 
@@ -439,8 +441,22 @@ function settingsGet() {
     pathMappings: c.pathMappings,
     jellyfin: { baseUrl: c.jellyfin.baseUrl, apiKey: c.jellyfin.apiKey ? 'set' : '' },
     readOnly: library.isReadOnly(),
-    vpn: vpn.status()
+    vpn: vpn.status(),
+    // Cloudflare solver (FlareSolverr-compatible). When configured, challenged
+    // pages are cleared automatically (no on-screen checkbox) and the CF-gated
+    // catalogs become a popup-free backup. `reachable` is a live probe.
+    cloudflare: { solverUrl: (c.cloudflare && c.cloudflare.solverUrl) || '' }
   };
+}
+
+async function settingsGetAsync() {
+  const base = settingsGet();
+  try {
+    base.cloudflare = await cfsolve.status();
+  } catch (e) {
+    base.cloudflare = { configured: false, solverUrl: (engineconfig.get().cloudflare && engineconfig.get().cloudflare.solverUrl) || '' };
+  }
+  return base;
 }
 
 function settingsPut(patch) {
@@ -452,6 +468,9 @@ function settingsPut(patch) {
     allowed.jellyfin = {};
     if (patch.jellyfin.baseUrl !== undefined) allowed.jellyfin.baseUrl = String(patch.jellyfin.baseUrl);
     if (patch.jellyfin.apiKey !== undefined) allowed.jellyfin.apiKey = String(patch.jellyfin.apiKey);
+  }
+  if (patch && patch.cloudflare && patch.cloudflare.solverUrl !== undefined) {
+    allowed.cloudflare = { solverUrl: String(patch.cloudflare.solverUrl).trim() };
   }
   if (Object.keys(allowed).length) engineconfig.set(allowed);
   if (patch && typeof patch.readOnly === 'boolean') {
@@ -551,6 +570,7 @@ module.exports = {
   schedulesRemove,
   schedulesCheckNow,
   settingsGet,
+  settingsGetAsync,
   settingsPut,
   libraryCheck,
   verifyDrives,

@@ -23,12 +23,62 @@ const http = require('http');
 const { session } = require('electron');
 const config = require('./config');
 
+// The solver URL is a persisted engine setting (engineconfig.cloudflare.
+// solverUrl, set from the Settings API or engine.json) with a fallback to the
+// code default in config.js. Reading engineconfig lazily avoids a require cycle.
 function solverBase() {
-  return String((config.cloudflare && config.cloudflare.solverUrl) || '').replace(/\/+$/, '');
+  let url = String((config.cloudflare && config.cloudflare.solverUrl) || '');
+  if (!url) {
+    try {
+      const ec = require('./engineconfig');
+      url = String((ec.get().cloudflare && ec.get().cloudflare.solverUrl) || '');
+    } catch (e) {
+      url = '';
+    }
+  }
+  return url.replace(/\/+$/, '');
 }
 
 function enabled() {
   return !!solverBase();
+}
+
+// Best-effort reachability probe so the Settings UI / health endpoint can tell
+// the user whether the solver is actually up. Tries the FlareSolverr
+// healthcheck endpoint (sibling of .../v1/request) with a short timeout; a
+// non-2xx or unreachable solver is reported as not reachable rather than
+// erroring. Purely informational — it never blocks a download.
+async function status() {
+  const base = solverBase();
+  const out = { configured: !!base, solverUrl: base || '' };
+  if (!base) return out;
+  let healthUrl = '';
+  try {
+    const u = new URL(base);
+    // .../v1/request -> .../v1/healthcheck ; .../v1/solve -> .../v1/healthcheck
+    u.pathname = u.pathname.replace(/\/(request|solve)\/?$/, '/healthcheck');
+    healthUrl = u.toString();
+  } catch (e) {
+    out.reachable = false;
+    out.error = 'invalid solver URL';
+    return out;
+  }
+  const mod = healthUrl.startsWith('http:') ? http : https;
+  out.reachable = false;
+  try {
+    const ok = await new Promise((resolve) => {
+      const req = mod.get(healthUrl, { timeout: 4000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode >= 200 && res.statusCode < 500);
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+    });
+    out.reachable = !!ok;
+  } catch (e) {
+    out.reachable = false;
+  }
+  return out;
 }
 
 // Sends `pageUrl` to the solver. On success the clearance cookies are set on
@@ -134,4 +184,4 @@ async function trySolver(pageUrl, wc, onLog = () => {}) {
   }
 }
 
-module.exports = { enabled, trySolver };
+module.exports = { enabled, trySolver, status, solverBase };

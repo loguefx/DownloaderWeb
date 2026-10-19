@@ -727,7 +727,8 @@ async function handle(req, res, u) {
     // ---- settings ----
     if (seg === 'settings') {
       if (req.method === 'GET') {
-        json(res, 200, service.settingsGet());
+        // Async: includes a live Cloudflare-solver reachability probe.
+        json(res, 200, await service.settingsGetAsync());
         return;
       }
       if (req.method === 'PUT') {
