@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.28",
+                "changelog": "Fix: Browse tab cards now open a fully populated title screen (poster, seasons, library, 1080p queue) — the old flow crashed renderTitle. Also fixes the Anime browse tab (AniList sort type) and resolves TMDB ids for anime so they download at 1080p.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v28/MediaDownloader.12.1.0.28.zip",
+                "checksum": "ececc2a606ded9c0b83c11231518ac7c",
+                "timestamp": "2026-10-19T00:06:45.976Z"
+            },
+            {
                 "version": "12.1.0.27",
                 "changelog": "Fix: Browse tab cards (Trending/Most popular) now open on click — they were divs and the click handler only matched buttons. Full flow works: browse -> title -> seasons -> queue at 1080p.",
                 "targetAbi": "12.1.0.0",
@@ -216,6 +224,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.28",
+                "changelog": "Fix: Browse tab cards now open a fully populated title screen (poster, seasons, library, 1080p queue) — the old flow crashed renderTitle. Also fixes the Anime browse tab (AniList sort type) and resolves TMDB ids for anime so they download at 1080p.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v28/MediaDownloader.10.11.0.28.zip",
+                "checksum": "7940fcf4a775efb73eb28dc24c51d9c0",
+                "timestamp": "2026-10-19T00:06:45.976Z"
+            },
+            {
                 "version": "10.11.0.27",
                 "changelog": "Fix: Browse tab cards (Trending/Most popular) now open on click — they were divs and the click handler only matched buttons. Full flow works: browse -> title -> seasons -> queue at 1080p.",
                 "targetAbi": "10.11.0.0",
@@ -422,6 +438,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.28",
+                "changelog": "Fix: Browse tab cards now open a fully populated title screen (poster, seasons, library, 1080p queue) — the old flow crashed renderTitle. Also fixes the Anime browse tab (AniList sort type) and resolves TMDB ids for anime so they download at 1080p.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v28/MediaDownloader.10.10.0.28.zip",
+                "checksum": "ed2df7278d40af0ec10401635c27c0f8",
+                "timestamp": "2026-10-19T00:06:45.976Z"
             },
             {
                 "version": "10.10.0.27",
