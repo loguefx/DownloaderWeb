@@ -725,9 +725,10 @@
                         var rating = r.rating ? '<span class="rating">' + r.rating + '</span>' : '';
                         var year = r.year ? r.year : '';
                         var eps = r.episodes ? ' · ' + r.episodes + ' ep' : '';
-                        // Anime cards use anilist id, TV/Movie use tmdb id
-                        var id = r.anilist || r.tmdb || '';
-                        var idAttr = r.anilist ? 'data-browse-anilist' : 'data-browse-open';
+                        // Prefer the TMDB id (the Vidsrc pipeline needs it);
+                        // fall back to the AniList id when TMDB has no entry.
+                        var id = r.tmdb || r.anilist || '';
+                        var idAttr = r.tmdb ? 'data-browse-open' : 'data-browse-anilist';
                         return '<div class="mdl-tcard" ' + idAttr + '="' + id + '" data-btype="' + (r.type || S.browseType) + '">'
                             + '<div class="mdl-poster">' + rating + '<img src="' + esc(r.poster) + '" alt="" loading="lazy"/></div>'
                             + '<div class="body"><div class="name">' + esc(r.title) + '</div>'
@@ -1600,61 +1601,40 @@
                 // Browse grid cards are plain divs (data-browse-open /
                 // data-browse-anilist), not buttons — open them before the
                 // `button, a` filter below, which would skip them entirely.
+                // Delegate to openTitle() so the card gets the EXACT title
+                // object renderTitle() expects (t.r, t.kind, t.mode, ...);
+                // the old inline flow set a partial object and crashed the
+                // whole title screen (blank poster / no seasons).
                 function openBrowseCard(card) {
-                    if (card.hasAttribute('data-browse-open')) {
-                        const tmdb = card.getAttribute('data-browse-open');
-                        const btype = card.getAttribute('data-btype') || 'tv';
-                        const titleName = (card.querySelector('.name') || {}).textContent || '';
-                        const poster = (card.querySelector('img') || {}).src || '';
-                        S.t = {
-                            tmdb: tmdb,
-                            type: btype === 'anime' ? 'tv' : btype,
-                            title: titleName,
-                            poster: poster,
-                            seasons: [],
-                            infoError: ''
-                        };
-                        show('title');
-                        get('MediaDownloader/TmdbInfo?tmdb=' + tmdb + '&type=' + (btype === 'anime' ? 'tv' : btype)).then(function (info) {
-                            if (info) {
-                                S.t.title = info.title || S.t.title;
-                                S.t.poster = info.poster || S.t.poster;
-                                S.t.seasons = info.seasons || [];
-                                S.t.badge = info.type === 'movie' ? 'Movie' : 'TV';
-                                S.t.overview = info.overview || '';
-                                renderTitle();
-                            }
-                        }).catch(function () { renderTitle(); });
-                        return;
-                    }
-                    if (card.hasAttribute('data-browse-anilist')) {
-                        // Anime from AniList: use /Anime/Info for all seasons
-                        const titleName = (card.querySelector('.name') || {}).textContent || '';
-                        const poster = (card.querySelector('img') || {}).src || '';
-                        S.t = {
-                            anilist: card.getAttribute('data-browse-anilist'),
-                            type: 'tv',
-                            title: titleName,
-                            poster: poster,
-                            seasons: [],
-                            badge: 'Anime',
-                            infoError: ''
-                        };
-                        show('title');
-                        get('MediaDownloader/Anime/Info?title=' + encodeURIComponent(titleName)).then(function (info) {
-                            if (info) {
-                                S.t.title = info.title || S.t.title;
-                                S.t.poster = info.poster || S.t.poster;
-                                S.t.seasons = info.seasons || [];
-                                S.t.badge = 'Anime';
-                                S.t.overview = info.overview || '';
-                                renderTitle();
-                            }
-                        }).catch(function (err) {
-                            S.t.infoError = err.message || 'Failed to load anime info';
-                            renderTitle();
-                        });
-                        return;
+                    const id = card.getAttribute('data-browse-open') || card.getAttribute('data-browse-anilist') || '';
+                    const r = (S.browseResults || []).find((x) =>
+                        (x.tmdb && String(x.tmdb) === String(id)) || (x.anilist && String(x.anilist) === String(id))) || {
+                        tmdb: id,
+                        title: (card.querySelector('.name') || {}).textContent || '',
+                        poster: (card.querySelector('img') || {}).src || '',
+                        type: 'tv',
+                        year: ''
+                    };
+                    openTitle(r);
+                    // AniList-only cards have no TMDB id, but the download
+                    // pipeline needs one: resolve it via TMDB search and
+                    // re-load the title once found.
+                    if (!r.tmdb && r.title && S.t && S.t.r === r) {
+                        get('MediaDownloader/Search?q=' + encodeURIComponent(r.title) + '&type=tv')
+                            .then((resp) => {
+                                const list = (resp && resp.results) || [];
+                                const hit = list.find((x) => x.tmdb) || null;
+                                if (!hit || !S.t || S.t.r !== r) return;
+                                r.tmdb = hit.tmdb;
+                                if (hit.imdb) r.imdb = hit.imdb;
+                                if (hit.poster) r.poster = hit.poster;
+                                if (hit.year) r.year = hit.year;
+                                S.t.tmdb = hit.tmdb;
+                                S.t.noTmdb = false;
+                                S.t.infoError = null;
+                                loadTitle(S.t);
+                            })
+                            .catch(() => { /* the noTmdb message stays visible */ });
                     }
                 }
 

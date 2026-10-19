@@ -439,9 +439,9 @@ async function handle(req, res, u) {
       const category = (u.searchParams.get('category') || 'trending').trim();
       const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10));
       const perPage = 20;
-      const sort = category === 'popular' ? 'POPULARITY_DESC' : 'TRENDING_DESC';
+      const sort = [category === 'popular' ? 'POPULARITY_DESC' : 'TRENDING_DESC'];
       const graphqlQuery = JSON.stringify({
-        query: `query($page: Int, $perPage: Int, $sort: MediaSort) {
+        query: `query($page: Int, $perPage: Int, $sort: [MediaSort]) {
           Page(page: $page, perPage: $perPage) {
             pageInfo { currentPage total }
             media(sort: $sort, type: ANIME, isAdult: false) {
