@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.29",
+                "changelog": "No more Cloudflare popups (engine stops trying checkbox-gated catalogs by default). Anime downloads at whatever resolution the source has (often 720p) instead of being rejected for not being 1080p. TV/movies still require 1080p.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v29/MediaDownloader.12.1.0.29.zip",
+                "checksum": "03f7256506ea7b69ec5cbeaaaba1bd13",
+                "timestamp": "2026-10-19T08:31:31.824Z"
+            },
+            {
                 "version": "12.1.0.28",
                 "changelog": "Fix: Browse tab cards now open a fully populated title screen (poster, seasons, library, 1080p queue) — the old flow crashed renderTitle. Also fixes the Anime browse tab (AniList sort type) and resolves TMDB ids for anime so they download at 1080p.",
                 "targetAbi": "12.1.0.0",
@@ -224,6 +232,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.29",
+                "changelog": "No more Cloudflare popups (engine stops trying checkbox-gated catalogs by default). Anime downloads at whatever resolution the source has (often 720p) instead of being rejected for not being 1080p. TV/movies still require 1080p.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v29/MediaDownloader.10.11.0.29.zip",
+                "checksum": "4f6e518fbf16c4175b76ad3bd8260b6f",
+                "timestamp": "2026-10-19T08:31:31.823Z"
+            },
+            {
                 "version": "10.11.0.28",
                 "changelog": "Fix: Browse tab cards now open a fully populated title screen (poster, seasons, library, 1080p queue) — the old flow crashed renderTitle. Also fixes the Anime browse tab (AniList sort type) and resolves TMDB ids for anime so they download at 1080p.",
                 "targetAbi": "10.11.0.0",
@@ -438,6 +454,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.29",
+                "changelog": "No more Cloudflare popups (engine stops trying checkbox-gated catalogs by default). Anime downloads at whatever resolution the source has (often 720p) instead of being rejected for not being 1080p. TV/movies still require 1080p.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v29/MediaDownloader.10.10.0.29.zip",
+                "checksum": "db00636fcea068e32384b2db8eebf9fb",
+                "timestamp": "2026-10-19T08:31:31.823Z"
             },
             {
                 "version": "10.10.0.28",
