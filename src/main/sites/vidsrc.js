@@ -112,6 +112,15 @@ module.exports = {
     // in-page player because there is an extra hop (relay -> rotating host).
     sourceWaitMs: 18000
   },
+  // Vidsrc's data API is IP-rate-limited and 429s bursts. The default pool of
+  // 5-wide (concurrency 5 + prefetch 1) resolves a whole season's worth at
+  // once and gets the whole batch 403/429'd. Serialize Vidsrc so only ONE
+  // episode resolves at a time; the others wait their turn instead of storming
+  // the API. (Other CF-free sites keep the global concurrency.)
+  download: {
+    concurrency: 1,
+    prefetchDiscover: 0
+  },
   urlTemplates: [
     'https://vidsrc.sh/embed/tv/{id}-{season}-{episode}',
     'https://vidsrc.sh/embed/movie/{id}',

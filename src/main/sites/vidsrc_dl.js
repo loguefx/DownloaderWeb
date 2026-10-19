@@ -53,10 +53,12 @@ const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const API_BASE = 'https://data.vidsrc.sh/api.php';
 
-// Simple throttle: minimum 800ms between Vidsrc API calls to avoid 429.
-// When 40+ episodes resolve simultaneously the API rate-limits us.
+// Simple throttle: minimum interval between Vidsrc API calls to avoid 429.
+// Vidsrc's data API is IP-rate-limited; when a season's worth resolves at
+// once the whole batch gets 429'd. Keep a conservative global spacing on top
+// of the per-site serialization (see vidsrc.js download.concurrency=1).
 let _lastApiCall = 0;
-const API_MIN_INTERVAL_MS = 800;
+const API_MIN_INTERVAL_MS = 1200;
 function throttleApi() {
   const now = Date.now();
   const wait = Math.max(0, _lastApiCall + API_MIN_INTERVAL_MS - now);
@@ -131,11 +133,18 @@ async function fetchStreamUrls(ref) {
   // The Vidsrc API rate-limits (HTTP 429) and intermittently 403s bursts behind
   // a VPN. Retry a few times with backoff before giving up on the fast path; a
   // persistent 403 ("invalid api token") falls through to the browser relay path.
+  // 429/5xx (rate-limited / transient) clear with time, so wait much longer on
+  // those than on a hard 403. The browser relay's player calls this same API,
+  // so letting the rate limit clear here also helps the fallback path.
   const RETRYABLE = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+  const RATE_LIMITED = new Set([429, 503]);
   let lastErr = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastStatus = 0;
+  for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) {
-      const backoff = 1200 * attempt + Math.floor(Math.random() * 800);
+      const limited = RATE_LIMITED.has(lastStatus);
+      const backoff =
+        (limited ? 4000 : 1500) * attempt + Math.floor(Math.random() * (limited ? 2000 : 800));
       await new Promise((rs) => setTimeout(rs, backoff));
     }
     let r;
@@ -143,8 +152,10 @@ async function fetchStreamUrls(ref) {
       r = await request(url, {}, 30000);
     } catch (netErr) {
       lastErr = netErr;
+      lastStatus = 0;
       continue;
     }
+    lastStatus = r.status;
     const bodyText = r.body.toString('utf8');
     let j;
     try {

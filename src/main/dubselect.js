@@ -1239,26 +1239,29 @@ async function resolveEmbedStandalone(
 // with a start() that swaps the landing page for the player iframe. When a play
 // button is not found on a page, drive that relay handshake instead of giving up.
 async function clickEmbeddedPlay(wc) {
-  if (!wc || wc.isDestroyed()) return;
+  if (!wc || wc.isDestroyed()) return '';
   try {
-    await wc.executeJavaScript(
+    // Returns a short status string so the caller can log WHICH frame we drove
+    // and HOW (click vs relay start vs CFG.playerUrl nav) — the Vidsrc relay
+    // Play button lives in a nested iframe, and we need to see it actually hit.
+    return await wc.executeJavaScript(
       `(() => {
         const sels = ['#bigplay', '#bigPlay', '#bPlay', '.vjs-big-play-button', '.jw-icon-playback', '.jw-bigplay', '[aria-label="Play"]', '[title="Play"]'];
-        let clicked = false;
+        let clicked = '';
         for (const sel of sels) {
           const el = document.querySelector(sel);
           if (!el) continue;
-          try { el.click(); clicked = true; } catch (e) {}
+          try { el.click(); clicked = sel; } catch (e) {}
         }
         const v = document.querySelector('video');
         if (v) {
           try { v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
         }
+        if (clicked) return 'clicked ' + clicked;
+        if (v) return 'video-present';
         // No play button and no live video: this is a relay landing page.
-        if (clicked) return;
-        if (v) return;
         try {
-          if (typeof window.start === 'function') { try { window.start(); } catch (e) {} }
+          if (typeof window.start === 'function') { try { window.start(); } catch (e) {} return 'relay-start()'; }
         } catch (e) {}
         // Fall back to jumping straight at the real player URL. Guard with a flag
         // so the nudge loop does not re-navigate every tick (which would reset the
@@ -1267,13 +1270,15 @@ async function clickEmbeddedPlay(wc) {
           if (window.CFG && window.CFG.playerUrl && !window.__wvdRelayNav) {
             window.__wvdRelayNav = true;
             window.location.href = window.CFG.playerUrl;
+            return 'nav ' + window.CFG.playerUrl;
           }
         } catch (e) {}
+        return 'no-play-control';
       })()`,
       true
     );
   } catch (e) {
-    // ignore
+    return 'exec-error';
   }
 }
 
@@ -1291,12 +1296,23 @@ function nudgePlayer(wc, webContentsId, windowMs, signal = null) {
       await clickEmbeddedPlay(wc);
       // The Vidsrc relay's Play button / CFG lives in a NESTED iframe, not the
       // top page, so drive the embedded play on every related frame too — not
-      // just a coordinate click on the top one (that misses the relay).
+      // just a coordinate click on the top one (that misses the relay). Log any
+      // frame we actually drove (a real click / relay start / CFG nav) so the
+      // next run shows whether the relay was reached at all.
+      const frames = [];
       sniffer.forEachRelated(webContentsId, (other) => {
         if (other === wc) return;
-        clickPlayerArea(other);
-        clickEmbeddedPlay(other);
+        frames.push(other);
       });
+      for (const other of frames) {
+        await clickPlayerArea(other);
+        const action = await clickEmbeddedPlay(other);
+        if (action && /clicked|relay-start|nav /.test(String(action))) {
+          let url = '';
+          try { url = other.getURL ? other.getURL() : ''; } catch (e) { url = ''; }
+          console.log(`[relay] drove "${action}" on frame: ${url}`);
+        }
+      }
       await delay(1800);
     }
   })();
