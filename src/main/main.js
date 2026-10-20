@@ -397,10 +397,14 @@ app.whenReady().then(() => {
 
   const onLog = (msg) => send('queue:log', { ts: Date.now(), msg });
 
-  // Resume any downloads that were still in flight when the app last closed.
-  // We rebuild each item's live discover()/onUnavailable() here (main can see
-  // bulk/pending, avoiding a circular require inside the queue module).
-  manager.restore((rec) => {
+  // By default the engine starts with an EMPTY queue: episodes you removed or
+  // that failed do not come back on the next run, and any leftover manifest is
+  // cleared. Set download.persistQueueAcrossRestarts to true to resume in-flight
+  // downloads across a restart instead (the old behaviour).
+  if (config.download.persistQueueAcrossRestarts) {
+    // Rebuild each item's live discover()/onUnavailable() here (main can see
+    // bulk/pending, avoiding a circular require inside the queue module).
+    manager.restore((rec) => {
     const meta = { series: rec.series, season: rec.season, episode: rec.episode };
     const floor = (sites.resolve(rec.url || rec.baseUrl || '') || {}).minHeight || 0;
     // SFlix files under 1080p have to come back through discovery. Skipping
@@ -430,7 +434,10 @@ app.whenReady().then(() => {
       skipSources,
       onUnavailable: () => pending.add(spec)
     };
-  });
+    });
+  } else {
+    manager.clearPersistedQueue();
+  }
 
   // Start the daily watcher for pending dubbed episodes.
   watcher.start(onLog);

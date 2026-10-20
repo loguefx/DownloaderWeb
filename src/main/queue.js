@@ -854,6 +854,9 @@ class DownloadManager extends EventEmitter {
   }
 
   _persist() {
+    // Start-empty mode (the default): don't accumulate a manifest, so removed or
+    // failed episodes can never be resurrected on the next run.
+    if (!config.download.persistQueueAcrossRestarts) return;
     try {
       // Persist everything still in flight so a restart can resume it. Completed
       // and cancelled items are dropped (done files stay on disk).
@@ -886,6 +889,17 @@ class DownloadManager extends EventEmitter {
       fs.writeFileSync(this._manifestPath(), JSON.stringify(data, null, 2));
     } catch (e) {
       // non-fatal
+    }
+  }
+
+  // Remove the persisted manifest so a start-empty session never resurrects
+  // episodes the user already removed (and to shed a manifest left behind by an
+  // older build or a previous run that had persistence on).
+  clearPersistedQueue() {
+    try {
+      fs.unlinkSync(this._manifestPath());
+    } catch (e) {
+      /* no manifest to clear */
     }
   }
 

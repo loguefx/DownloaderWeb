@@ -88,6 +88,12 @@ module.exports = {
   download: {
     // How many episodes to download at the same time (Aniwave and others).
     concurrency: 5,
+    // Start every engine session with an EMPTY queue. When true (the default)
+    // the engine does NOT re-queue downloads that were still in flight when it
+    // last stopped, and it clears the leftover manifest — so episodes you
+    // removed (or that failed) do not come back on the next start. Set to false
+    // to resume in-flight downloads across a restart instead.
+    persistQueueAcrossRestarts: false,
     // While one file is downloading, resolve the next episode so it can start
     // the moment a download slot frees.
     prefetchDiscover: 1,
