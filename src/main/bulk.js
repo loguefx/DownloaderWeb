@@ -177,7 +177,8 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               dubselect.selectDubAndResolve(win.webContents, pageUrl, log, mode, {
                 signal: attempt.signal,
                 skipSources: extra.skipSources || [],
-                anime: !!extra.anime
+                anime: !!extra.anime,
+                minHeight: extra.minHeight
               }),
               new Promise((_, reject) => {
                 onStall = () => {
@@ -350,21 +351,41 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             const solverOn = cfsolve.enabled();
             const skipCf =
               !!(config.download && config.download.skipCloudflareSites) && !solverOn;
-            if (skipCf) {
-              log('All Cloudflare-free sources had no 1080p copy; skipping the Cloudflare-gated catalogs (skipCloudflareSites).');
-            } else if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
+            if (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) {
               if (solverOn) {
                 log('Cloudflare solver configured; using it to clear the CF-gated catalogs (no checkbox).');
+              } else if (skipCf) {
+                log('All CF-free sources failed; trying the Cloudflare-gated catalogs briefly (no solver, no on-screen check).');
               }
               const cfCands = allCands.filter((c) => c.cloudflare);
               if (cfCands.length) {
                 log('No CF-free source had it — trying Cloudflare-gated sites as last resort…');
+                // skipCloudflareSites means "never park a checkbox window on
+                // screen waiting for a click" - not "never try these sites".
+                // Several of them (Flixtor especially) serve the page straight
+                // to a normal browser, so a short, silent budget catches them:
+                // when there is no real challenge the page loads instantly,
+                // and when there IS one we bail after the budget instead of
+                // waiting five minutes for a click the user does not want to
+                // make. (A configured solver still gets the full, patient
+                // wait, since it clears challenges without any click.)
+                const cfOpts = skipCf ? { budgetMs: 20000, present: false } : {};
+                // findTitle() loads the SEARCH page too, and it calls
+                // hooks.cloudflare() after every load. Hand it the same fast,
+                // non-presented pass - otherwise a challenge on the search
+                // page (movienow.online) triggers the 5-minute on-screen wait,
+                // which is exactly the popup skipCloudflareSites is for.
+                const cfHooks = {
+                  wc: win.webContents,
+                  load: (page) => loadWithTimeout(win, page, 30000),
+                  cloudflare: (page) => passCloudflare(win, page, log, cfOpts)
+                };
                 for (const cand of cfCands) {
                   if (controller.signal.aborted) break;
                   if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
                   let pageUrl = null;
                   try {
-                    pageUrl = await cand.findTitle(ref, hooks, log);
+                    pageUrl = await cand.findTitle(ref, cfHooks, log);
                   } catch (e) {
                     log(`Last-resort search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
                     continue;
@@ -376,8 +397,12 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                   } catch (e) {
                     continue;
                   }
-                  if (!(await passCloudflare(win, pageUrl, log))) {
-                    log(`Cloudflare did not clear on ${cand.name || cand.id}; giving up on this source.`);
+                  if (!(await passCloudflare(win, pageUrl, log, cfOpts))) {
+                    if (skipCf) {
+                      log(`Cloudflare challenge on ${cand.name || cand.id} and no solver configured; skipping it without waiting.`);
+                    } else {
+                      log(`Cloudflare did not clear on ${cand.name || cand.id}; giving up on this source.`);
+                    }
                     continue;
                   }
                   outcome = await runResolve(pageUrl);
@@ -389,11 +414,14 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         if (!outcome) outcome = { status: 'failed', reason: 'No 1080p stream on any source' };
         // Token CDNs (vidfast/peakstorm/embedmaster) only serve segments while
         // the player page is still open. Destroying it here made download fail
-        // in ~1s with an empty playlist / net::ERR_FAILED.
+        // in ~1s with an empty playlist / net::ERR_FAILED. Token CDNs behind a
+        // worker proxy (SFlix netoda/voxzer) are the same: the localize path
+        // pulls every uncaptured segment through this window's session.
         if (outcome && outcome.status === 'resolved' && outcome.detection) {
           const det = outcome.detection;
           const embed = det.embedUrl || '';
-          const keep = hlscheck.isPlayerBoundCdn(det.url, embed);
+          const keep =
+            hlscheck.isPlayerBoundCdn(det.url, embed) || hlscheck.isTokenCdn(det.url, embed);
           if (keep) {
             holdWindows = true;
             log('Keeping the player open until this episode finishes downloading.');
@@ -859,7 +887,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         skipSources: [],
         onUnavailable: () => pending.add(spec)
       };
-      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime }));
+      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight }));
       const added = manager.add(rec);
       if (added) queued += 1;
     }
@@ -924,7 +952,7 @@ async function queueOne(entry, onLog = () => {}) {
     skipSources: [],
     onUnavailable: () => pending.add(spec)
   };
-  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime }));
+  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight }));
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {

@@ -18,6 +18,14 @@ function playerUrlNeedsId(url) {
     // as a missing id prepended the TMDB number on every pass
     // (/tv/1739/1739/1739-1-7).
     if (rest.some((seg) => /^\d+-\d+-\d+$/.test(seg))) return false;
+    // Movie player URLs are /movie/{id} (or /embed/movie/{id}): the single id
+    // segment IS the complete target. Treating "/movie/tt0816692" as id-less
+    // made injectPlayerUrl double the id (/movie/tt0816692/tt0816692) and the
+    // skip gate then rejected every working movie server (vidfast, vidapi).
+    if (kind === 'movie') {
+      const id = rest[0] || '';
+      return !(/^tt\d{4,}$/i.test(id) || /^\d{4,}$/.test(id));
+    }
     if (rest.length < 3) return true;
     const id = rest[0] || '';
     if (!id || id === 'tt') return true;
@@ -303,6 +311,14 @@ module.exports = {
   match: [/sflix\.soap2day\.day/i, /soap2day\.day/i, /\bsflixz\.day\b/i, /sflix\.(?:bz|ch|vg)\b/i],
   // Anything under 1080p is rejected. The queue then tries the other SFlix site.
   minHeight: 1080,
+  // The server embeds (moviesapi/vidspark and friends) auto-play inside the
+  // episode page's own iframe: a programmatic click can never reach the nested
+  // third-party frame, but the player walks the chain and fetches the real
+  // stream on this tab anyway. Discovery must wait for that in-page stream
+  // before re-opening the player standalone - the re-open races the one-shot
+  // playlist token and loses, so the working in-page capture used to be
+  // discarded and every server looked dead.
+  inPageAutoPlay: true,
   mirrorUrls(pageUrl) {
     const family = sflixFamily(pageUrl);
     const origins = (SFLIX_FAMILIES[family] || []).slice();
@@ -524,7 +540,14 @@ module.exports = {
     // videm.xyz, and it is the only fallback for episodes Vidfast has no source
     // for (it 500s on those). It is deferred, not preferred, so Vidfast stays
     // the first choice and the working path is unchanged.
-    maxSources: 5,
+    //
+    // 7, not 5: movie pages (Matchbox, Interstellar) list 7 player tabs and the
+    // ONLY downloadable one - vidfast.pro - is tab 6/7. Capping at 5 silently
+    // dropped it, so every server tried was a dead end (nontongo relay hangs,
+    // medmedia/vidapi missing-id, multiembed/embedmaster challenged) and the
+    // whole job failed. The cap still bounds live players; the extra tabs are
+    // usually skipped instantly by skipEmbedHosts, so only real players cost time.
+    maxSources: 7,
     skipEmbedHosts: [
       ...(process.platform === 'win32' ? [/vidapi\./i, /vidfast\./i] : [/nontongo/i]),
       /embedmaster\.|embdmstrplayer/i,
@@ -916,6 +939,10 @@ module.exports = {
                 const rest = parts[0] === 'embed' ? parts.slice(2) : parts.slice(1);
                 if (kind !== 'tv' && kind !== 'movie') return false;
                 if (rest.some((seg) => /^\\d+-\\d+-\\d+$/.test(seg))) return false;
+                if (kind === 'movie') {
+                  const cur = rest[0] || '';
+                  return !(/^tt\\d{4,}$/i.test(cur) || /^\\d{4,}$/.test(cur));
+                }
                 if (rest.length < 3) return true;
                 const cur = rest[0] || '';
                 if (!cur || cur === 'tt') return true;

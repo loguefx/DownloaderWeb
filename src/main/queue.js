@@ -90,8 +90,11 @@ class DownloadManager extends EventEmitter {
         episode: null,
         // Engine (Part 5): the library this job's finished files belong in,
         // plus the quality floor and the plugin's jobId for traceability.
+        // minHeight null = "no explicit floor" -> _minHeight falls back to the
+        // site profile's floor (desktop items). A number (even 0 = best
+        // available) is an explicit per-job choice and wins.
         library: null,
-        minHeight: 0,
+        minHeight: null,
         jobId: null,
         // Fields needed to rebuild this item after an app restart.
         url: null,
@@ -327,6 +330,11 @@ class DownloadManager extends EventEmitter {
     // Anime: no resolution floor (the source's own resolution, often 720p,
     // is accepted). TV/movies keep the profile's 1080p floor.
     if (item && item.anime) return 0;
+    // An explicit per-item floor (engine jobs stamp it; 0 = "best available")
+    // wins over the profile, same rule dubselect applies. Items without an
+    // explicit value (desktop queue, template default null) keep the profile's
+    // floor as before.
+    if (item && item.minHeight != null) return Number(item.minHeight) || 0;
     const url = String((item && (item.url || item.baseUrl)) || '');
     const profile = url ? sites.resolve(url) : null;
     return (profile && profile.minHeight) || 0;
@@ -944,7 +952,10 @@ class DownloadManager extends EventEmitter {
             key: rec.key,
             stopRunOnFail: rec.stopRunOnFail,
             library: rec.library || null,
-            minHeight: Number(rec.minHeight) || 0,
+            // null stays null: "no explicit floor" (desktop items) must keep
+            // the profile's floor after a restart; a stored number (even 0) is
+            // an explicit per-job choice.
+            minHeight: rec.minHeight != null ? Number(rec.minHeight) || 0 : null,
             anime: !!rec.anime,
             jobId: rec.jobId || null,
             skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],

@@ -104,13 +104,16 @@ module.exports = {
     // Remuxes in parallel. If the CDN 429s, tripRateLimit pauses new HLS starts
     // and the queue retries with backoff (see downloader/queue).
     hlsConcurrency: 5,
-    // When true (the default) the engine NEVER tries the Cloudflare-gated
-    // catalogs (FMovies/movienow, Flixtor, …) as a last resort. Those are the
-    // sites that park a "Just a moment…" window on your screen waiting for a
-    // checkbox click. If every Cloudflare-FREE source (Vidsrc, NontonGo, …)
-    // has no 1080p copy, the episode is simply reported as "no 1080p source"
-    // instead of burning time on a challenge you have to click by hand.
-    // Set to false to re-enable the checkbox-gated last-resort fallback.
+    // When true (the default) the engine never parks a "Just a moment…"
+    // window on your screen waiting for a checkbox click. It STILL tries the
+    // Cloudflare-gated catalogs (FMovies/movienow, Flixtor, …) as a last
+    // resort, but only briefly and with the window kept off-screen: pages
+    // that are not actually challenged (Flixtor often serves straight
+    // content) load and are used as normal, while a real challenge is
+    // abandoned after a short budget instead of burning time on a click.
+    // Set to false for the old behavior: window on screen, wait up to five
+    // minutes for a human click. A configured Cloudflare solver (Settings)
+    // always clears the challenge automatically, in either mode.
     skipCloudflareSites: true,
     // After a 429, block every HLS start (not just the failed episode).
     rateLimitCooldownMs: 30000,

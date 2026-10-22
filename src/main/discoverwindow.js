@@ -552,10 +552,22 @@ function presentChallenge(win) {
 // Turnstile does not finish in a window parked below the monitor. Hold the
 // episode window on screen until "Just a moment..." is replaced by the page.
 // The clearance is stored in the main app session, so later episodes skip it.
-async function passCloudflare(win, _pageUrl, onLog = () => {}) {
+async function passCloudflare(win, _pageUrl, onLog = () => {}, opts = {}) {
   if (!win || win.isDestroyed()) return false;
   const wc = win.webContents;
   if (!(await isChallenge(wc))) return true;
+  // opts (both optional):
+  //   budgetMs  max wait for a challenge to clear (default 5 min)
+  //   present   bring the window on screen while waiting (default true).
+  //             With present: false the window stays parked off-screen: a
+  //             page that is NOT actually challenged passes immediately, and
+  //             a real challenge is abandoned after budgetMs instead of
+  //             waiting for a human click. bulk.js uses this for the
+  //             skipCloudflareSites last-resort pass, so "no popups" is
+  //             preserved while catalogs that serve straight content
+  //             (Flixtor often does) still work.
+  const budgetMs = Math.max(3000, Number(opts && opts.budgetMs) || 300000);
+  const present = !opts || opts.present !== false;
   if (await isHardBlock(wc)) {
     onLog('Cloudflare hard-blocked this page; skipping it without waiting.');
     return false;
@@ -576,14 +588,16 @@ async function passCloudflare(win, _pageUrl, onLog = () => {}) {
     }
   }
   onLog(
-    'Cloudflare check is blocking the page. Leaving the window on screen until it clears. Click the checkbox if one is showing.'
+    present
+      ? 'Cloudflare check is blocking the page. Leaving the window on screen until it clears. Click the checkbox if one is showing.'
+      : 'Cloudflare check on this page and no solver is configured; waiting briefly for it to clear on its own...'
   );
-  presentChallenge(win);
+  if (present) presentChallenge(win);
   // The interstitial usually starts while the window is parked off-screen, and
   // that attempt never finishes. Reload once it is visible so Turnstile runs again.
   let reloads = 0;
   const doReload = () => {
-    if (reloads >= 2) return;
+    if (reloads >= (present ? 2 : 1)) return;
     reloads += 1;
     try {
       wc.reload();
@@ -596,9 +610,10 @@ async function passCloudflare(win, _pageUrl, onLog = () => {}) {
   // episode log or stepping away). 90s made episodes die with
   // "Cloudflare check did not clear" while the user was still about to click.
   // Wait up to five minutes; the periodic log also keeps the discovery stall
-  // watchdog in bulk.js happy while we sit here.
-  const deadline = Date.now() + 300000;
-  let nextReload = Date.now() + 30000;
+  // watchdog in bulk.js happy while we sit here. In fast (non-presented) mode
+  // the deadline is the caller's budget - a few seconds, not five minutes.
+  const deadline = Date.now() + (present ? 300000 : budgetMs);
+  let nextReload = Date.now() + (present ? 30000 : 10000);
   let lastLog = Date.now();
   while (Date.now() < deadline) {
     await delay(1000);
@@ -606,7 +621,7 @@ async function passCloudflare(win, _pageUrl, onLog = () => {}) {
     if (!(await isChallenge(wc))) {
       await delay(600);
       if (!(await isChallenge(wc))) break;
-    } else {
+    } else if (present) {
       if (Date.now() >= nextReload) {
         nextReload = Date.now() + 30000;
         onLog('Still on the Cloudflare check; reloading the challenge once more...');

@@ -382,6 +382,14 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- sources health (Overview "Sources" row) ----
+    // Probes run FROM THE ENGINE, so the statuses reflect the engine's own
+    // IP - the one downloads actually go out through.
+    if (req.method === 'GET' && seg === 'sources' && parts[2] === 'health') {
+      json(res, 200, await service.sourcesHealth());
+      return;
+    }
+
     // ---- search (TMDB multi-search or Jellyfin catalog) ----
     if (req.method === 'GET' && seg === 'search') {
       const q = (u.searchParams.get('q') || '').trim();

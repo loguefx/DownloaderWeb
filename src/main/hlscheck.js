@@ -687,9 +687,13 @@ function stripPngWrapper(buf) {
 }
 
 function isTokenCdn(url, embedUrl) {
-  return /peakstorm\.|vidfast\.|megacloud\.|rabbitstream\.|vidcloud/i.test(
-    `${url || ''} ${embedUrl || ''}`
-  );
+  const s = `${url || ''} ${embedUrl || ''}`;
+  if (/peakstorm\.|vidfast\.|megacloud\.|rabbitstream\.|vidcloud/i.test(s)) return true;
+  // SFlix/vidspark route their HLS through a Cloudflare Worker proxy that 403s
+  // the bare/FFmpeg client but 200s the in-browser session. netoda (playlist)
+  // and voxzer (segments) are the real hosts behind it, so pull them through
+  // the same Chromium "localize" download path as the token CDNs.
+  return /netoda\.|voxzer\.|\.workers\.dev\/\?url=/i.test(s);
 }
 
 // Vidfast/peakstorm playlists resolve, but Node/net.request cannot pull the
@@ -778,9 +782,160 @@ async function readPageResource(wc, url) {
   }
 }
 
+// SFlix "server 2" (ravenflix) and similar hand back an opaque /api?d=...
+// endpoint that advertises a media content-type but is really a ~30 KB
+// bootstrap page. The sniffer records it, best() returns it, and trusting it
+// made us download that page as the episode -> "File too small". For a
+// non-player-bound candidate, confirm it actually serves real media before we
+// commit; returning false makes the driver fall through to the next server.
+// Unknown/error shapes are accepted so we never regress a working source.
+// Bounded peek through the shared browser session (carries cookies the real
+// download uses), reading at most maxBytes and then cancelling. Returns
+// { status, ct, head } or null if the session fetch is unavailable.
+async function peekSession(url, headers, maxBytes = 8192, timeoutMs = 8000) {
+  let ses;
+  try {
+    const { session } = require('electron');
+    const config = require('./config');
+    ses = session.fromPartition(config.sessionPartition);
+  } catch (e) {
+    return null;
+  }
+  if (!ses || typeof ses.fetch !== 'function') return null;
+  const ac = new AbortController();
+  const hard = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await ses.fetch(url, { headers: headers || {}, signal: ac.signal });
+    const status = res.status || 0;
+    let ct = '';
+    let len = null;
+    try {
+      ct = typeof res.headers.get === 'function' ? res.headers.get('content-type') || '' : (res.headers && res.headers['content-type']) || '';
+      const cl = typeof res.headers.get === 'function' ? res.headers.get('content-length') : (res.headers && res.headers['content-length']);
+      if (cl != null && cl !== '') {
+        const n = parseInt(cl, 10);
+        if (Number.isFinite(n)) len = n;
+      }
+    } catch (e) {
+      ct = '';
+    }
+    const body = res.body;
+    if (!body || typeof body.getReader !== 'function') return { status, ct, len, head: '' };
+    const reader = body.getReader();
+    const chunks = [];
+    let got = 0;
+    while (got < maxBytes) {
+      const r = await reader.read();
+      if (r.done) break;
+      if (r.value) {
+        const b = Buffer.from(r.value);
+        chunks.push(b);
+        got += b.length;
+      }
+    }
+    try {
+      reader.cancel();
+    } catch (e) {
+      // ignore
+    }
+    const buf = Buffer.concat(chunks);
+    return { status, ct: String(ct || ''), len, head: buf.toString('utf8', 0, Math.min(buf.length, 512)) };
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(hard);
+  }
+}
+
+// SFlix "server 2" (ravenflix) and similar hand back an opaque /api?d=...
+// endpoint that advertises a media content-type but is really a small bootstrap
+// page. The sniffer records it, best() returns it, and trusting it made us
+// download that page as the episode -> "File too small". For a non-player-bound
+// candidate, confirm it actually serves real media before we commit; returning
+// false makes the driver fall through to the next server. Unknown shapes are
+// accepted so we never regress a working source.
+// A captured media playlist the live player already loaded (via CDP), preferring
+// the given player's webContents and falling back to any related player frame.
+function findCapturedPlaylist(playerWebContentsId) {
+  const direct = cachedPlaylist(playerWebContentsId, null);
+  if (direct && direct.text) return direct;
+  let all;
+  try {
+    const { webContents } = require('electron');
+    all = webContents.getAllWebContents ? webContents.getAllWebContents() : [];
+  } catch (e) {
+    all = [];
+  }
+  for (const c of all) {
+    if (!c || c.isDestroyed() || !c._cdpPlaylists || !c._cdpPlaylists.size) continue;
+    const best = bestCachedPlaylist(c.id);
+    if (best && best.text) return best;
+  }
+  return null;
+}
+
+async function candidateLooksLikeMedia(det, { signal, onLog } = {}) {
+  if (!det || !det.url) return false;
+  // One-shot token CDNs (SFlix/vidspark netoda+voxzer, vidfast, peakstorm): the
+  // playlist token is consumed the moment the player fetches it and 403s on any
+  // re-fetch, but the CDP layer already captured the playlist body and the
+  // segments stay fetchable through the session. Trust that captured copy and let
+  // the localize download pull the segments, instead of fresh-peeking a token
+  // that is already dead.
+  if (isTokenCdn(det.url, det.embedUrl)) {
+    const cached = findCapturedPlaylist(det.playerWebContentsId);
+    if (cached && /#EXTM3U|#EXTINF:/i.test(cached.text)) {
+      if (onLog) onLog(`Token CDN: player already loaded the playlist (${cached.text.length}B); using the localize download.`);
+      return true;
+    }
+  }
+  // The driver already holds a complete media playlist body (e.g. the
+  // vidspark API path fetched it directly). The peek below exists to reject
+  // stubs and webpages - a verified body makes that judgment unnecessary,
+  // and a re-fetch of a gated CDN would only 403/404 the URL we already have.
+  if (
+    det.playlistText &&
+    /#EXTM3U/i.test(det.playlistText) &&
+    /#EXTINF:/i.test(det.playlistText) &&
+    !isMasterPlaylist(det.playlistText)
+  ) {
+    if (onLog) onLog(`Driver already holds a ${det.playlistText.length}B media playlist; trusting it.`);
+    return true;
+  }
+  const headers = { ...(det.headers || {}) };
+  for (const k of Object.keys(headers)) {
+    if (/^(host|content-length|connection|transfer-encoding|accept-encoding)$/i.test(k)) delete headers[k];
+  }
+  const p = await peekSession(det.url, headers, 8192, 8000);
+  if (!p) return true; // can't peek with the session; don't block a working source
+  const body = (p.head || '').replace(/\s+/g, ' ');
+  if (onLog) onLog(`Peek ${String(det.url).slice(0, 74)} -> HTTP ${p.status}, ct=${p.ct || '?'}, len=${p.len == null ? '?' : p.len}: "${body.slice(0, 58)}"`);
+  const isPlaylist =
+    /#EXTM3U/i.test(p.head) ||
+    /#EXT-X-STREAM-INF|#EXTINF:/i.test(p.head) ||
+    /mpegurl/i.test(p.ct || '') ||
+    (/<MPD[\s>]/i.test(p.head) || /dash\+xml/i.test(p.ct || ''));
+  const isMp4 = /ftyp/.test(p.head) || /video\/mp4/i.test(p.ct || '');
+  // Obvious stubs / non-media: error status, an HTML page, a JSON bootstrap, or empty.
+  if (p.status >= 400) return false;
+  if (/<\s*(?:!doctype|html|head|body|title|script)/i.test(body)) return false;
+  if (/^\s*[{[]/.test(p.head)) return false;
+  if (!p.head) return false;
+  // Playlists are legitimately small -> accept (ffmpeg follows them to segments).
+  if (isPlaylist) return true;
+  // A progressive MP4 that is far too small to be a full episode (e.g. SFlix
+  // "server 2" / ravenflix serves a ~30 KB sample clip) -> reject so the driver
+  // falls through to a server that has the real file.
+  if (isMp4 && p.len != null && p.len > 0 && p.len < 2 * 1024 * 1024) {
+    if (onLog) onLog(`MP4 is only ${p.len}B - a fragment/preview, not the episode; skipping this server.`);
+    return false;
+  }
+  return true;
+}
+
 async function streamIsDownloadable(det, { signal, onLog } = {}) {
   if (!det || !det.url) return false;
-  if (!isPlayerBoundCdn(det.url, det.embedUrl)) return true;
+  if (!isPlayerBoundCdn(det.url, det.embedUrl)) return candidateLooksLikeMedia(det, { signal, onLog });
   const wc = liveWebContents(det.playerWebContentsId);
   if (!wc) {
     if (onLog) onLog('Token CDN has no live player page; segments cannot be downloaded.');
@@ -1133,6 +1288,14 @@ async function fetchViaWebContents(wc, url, opts = {}) {
   const err = last || new Error('player fetch failed');
   err.message = `${err.message} [frames=${hosts.join(' || ') || 'none'}]`;
   throw err;
+}
+
+// Media requests that failed on this webContents (aborted / 403 / ...), oldest
+// first. Used to re-fetch a token-CDN playlist URL through the live session
+// after the player's own fetch died without producing a capture.
+function recentFailedMedia(wc) {
+  if (!wc || wc.isDestroyed() || !wc._cdpFailedMedia) return [];
+  return wc._cdpFailedMedia.slice();
 }
 
 async function fetchViaWorker(wc, url, opts = {}) {
@@ -2392,6 +2555,22 @@ async function installPlayerCdpTap(wc) {
       const rec = (wc._cdpReqUrl && wc._cdpReqUrl.get(params.requestId)) || {};
       if (/m3u8|peakstorm/i.test(rec.url || '')) {
         console.log(`[cdp] load fail ${params.errorText || ''} ${String(rec.url).slice(0, 80)}`);
+      }
+      // Keep a short record of media requests that died (aborted by the player,
+      // 403'd by the edge, ...). The player's own fetch is the only one a token
+      // CDN may accept, and when it dies the URL is still worth one in-session
+      // retry: dubselect re-fetches it through the live player frame before it
+      // falls through to the standalone re-open (which loses the token race).
+      const furl = String((rec && rec.url) || '');
+      if (
+        furl &&
+        /^(https?:)?\/\//i.test(furl) &&
+        /workers\.dev\/\?url=|netoda\.|voxzer\.|m3u8|\/s\/|\.ts(\?|$)|\bmp4\b/i.test(furl)
+      ) {
+        if (!wc._cdpFailedMedia) wc._cdpFailedMedia = [];
+        wc._cdpFailedMedia.push({ url: furl, at: Date.now(), err: params.errorText || '' });
+        if (wc._cdpFailedMedia.length > 60) wc._cdpFailedMedia.shift();
+        console.log(`[cdp] media fail ${params.errorText || ''} ${furl.slice(0, 100)}`);
       }
       return;
     }
@@ -3867,7 +4046,20 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
       }
       let buf;
       if (wc) {
-        buf = await fetchViaWebContents(wc, job.abs, { timeoutMs: 20000, signal });
+        try {
+          buf = await fetchViaWebContents(wc, job.abs, { timeoutMs: 20000, signal });
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw e;
+          // Page fetches need CORS; CDNs like voxzer (SFlix) send no CORS
+          // headers and fail here but answer Node requests fine. Fall back
+          // to the Node chain (net.request / session.fetch) with headers.
+          onLog && onLog(`Player fetch failed for one part (${(e && e.message || e).toString().slice(0, 80)}); falling back to Node.`);
+          buf = await fetchBufferRetry(job.abs, headers, {
+            timeoutMs: 20000,
+            signal,
+            skipPageFetch: true
+          });
+        }
       } else {
         buf = await fetchBufferRetry(job.abs, headers, {
           timeoutMs: 20000,
@@ -4189,12 +4381,14 @@ async function preferMinHeight(det, minHeight) {
 }
 
 module.exports = {
+  requestViaSession,
   bodyReachable,
   materializePlaylist,
   loadMediaPlaylist,
   preferMinHeight,
   cachedPlaylist,
   dropCachedPlaylist,
+  storeCdpPart,
   localizePlaylist,
   captureLivePlayer,
   fetchBuffer,
@@ -4203,6 +4397,8 @@ module.exports = {
   isTokenCdn,
   isPlayerBoundCdn,
   isOneShotHls,
+  fetchViaWebContents,
+  recentFailedMedia,
   streamIsDownloadable,
   harvestPlayerMse,
   firstUri,

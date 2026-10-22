@@ -48,6 +48,13 @@ function defaults() {
     fillMode: 'order',
     pathMappings: [],
     jellyfin: { baseUrl: '', apiKey: '' },
+    // Minimum quality floor (pixels) for TV/movie jobs. 1080 keeps the
+    // default "1080p or fail" behavior; 720/480 accept lower-quality-only
+    // titles; 0 = best available (never reject on quality). Anime jobs always
+    // accept the source's own resolution regardless of this. The engine still
+    // PREFERS higher quality wherever a source offers it - this only relaxes
+    // the floor so a 720p-only title downloads instead of failing.
+    minQuality: 1080,
     // Cloudflare solver (FlareSolverr-compatible) request endpoint, e.g.
     // http://<solver-host>:8191/v1/request. Empty = off (checkbox-gated
     // catalogs are skipped). When set, challenged pages are cleared

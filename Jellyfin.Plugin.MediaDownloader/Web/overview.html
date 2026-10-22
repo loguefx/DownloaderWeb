@@ -148,6 +148,9 @@
 .mdl-empty { padding: 1.6em 1em; text-align: center; color: var(--md-muted); border: 1px dashed var(--md-line); border-radius: .6em; }
 .mdl-kv { display: flex; justify-content: space-between; gap: .8em; padding: .45em 0; font-size: .9em; }
 .mdl-kv + .mdl-kv { border-top: 1px solid var(--md-line); }
+.mdl-sdot { display: inline-block; width: .55em; height: .55em; border-radius: 50%; background: var(--md-faint); margin-right: .4em; }
+.mdl-sdot.green { background: var(--md-green); } .mdl-sdot.yellow { background: var(--md-yellow); }
+.mdl-sdot.red { background: var(--md-red); } .mdl-sdot.blue { background: var(--md-blue); }
 
 /* callouts */
 .mdl-callout { display: flex; gap: .7em; align-items: flex-start; padding: .8em 1em; border-radius: .6em; border: 1px solid var(--md-line); background: var(--md-card-2); font-size: .92em; }
@@ -340,6 +343,13 @@
                 <div class="mdl-card">
                     <div class="mdl-card-h"><h2>Staging disk</h2><span data-ov-disk-pill></span></div>
                     <div data-ov-disk class="small muted">Engine offline.</div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-card-h"><h2>Sources</h2>
+                        <button type="button" class="mdl-btn sm icon" data-ov-src-refresh title="Re-check sources now" aria-label="Re-check sources now">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+                        </button></div>
+                    <div data-ov-sources class="small muted">Checking…</div>
                 </div>
                 <div class="mdl-card">
                     <div class="mdl-card-h"><h2>Library drives</h2><a data-settings-link href="#/configurationpage?name=Media%20Downloader">Manage</a></div>
@@ -656,6 +666,8 @@
                     queue: null,           // { counts, items }
                     outbox: null,          // { waiting, sent, rejected, items }
                     waiting: [],           // waiting-for-dub entries
+                    sources: null,        // { checkedAt, vpn, sources: [...] }
+                    sourcesError: null,
                     log: [],
                     logSince: 0,
                     libraries: [],
@@ -761,6 +773,16 @@
                         if (online) {
                             tasks.push(get('MediaDownloader/Queue').then((q) => { S.queue = q; }).catch(() => {}));
                             tasks.push(get('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
+                            // Sources health: which catalogs are actually alive
+                            // from the ENGINE's IP right now (the downloads'
+                            // perspective). Cheap probes; failures are cosmetic.
+                            tasks.push(get('MediaDownloader/SourcesHealth').then((sh) => {
+                                S.sources = sh;
+                                S.sourcesError = null;
+                            }).catch((e) => {
+                                S.sources = null;
+                                S.sourcesError = (e && e.message) || 'failed to check';
+                            }));
                             if (S.view === 'queue') {
                                 tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
@@ -909,6 +931,7 @@
                     }
 
                     renderOverviewLibs();
+                    renderSources(online);
 
                     // waiting for dub (grouped by series + season)
                     const groups = {};
@@ -925,6 +948,41 @@
                             return '<div class="mdl-kv"><span>' + esc(g.series) + ' <span class="muted">' + esc(range) + '</span></span><b style="color:var(--md-yellow)">' + g.eps.length + '</b></div>';
                         }).join('') + '<div class="hint" style="margin-top:.6em;">Each dub downloads automatically when it releases.</div>'
                         : (online ? 'Nothing is waiting for a dub.' : 'Engine offline.');
+                }
+
+                function renderSources(online) {
+                    const el = $('[data-ov-sources]');
+                    if (!el) return;
+                    if (!online) { el.innerHTML = '<div class="small muted">Engine offline — check when it is back.</div>'; return; }
+                    if (S.sourcesError) {
+                        el.innerHTML = '<div class="mdl-callout red" style="margin:0;padding:.6em .8em;">' + ICON.warn +
+                            '<div>' + esc(S.sourcesError) + '</div></div>';
+                        return;
+                    }
+                    const sh = S.sources;
+                    if (!sh) { el.innerHTML = '<div class="small muted">Checking…</div>'; return; }
+                    const cls = { ok: 'green', limited: 'yellow', 'needs-solver': 'yellow', blocked: 'red', down: 'red', off: '' };
+                    const label = { ok: 'Up', limited: 'Rate-limited', 'needs-solver': 'Needs solver', blocked: 'IP-blocked', down: 'Down', off: 'Off' };
+                    const rows = (sh.sources || []).map((s) =>
+                        '<div class="mdl-kv" title="' + esc(s.detail || '') + '">' +
+                        '<span><i class="mdl-sdot ' + (cls[s.status] || '') + '"></i>' + esc(s.name) +
+                        (s.ms ? ' <span class="faint">' + s.ms + ' ms</span>' : '') + '</span>' +
+                        '<span class="mdl-pill ' + (cls[s.status] || '') + '">' + esc(label[s.status] || s.status) + '</span></div>').join('');
+                    const vpnTxt = sh.vpn ? (sh.vpn.connected ? 'VPN on' : 'VPN off') : '';
+                    el.innerHTML = rows +
+                        '<div class="hint" style="margin-top:.6em;">Probed ' + whenOf(sh.checkedAt) + (vpnTxt ? ' with ' + vpnTxt : '') +
+                        ' from the engine — this is the IP downloads actually use. A red source here will fail downloads through it.</div>';
+                }
+
+                let srcChecking = null;
+                function checkSources() {
+                    if (srcChecking) return srcChecking;
+                    srcChecking = get('MediaDownloader/SourcesHealth')
+                        .then((sh) => { S.sources = sh; S.sourcesError = null; })
+                        .catch((e) => { S.sources = null; S.sourcesError = (e && e.message) || 'failed to check'; })
+                        .then(() => { if (S.view === 'overview') renderSources((S.health || {}).engine === 'online'); })
+                        .finally(() => { srcChecking = null; });
+                    return srcChecking;
                 }
 
                 function renderOverviewLibs() {
@@ -1723,6 +1781,7 @@
                         return;
                     }
                     if (el.hasAttribute('data-browse-more')) { loadBrowse(true); return; }
+                    if (el.hasAttribute('data-ov-src-refresh')) { checkSources(); return; }
 
                     // queue view
                     if (el.hasAttribute('data-qtab')) { S.qtab = el.getAttribute('data-qtab'); renderQueue(); return; }

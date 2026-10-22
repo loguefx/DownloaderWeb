@@ -829,6 +829,185 @@ function orderTryList(tryList, dub) {
   return [...tryList].sort((a, b) => rankSource(a, dub) - rankSource(b, dub));
 }
 
+// ---- Vidspark deterministic source API (SFlix server 1's nested player) ----
+//
+// cdn.vidspark.to's page JS is flaky inside our windows (its playlist fetch
+// gets aborted, the video element stays ready=0), but the player itself calls
+// a deterministic source API we can drive directly:
+//   GET <origin>/api/vidora/v1/tv/<tmdb>/<season>/<episode>?source=<n>
+//   header: x-player-key <key>
+//   -> sources[].url = <worker proxy>?url=<netoda playlist>&data=<b64 Origin|Referer>
+// netoda answers a plain request when it carries the right Origin header, and
+// the voxzer segments it lists answer plain requests too (no CORS for the
+// browser, no one-shot tokens), so this path needs no live player at all.
+const VIDSPARK_PLAYER_KEY = 'f3b72e73c80c9a996574379798703796a1936efa3516a7105cb0e43048b46b5a';
+
+// In the Electron process, raw Node https routes through Chromium's network
+// stack and aborts some hosts (AggregateError); the shared session's fetch is
+// the proven path and honors custom headers (netoda requires the right Origin).
+async function vidsparkGet(url, headers = {}, maxBytes = 8 * 1024 * 1024, timeoutMs = 20000, signal = null) {
+  const viaSes = await hlscheck.requestViaSession(url, {
+    'User-Agent':
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    ...headers
+  }, { maxBytes, timeoutMs, signal });
+  if (viaSes && viaSes.status) return { status: viaSes.status, body: Buffer.from(viaSes.body, 'utf8') };
+  // Fallback outside Electron (tests): raw Node networking.
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('http:') ? require('http') : require('https');
+    const req = mod.get(
+      url,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          ...headers
+        },
+        timeout: timeoutMs
+      },
+      (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on('data', (d) => {
+          size += d.length;
+          if (size > maxBytes) {
+            req.destroy();
+            reject(new Error('response too large'));
+            return;
+          }
+          chunks.push(d);
+        });
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks) }));
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
+
+// Highest-resolution variant of a master playlist, as an absolute URL.
+function bestMasterVariant(text, base) {
+  const lines = String(text).split(/\r?\n/);
+  let best = null;
+  let bestH = -1;
+  let bestBw = -1;
+  let pending = null;
+  for (const raw of lines) {
+    const t = raw.trim();
+    if (/^#EXT-X-STREAM-INF:/i.test(t)) {
+      const res = t.match(/RESOLUTION=\d+x(\d+)/i);
+      const bw = t.match(/BANDWIDTH=(\d+)/i);
+      pending = { h: res ? parseInt(res[1], 10) : 0, bw: bw ? parseInt(bw[1], 10) : 0 };
+    } else if (t && !t.startsWith('#') && pending) {
+      if (pending.h > bestH || (pending.h === bestH && pending.bw > bestBw)) {
+        bestH = pending.h;
+        bestBw = pending.bw;
+        best = t;
+      }
+      pending = null;
+    }
+  }
+  if (!best) return null;
+  try {
+    return new URL(best, base).toString();
+  } catch (e) {
+    return best;
+  }
+}
+
+// Resolves a vidspark embed straight to a downloadable HLS media playlist via
+// its source API. Returns a detection object (no playerWebContentsId on
+// purpose: the voxzer segments send no CORS headers, so the localize path
+// must pull them through Node, not the browser) or null to fall back to the
+// player page.
+async function resolveVidsparkApi(embedUrl, onLog = () => {}, signal = null) {
+  let u;
+  try {
+    u = new URL(embedUrl);
+  } catch (e) {
+    return null;
+  }
+  const m = u.pathname.match(/\/tv\/(\d+)\/(\d+)\/(\d+)/i);
+  if (!m) return null;
+  let sources = [];
+  try {
+    const api = `${u.origin}/api/vidora/v1/tv/${m[1]}/${m[2]}/${m[3]}?source=1`;
+    const res = await vidsparkGet(api, {
+      'x-player-key': VIDSPARK_PLAYER_KEY,
+      Referer: embedUrl,
+      Origin: u.origin
+    });
+    if (res.status !== 200) {
+      onLog(`vidspark API answered HTTP ${res.status}; using the player instead.`);
+      return null;
+    }
+    sources = (JSON.parse(res.body.toString('utf8')) || {}).sources || [];
+  } catch (e) {
+    onLog(`vidspark API call failed (${e.message || e}); using the player instead.`);
+    return null;
+  }
+  for (const src of sources) {
+    if (signal && signal.aborted) return null;
+    let target = String(src.url || '');
+    const headers = {};
+    try {
+      const pu = new URL(target);
+      const real = pu.searchParams.get('url');
+      if (real) target = decodeURIComponent(real);
+      // The proxy's `data` param carries the exact Origin/Referer the CDN
+      // expects (netoda 404s a request that lacks the right Origin).
+      const data = pu.searchParams.get('data');
+      if (data) {
+        const kv = Buffer.from(data, 'base64').toString('utf8');
+        const o = /Origin=([^|&]+)/.exec(kv);
+        const r = /Referer=([^|&]+)/.exec(kv);
+        if (o) headers.Origin = o[1];
+        if (r) headers.Referer = r[1];
+      }
+    } catch (e) {
+      // Use the URL as-is.
+    }
+    try {
+      let res = await vidsparkGet(target, headers);
+      let text = res.body.toString('utf8');
+      let base = target;
+      if (res.status === 200 && hlscheck.isMasterPlaylist(text)) {
+        const variant = bestMasterVariant(text, target);
+        if (!variant) {
+          onLog('vidspark master playlist had no usable variant.');
+          continue;
+        }
+        res = await vidsparkGet(variant, headers);
+        if (res.status !== 200) continue;
+        text = res.body.toString('utf8');
+        base = variant;
+      }
+      if (res.status !== 200) {
+        onLog(`vidspark source answered HTTP ${res.status}; trying the next source.`);
+        continue;
+      }
+      if (!hlscheck.looksLikePlaylist(text) || hlscheck.isMasterPlaylist(text)) {
+        onLog('vidspark source did not return a media playlist.');
+        continue;
+      }
+      const segs = text.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length;
+      onLog(`vidspark API resolved a ${segs}-segment media playlist from ${new URL(base).host}.`);
+      return {
+        url: base,
+        type: 'hls',
+        headers,
+        embedUrl,
+        playlistText: text,
+        playlistBase: base,
+        fromEpisodePage: true
+      };
+    } catch (e) {
+      onLog(`vidspark source fetch failed (${e.message || e}); trying the next source.`);
+    }
+  }
+  return null;
+}
+
 // Loads a provider's embed as its own top-level page and clicks it there.
 //
 // Providers like BYFMS gate their playlist behind an anti-bot check that only
@@ -1147,6 +1326,15 @@ async function resolveEmbedStandalone(
           /vidspark\.|vidsrc\.|vidplay\./i.test(String(u || ''))
         );
         if (nestedUrl && hopDepth < 4) {
+          // vidspark: the player page is flaky here, but its source API is
+          // deterministic and the resulting CDN answers plain requests - take
+          // it before burning a player window on the flaky path.
+          if (/vidspark\./i.test(nestedUrl)) {
+            stopMediaListen();
+            const viaApi = await resolveVidsparkApi(nestedUrl, onLog, signal);
+            if (viaApi) return viaApi;
+            onLog('vidspark API gave no stream; opening the player page instead.');
+          }
           onLog(`Opening nested player ${nestedUrl}`);
           stopMediaListen();
           const nested = await resolveEmbedStandalone(
@@ -1332,9 +1520,12 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   const cancelled = () => !!(signal && signal.aborted);
   const profile = sites.resolve(url || '');
   const dub = sites.dubConfig(profile);
-  // Anime: accept whatever resolution the source serves (often 720p) instead
-  // of the profile's 1080p floor. TV/movies (opts.anime falsy) keep the floor.
-  const minHeight = opts.anime ? 0 : (profile.minHeight || 0);
+  // Quality floor. An explicit per-job floor wins (e.g. the global
+  // minimum-quality setting of 720, or "best available" = 0) so a 720p-only
+  // title can download instead of failing; otherwise the site profile's floor
+  // (1080 for TV/movies). Anime always accepts the source's own resolution.
+  const jobFloor = opts.minHeight != null ? Number(opts.minHeight) : null;
+  const minHeight = opts.anime ? 0 : (jobFloor != null ? jobFloor : (profile.minHeight || 0));
   if (profile.id !== 'generic') onLog(`Using site profile: ${profile.name}`);
   try {
     await hlscheck.installPlayerCdpTap(wc);
@@ -1688,7 +1879,15 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // transient timeout, so it belongs on the waiting list instead of retrying now.
   let primaryGone = 0;
   const pageCached = hlscheck.cachedPlaylist(id, null);
-  if (pageCached && pageCached.text && /netocdn\./i.test(pageCached.base || '') && /#EXTINF:/i.test(pageCached.text)) {
+  // netocdn (Videm) and the SFlix/vidspark worker-proxy families (netoda/voxzer)
+  // are one-shot token CDNs: the page's player already spent the playlist token
+  // and the CDP capture holds the body. Use it instead of re-opening servers
+  // whose players can only 403 the same dead token.
+  const pageCachedToken =
+    !!(pageCached && pageCached.text) &&
+    /#EXTINF:/i.test(pageCached.text || '') &&
+    (/netocdn\./i.test(pageCached.base || '') || hlscheck.isTokenCdn(pageCached.base || '', ''));
+  if (pageCachedToken) {
     onLog('Episode page already loaded a playlist; checking its resolution.');
     const det = {
       url: pageCached.base,
@@ -1792,11 +1991,121 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     // Clicks into a nested third-party iframe never land (BYFMS/DGHG). Skip the
     // in-page wait and open those players as a top-level page immediately.
     const nested = !!(embedUrl && !/aniwaves\.|echovideo\./i.test(embedUrl));
-    if (!hostless && !nested) {
-      onLog(`Waiting up to ${Math.round(dub.sourceWaitMs / 1000)}s for "${src.label || src.index}" in-page...`);
-      const stopNudging = nudgePlayer(wc, id, dub.sourceWaitMs, signal);
-      arrived = await waitForMedia(id, dub.sourceWaitMs, MEDIA_GRACE_MS, signal);
+    // Some nested embeds (SFlix moviesapi/vidspark) auto-play without a click:
+    // the in-page player walks the iframe chain and fetches the real stream on
+    // this tab. Re-opening the player standalone races that capture (one-shot
+    // playlist tokens) and usually loses, so for those profiles wait for the
+    // in-page stream first and only fall back to the standalone player if the
+    // in-page one never produces a stream.
+    const autoPlay = !!(
+      typeof profile.inPageAutoPlay === 'function'
+        ? profile.inPageAutoPlay(embedUrl)
+        : profile.inPageAutoPlay
+    );
+    if (!hostless && (!nested || autoPlay)) {
+      const waitMs =
+        nested && autoPlay
+          ? Math.min(Math.max(dub.sourceWaitMs || 0, 10000), 30000)
+          : dub.sourceWaitMs;
+      onLog(`Waiting up to ${Math.round(waitMs / 1000)}s for "${src.label || src.index}" in-page...`);
+      const stopNudging = nudgePlayer(wc, id, waitMs, signal);
+      arrived = await waitForMedia(id, waitMs, MEDIA_GRACE_MS, signal);
       stopNudging();
+    }
+    // SFlix (moviesapi/vidspark) and similar auto-play through a nested iframe
+    // without any click, so the in-page load has ALREADY produced a real stream
+    // on this server's own tab. The `nested` skip above exists for players that
+    // need a click we can't land; it was discarding that capture and wasting a
+    // standalone re-open in a separate window that can't see it. Credit the
+    // in-page stream before we fall through to the standalone path. A stale or
+    // 404'd capture is harmless: streamIsDownloadable's bounded peek rejects it
+    // and we move on to the next server exactly as before.
+    if (!arrived && !hostless) {
+      const inPage = sniffer.best(id);
+      if (
+        inPage &&
+        inPage.url &&
+        (inPage.type === 'hls' || inPage.type === 'mp4' || inPage.type === 'dash') &&
+        !sniffer.droppedMedia(id).some((g) => g && g.url === inPage.url)
+      ) {
+        arrived = inPage;
+        if (!arrived.playerWebContentsId && arrived.webContentsId) {
+          arrived.playerWebContentsId = arrived.webContentsId;
+        }
+        onLog(
+          `Using the stream "${src.label || src.index}"'s in-page player already loaded: ${String(inPage.url).slice(0, 90)}`
+        );
+      } else {
+        // SFlix/vidspark: the site primes server 1's player on page load, so the
+        // real playlist was often fetched BEFORE this click and the sniffer
+        // (cleared for this iteration) no longer lists it. The CDP capture still
+        // holds the body, and the token CDN's segments stay fetchable in-session.
+        const cap = hlscheck.cachedPlaylist(id, null);
+        if (
+          cap &&
+          cap.text &&
+          /#EXTINF:/i.test(cap.text) &&
+          hlscheck.isTokenCdn(cap.base || '', embedUrl || '')
+        ) {
+          arrived = {
+            url: cap.base,
+            type: 'hls',
+            headers: {},
+            webContentsId: id,
+            playerWebContentsId: id,
+            playlistText: cap.text,
+            playlistBase: cap.base,
+            embedUrl,
+            fromEpisodePage: true
+          };
+          // The server loop resolves via sniffer.best(id) (resolveDub), so a
+          // credited capture only matters once it is adopted into the tab's map.
+          sniffer.adopt(id, arrived);
+          onLog(
+            `Using "${src.label || src.index}"'s already-captured playlist (${cap.text.length}B) - token CDN segments stay fetchable in-session.`
+          );
+        }
+      }
+    }
+    // The player's own playlist fetch can die (aborted by the player, 403 from
+    // the edge) before anything is captured, leaving the credit path above
+    // empty. The network tap still knows the URL: retry it ONCE through the
+    // live player frame. In-session fetches are what the token CDN accepts; a
+    // bare Node request is not, and the standalone re-open below races a token
+    // this attempt already burned.
+    if (!arrived && !hostless && !cancelled()) {
+      const failed = (hlscheck.recentFailedMedia(wc) || []).filter(
+        (f) => f && f.url && f.at >= clickTs && hlscheck.isTokenCdn(f.url, embedUrl)
+      );
+      for (const f of failed.reverse()) {
+        if (cancelled()) break;
+        try {
+          const buf = await hlscheck.fetchViaWebContents(wc, f.url, { timeoutMs: 25000, signal });
+          const text = buf && buf.length ? buf.toString('utf8') : '';
+          if (/#EXTM3U/i.test(text) && /#EXTINF:/i.test(text)) {
+            hlscheck.storeCdpPart(wc, f.url, buf);
+            arrived = {
+              url: f.url,
+              type: 'hls',
+              headers: {},
+              webContentsId: id,
+              playerWebContentsId: id,
+              playlistText: text,
+              playlistBase: f.url,
+              embedUrl,
+              fromEpisodePage: true
+            };
+            sniffer.adopt(id, arrived);
+            onLog(
+              `Re-fetched "${src.label || src.index}" playlist through the session after the player's fetch died (${text.length}B).`
+            );
+            break;
+          }
+          onLog(`In-session retry of the dead playlist URL answered but was not a media playlist.`);
+        } catch (e) {
+          onLog(`In-session retry of the dead playlist URL failed: ${e.message || e}`);
+        }
+      }
     }
     let gone = sniffer.droppedMedia(id);
 
@@ -1832,7 +2141,12 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     }
     if (gone.length && isPrimary) primaryGone += 1;
     if (arrived && (arrived.type === 'hls' || /\.m3u8/i.test(arrived.url || ''))) {
-      const bound = hlscheck.isPlayerBoundCdn(arrived.url, arrived.embedUrl || embedUrl || '');
+      // Player-bound CDNs and one-shot token CDNs (SFlix netoda/voxzer behind a
+      // worker proxy) both refuse Node once the player spent the playlist token:
+      // use the CDP-captured body instead of a fresh fetch.
+      const bound =
+        hlscheck.isPlayerBoundCdn(arrived.url, arrived.embedUrl || embedUrl || '') ||
+        hlscheck.isTokenCdn(arrived.url, arrived.embedUrl || embedUrl || '');
       if (bound) {
         onLog(
           `"${src.label || src.index}" is a token CDN; Node cannot fetch its playlist/segments. Keeping the live player.`
@@ -1840,10 +2154,12 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
         await delay(400);
         const pid = arrived.playerWebContentsId || id;
         const until = Date.now() + 6000;
-        let cached = hlscheck.cachedPlaylist(pid, arrived.url);
+        let cached =
+          hlscheck.cachedPlaylist(pid, arrived.url) || hlscheck.cachedPlaylist(pid, null);
         while (!cached && Date.now() < until) {
           await delay(200);
-          cached = hlscheck.cachedPlaylist(pid, arrived.url);
+          cached =
+            hlscheck.cachedPlaylist(pid, arrived.url) || hlscheck.cachedPlaylist(pid, null);
         }
         if (cached) {
           try {
@@ -1982,7 +2298,11 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
         det.playlistText = arrived.playlistText;
         det.playlistBase = arrived.playlistBase;
       }
-      det.playerWebContentsId = arrived.playerWebContentsId || id;
+      // Only when the stream really came from a live player. A detection
+      // without one (e.g. the vidspark API path) must keep node-side downloads
+      // - a live webContents would push the segment fetches through the
+      // browser, whose CORS the plain CDN does not allow.
+      if (arrived.playerWebContentsId) det.playerWebContentsId = arrived.playerWebContentsId;
       const downloadable = await hlscheck.streamIsDownloadable(det, { signal, onLog });
       if (!downloadable) {
         onLog(

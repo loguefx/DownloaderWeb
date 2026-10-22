@@ -101,6 +101,19 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         }
 
         // ------------------------------------------------------------------
+        // Sources health (the Overview "Sources" row). The probes run ON the
+        // engine, so the statuses reflect the engine's own IP - the one
+        // downloads actually go out through - plus the VPN state at check
+        // time, which is what makes the statuses meaningful.
+        // ------------------------------------------------------------------
+
+        [HttpGet("SourcesHealth")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status502BadGateway)]
+        public async Task<IActionResult> SourcesHealth() =>
+            await ProxyAsync(() => _engine.GetRawAsync("api/sources/health")).ConfigureAwait(false);
+
+        // ------------------------------------------------------------------
         // Libraries (Jellyfin's own answer for "where does each type go")
         // ------------------------------------------------------------------
 

@@ -180,7 +180,11 @@ function isPlaylistUrl(url) {
 // A single MPEG-TS piece, not a stream we can hand to ffmpeg as the episode.
 function isBareSegment(url) {
   const u = String(url || '');
-  return /\.ts(\?|$)/i.test(u) || /\/segment\?/i.test(u);
+  // ".ts&" covers Cloudflare-Worker-proxied segments where the real ".ts" sits
+  // inside a query value ("...index47.ts&data=...") instead of ending the URL;
+  // those must not outrank the real playlist in best(). .m4s is always a DASH
+  // segment, never a stream.
+  return /\.(ts|m4s)(\?|&|$)/i.test(u) || /\/segment\?/i.test(u);
 }
 
 // Resolution embedded in a stream URL (e.g. ".../720/index.m3u8").

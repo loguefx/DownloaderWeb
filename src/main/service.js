@@ -234,7 +234,10 @@ async function submitJob(job) {
   const mode = job.mode === 'sub' ? 'sub' : 'dub';
   const staging = engineconfig.stagingPath();
   const lib = job.library && Array.isArray(job.library.locations) ? job.library : null;
-  const minHeight = Number(job.minHeight) || 0;
+  // Quality floor for this job: an explicit job value wins, otherwise the
+  // global minimum-quality setting (default 1080). 0 means "best available".
+  const globalMin = engineconfig.get().minQuality != null ? Number(engineconfig.get().minQuality) : 1080;
+  const minHeight = job.minHeight != null ? Number(job.minHeight) : globalMin;
   const scope = job.scope || 'full';
   // Anime: the plugin sends anime:true and minHeight 0, so the source's own
   // resolution (often 720p) is accepted. TV/movies keep the 1080p floor.
@@ -439,6 +442,7 @@ function settingsGet() {
     reserveBytes: c.reserveBytes,
     fillMode: c.fillMode,
     pathMappings: c.pathMappings,
+    minQuality: c.minQuality != null ? c.minQuality : 1080,
     jellyfin: { baseUrl: c.jellyfin.baseUrl, apiKey: c.jellyfin.apiKey ? 'set' : '' },
     readOnly: library.isReadOnly(),
     vpn: vpn.status(),
@@ -463,6 +467,10 @@ function settingsPut(patch) {
   const allowed = {};
   for (const k of ['port', 'bind', 'stagingPath', 'reserveBytes', 'fillMode', 'pathMappings']) {
     if (patch && patch[k] !== undefined) allowed[k] = patch[k];
+  }
+  if (patch && patch.minQuality != null) {
+    const q = Number(patch.minQuality);
+    allowed.minQuality = Number.isFinite(q) && q >= 0 ? q : 1080;
   }
   if (patch && patch.jellyfin) {
     allowed.jellyfin = {};
@@ -553,6 +561,75 @@ async function verifyDrives(payload) {
   return { verifiedAt: new Date().toISOString(), count: out.length, allOk: out.every((r) => r.ok), libraries: out };
 }
 
+// ---- source health (Overview "Sources" row) ----
+// Lightweight reachability probe per known source, run FROM THE ENGINE so it
+// reflects the engine's own IP (the thing that matters for downloads). Reports
+// ok / limited / blocked / needs-solver / down per source so the user can see
+// at a glance which catalogs are actually alive before queueing a title.
+async function sourcesHealth() {
+  const httpsMod = require('https');
+  const httpMod = require('http');
+  const UA = config.download.userAgent;
+  const probes = [
+    { id: 'vidsrc', name: 'Vidsrc', kind: 'api', url: 'https://data.vidsrc.sh/api.php?type=tv&tmdb=125988&season=1&episode=1' },
+    { id: 'nontongo', name: 'NontonGo', kind: 'page', url: 'https://sv2.nontongo.day/01russia/multisourcesoap.php?id=125988&season=1&episode=1&type=tv' },
+    { id: 'fmovies', name: 'FMovies', kind: 'cf', url: 'https://movienow.online/' },
+    { id: 'flixtor', name: 'Flixtor', kind: 'cf', url: 'https://flixtor.to/' }
+  ];
+  async function probe(p) {
+    const started = Date.now();
+    const mod = p.url.startsWith('http:') ? httpMod : httpsMod;
+    try {
+      const res = await new Promise((resolve, reject) => {
+        const req = mod.get(p.url, { headers: { 'User-Agent': UA }, timeout: 8000 }, (rs) => {
+          rs.resume();
+          resolve({ status: rs.statusCode || 0, headers: rs.headers || {} });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      });
+      const ms = Date.now() - started;
+      const s = res.status;
+      const cf = /cloudflare/i.test(String(res.headers['server'] || '')) || !!(res.headers['cf-ray']);
+      let status = 'ok';
+      let detail = 'HTTP ' + s;
+      if (p.kind === 'api') {
+        if (s === 200) { status = 'ok'; detail = 'API reachable'; }
+        else if (s === 403) { status = 'blocked'; detail = 'HTTP 403 — this IP is blocked by Vidsrc (VPN node)'; }
+        else if (s === 429) { status = 'limited'; detail = 'HTTP 429 — rate-limited right now'; }
+        else { status = 'down'; detail = 'HTTP ' + s; }
+      } else if (p.kind === 'cf') {
+        if (s === 200) { status = 'ok'; detail = 'reachable'; }
+        else if (s === 403 || cf) { status = 'needs-solver'; detail = 'Cloudflare challenge — needs the solver'; }
+        else { status = 'down'; detail = 'HTTP ' + s; }
+      } else {
+        if (s === 200) { status = 'ok'; detail = 'reachable'; }
+        else if (s === 403) { status = 'blocked'; detail = 'HTTP 403'; }
+        else { status = 'down'; detail = 'HTTP ' + s; }
+      }
+      return { id: p.id, name: p.name, status, detail, ms };
+    } catch (e) {
+      return { id: p.id, name: p.name, status: 'down', detail: (e && e.message) || 'unreachable', ms: Date.now() - started };
+    }
+  }
+  const sources = await Promise.all(probes.map(probe));
+  try {
+    const s = await cfsolve.status();
+    sources.push({
+      id: 'solver',
+      name: 'Cloudflare solver',
+      status: !s.configured ? 'off' : s.reachable ? 'ok' : 'down',
+      detail: s.configured ? (s.reachable ? 'reachable · ' + s.solverUrl : 'unreachable · ' + s.solverUrl) : 'not configured',
+      ms: 0
+    });
+  } catch (e) { /* ignore */ }
+  // Include the VPN state so the UI can say which IP these probes ran on —
+  // the whole point of this row is "what does the engine's IP see right now".
+  let vpnInfo = null;
+  try { vpnInfo = vpn.status(); } catch (e) { /* ignore */ }
+  return { checkedAt: new Date().toISOString(), vpn: vpnInfo, sources };
+}
+
 module.exports = {
   health,
   title,
@@ -572,6 +649,7 @@ module.exports = {
   settingsGet,
   settingsGetAsync,
   settingsPut,
+  sourcesHealth,
   libraryCheck,
   verifyDrives,
   onLog,

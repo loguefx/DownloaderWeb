@@ -473,7 +473,17 @@ async function downloadHls(detection, partPath, opts = {}) {
   const treatAsHls =
     detection.type !== 'mp4' &&
     (detection.type === 'hls' || /\.m3u8|\/hls\d*\//i.test(detection.url || ''));
-  if (!treatAsHls || !/\.m3u8/i.test(detection.url || '')) {
+  // Some token CDNs (SFlix netoda behind a worker proxy) serve the playlist at
+  // a URL with no .m3u8 in it. FFmpeg 403s on that URL, but the player already
+  // handed us the media playlist body - run the localize path instead of
+  // handing the raw URL to FFmpeg.
+  const hasUsableCaptured = !!(
+    detection.playlistText &&
+    /#EXTM3U/i.test(detection.playlistText) &&
+    /#EXTINF:/i.test(detection.playlistText) &&
+    !hlscheck.isMasterPlaylist(detection.playlistText)
+  );
+  if ((!treatAsHls || !/\.m3u8/i.test(detection.url || '')) && !hasUsableCaptured) {
     return spawnFfmpegHls(detection.url, ffmpegHeaders, ua, detection, partPath, opts, false);
   }
 
@@ -578,21 +588,27 @@ async function downloadHls(detection, partPath, opts = {}) {
       }
       if (disguised) {
         allLocal = true;
+        // Player-bound CDNs (peakstorm/vidfast, partitioned cookies) MUST go
+        // through the live player page. Token CDNs whose segments are plain
+        // HTTPS (SFlix voxzer) fetch fine from Node and CANNOT be fetched
+        // from a page (no CORS headers) - keep them on the Node path.
+        const boundPlayer = hlscheck.isPlayerBoundCdn(detection.url, detection.embedUrl);
+        const viaPlayer = boundPlayer && detection.playerWebContentsId != null;
         if (onLog) {
-          const viaPlayer = detection.playerWebContentsId != null;
           onLog(
             pngSeen
               ? 'Stream segments are disguised (PNG-wrapped); downloading them through Chromium, then remuxing.'
-              : 'Token CDN stream; downloading segments through Chromium, then remuxing.'
+              : 'Token CDN stream; downloading segments, then remuxing.'
           );
           if (viaPlayer) onLog('Using the live player page to fetch segments (same origin as playback).');
+          else onLog('Fetching segments through Node (CDN not player-bound).');
         }
         fs.mkdirSync(dir, { recursive: true });
         localPlaylist = await hlscheck.localizePlaylist(loaded.text, loaded.base, dir, headers, {
           signal,
           onProgress,
           onLog,
-          playerWebContentsId: detection.playerWebContentsId
+          playerWebContentsId: viaPlayer ? detection.playerWebContentsId : undefined
         });
       } else {
         fs.mkdirSync(dir, { recursive: true });
