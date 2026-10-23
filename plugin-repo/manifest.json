@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.31",
+                "changelog": "Anime (Enma) row-aware server detection + SFlix movie fixes: vidfast tab no longer dropped by the 5-server cap, movie player URLs with a valid id no longer mangled. TV, movie and anime all verified end-to-end.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v31/MediaDownloader.12.1.0.31.zip",
+                "checksum": "978dcb43286a221b0dd54cd86f3d7614",
+                "timestamp": "2026-10-23T18:57:05.641Z"
+            },
+            {
                 "version": "12.1.0.30",
                 "changelog": "Add Cloudflare solver card to plugin Settings (auto, no checkbox); engine: serialize Vidsrc + 429 backoff + relay Play-driver + solver-gated CF catalogs",
                 "targetAbi": "12.1.0.0",
@@ -240,6 +248,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.31",
+                "changelog": "Anime (Enma) row-aware server detection + SFlix movie fixes: vidfast tab no longer dropped by the 5-server cap, movie player URLs with a valid id no longer mangled. TV, movie and anime all verified end-to-end.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v31/MediaDownloader.10.11.0.31.zip",
+                "checksum": "d19ca06e81fb1d0938870013b16ae7b7",
+                "timestamp": "2026-10-23T18:57:05.641Z"
+            },
+            {
                 "version": "10.11.0.30",
                 "changelog": "Add Cloudflare solver card to plugin Settings (auto, no checkbox); engine: serialize Vidsrc + 429 backoff + relay Play-driver + solver-gated CF catalogs",
                 "targetAbi": "10.11.0.0",
@@ -470,6 +486,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.31",
+                "changelog": "Anime (Enma) row-aware server detection + SFlix movie fixes: vidfast tab no longer dropped by the 5-server cap, movie player URLs with a valid id no longer mangled. TV, movie and anime all verified end-to-end.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v31/MediaDownloader.10.10.0.31.zip",
+                "checksum": "4ca1c8a29afd93d39b83b5e63bb12e27",
+                "timestamp": "2026-10-23T18:57:05.641Z"
             },
             {
                 "version": "10.10.0.30",
