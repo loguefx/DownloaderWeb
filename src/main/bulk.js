@@ -16,7 +16,7 @@ const urltemplate = require('./urltemplate');
 const manager = require('./queue');
 const pending = require('./pending');
 const sites = require('./sites');
-const { episodeRefFromUrl, lookupMediaId } = require('./sites/findtitle');
+const { episodeRefFromUrl, lookupMediaId, rememberMediaId } = require('./sites/findtitle');
 const resolveid = require('./sites/resolveid');
 const hlscheck = require('./hlscheck');
 const { verifyFile, belowMinHeight } = require('./verify');
@@ -260,6 +260,29 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           !controller.signal.aborted
         ) {
           const ref = episodeRefFromUrl(url);
+          // Vidsrc-style embeds put a BARE media id in the slug
+          // (vidsrc.sh/embed/movie/1377237 or /embed/tv/99589-4-1), so the
+          // "title" extracted from the URL is a number (or "99589 4 1") - and
+          // no catalog can find that (the Runner/Idiots/Succession failures).
+          // Use the job's real title for the search, and register the number
+          // as that title's TMDB id so the id-keyed adapters (NontonGo,
+          // Vidsrc) can target it directly. 5+ digits: 1-4 digit numbers are
+          // plausibly real titles (the show "1899"), modern TMDB ids are not.
+          if (ref && extra && extra.series) {
+            const slug = String(ref.title || '').trim();
+            const mBare = slug.match(/^\d{5,8}$/);
+            const mIdSe = slug.match(/^(\d{5,8})[ -](\d{1,3})(?:[ -](\d{1,3}))?$/);
+            if (mBare || mIdSe) {
+              const numId = mBare ? slug : mIdSe[1];
+              ref.title = extra.series;
+              if (mIdSe && ref.season == null) {
+                ref.season = parseInt(mIdSe[2], 10);
+                if (mIdSe[3]) ref.episode = parseInt(mIdSe[3], 10);
+              }
+              try { rememberMediaId(extra.series, numId); } catch (e) { /* never block discovery */ }
+              log(`URL slug "${slug}" is a bare media id; searching other sites as "${extra.series}" (id ${numId} registered).`);
+            }
+          }
           if (ref.title) {
             const want = ref.title + (ref.season ? ` S${ref.season}E${ref.episode || 1}` : '');
             log(`No 1080p on this catalog; searching other sites for ${want}.`);
@@ -887,7 +910,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         skipSources: [],
         onUnavailable: () => pending.add(spec)
       };
-      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight }));
+      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series }));
       const added = manager.add(rec);
       if (added) queued += 1;
     }
@@ -952,7 +975,7 @@ async function queueOne(entry, onLog = () => {}) {
     skipSources: [],
     onUnavailable: () => pending.add(spec)
   };
-  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight }));
+  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series }));
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {

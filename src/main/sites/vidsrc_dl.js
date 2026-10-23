@@ -52,6 +52,7 @@ function getFfprobe() {
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const API_BASE = 'https://data.vidsrc.sh/api.php';
+const RELAY_HOSTS = ['https://vidsrc.sh', 'https://vidsrcme.ru'];
 
 // Simple throttle: minimum interval between Vidsrc API calls to avoid 429.
 // Vidsrc's data API is IP-rate-limited; when a season's worth resolves at
@@ -88,6 +89,52 @@ function request(url, headers, timeoutMs) {
       reject(new Error('timeout'));
     });
   });
+}
+
+// Vidsrc's data API now demands an IP-bound JWT ("api_token") that it issues
+// only through the player chain — the same chain the browser walks:
+//   1. <relay>/vs_src.php?type=<tv|movie>&id=<id>[&season=S&episode=E]
+//        -> { src: "<host>/embed/<tv|movie>/<...>?vs=<token>" }
+//   2. that landing page -> window.CFG.playerUrl = "/embed/player/...?vs=<token2>"
+//   3. that player page  -> window.CONFIG.apiToken = "<JWT: {exp, ip, n}>"
+// The token is IP-bound (the JWT carries our egress IP) and short-lived
+// (~10 min), so it is fetched just-in-time per episode, here. Verified live
+// for movie/tv, tmdb/imdb (Runner tt31349844, 2026-10). Returns '' on any
+// failure so the caller can still try the token-less API (older deployments).
+async function acquireApiToken(ref) {
+  const id = ref.imdb ? ref.imdb : ref.tmdb;
+  if (!id) return '';
+  const isTv = ref.type === 'tv';
+  const params =
+    `type=${isTv ? 'tv' : 'movie'}&id=${encodeURIComponent(id)}` +
+    (isTv ? `&season=${encodeURIComponent(ref.season)}&episode=${encodeURIComponent(ref.episode)}` : '');
+  for (const relay of RELAY_HOSTS) {
+    try {
+      const r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 20000);
+      if (r.status !== 200) continue;
+      let j;
+      try {
+        j = JSON.parse(r.body.toString('utf8'));
+      } catch (e) {
+        continue;
+      }
+      if (!j || !j.src) continue;
+      const base = String(j.src).match(/^https?:\/\/[^/]+/);
+      if (!base) continue;
+      const lr = await request(j.src, { Referer: relay + '/' }, 20000);
+      if (lr.status !== 200) continue;
+      const pm = lr.body.toString('utf8').match(/playerUrl":"([^"]+)"/);
+      if (!pm) continue;
+      const pr = await request(base[0] + pm[1], { Referer: j.src }, 20000);
+      if (pr.status !== 200) continue;
+      const tm = pr.body.toString('utf8').match(/apiToken":"([^"]+)"/);
+      if (!tm) continue;
+      return tm[1];
+    } catch (e) {
+      /* try the next relay host */
+    }
+  }
+  return '';
 }
 
 function parseToken(text) {
@@ -129,7 +176,17 @@ async function fetchStreamUrls(ref) {
     const idpart = ref.imdb ? 'imdb=' + ref.imdb : 'tmdb=' + ref.tmdb;
     qs = `type=tv&${idpart}&season=${ref.season}&episode=${ref.episode}`;
   }
-  const url = `${API_BASE}?${qs}&stream_urls`;
+  let url = `${API_BASE}?${qs}&stream_urls`;
+  // The data API now requires the IP-bound api_token ("invalid api token" 403
+  // otherwise). Acquire it through the player chain first; if that fails the
+  // token-less call below may still work on older deployments.
+  let apiToken = '';
+  try {
+    apiToken = await acquireApiToken(ref);
+  } catch (e) {
+    apiToken = '';
+  }
+  if (apiToken) url += '&api_token=' + encodeURIComponent(apiToken);
   // The Vidsrc API rate-limits (HTTP 429) and intermittently 403s bursts behind
   // a VPN. Retry a few times with backoff before giving up on the fast path; a
   // persistent 403 ("invalid api token") falls through to the browser relay path.
@@ -146,6 +203,17 @@ async function fetchStreamUrls(ref) {
       const backoff =
         (limited ? 4000 : 1500) * attempt + Math.floor(Math.random() * (limited ? 2000 : 800));
       await new Promise((rs) => setTimeout(rs, backoff));
+    }
+    // A 403 with no token in hand is Vidsrc's "invalid api token" - acquire
+    // one mid-retry (the relay chain may have been briefly unavailable on the
+    // first pass) and retry with it.
+    if (!apiToken && lastStatus === 403) {
+      try {
+        apiToken = await acquireApiToken(ref);
+        if (apiToken) url = API_BASE + '?' + qs + '&stream_urls&api_token=' + encodeURIComponent(apiToken);
+      } catch (e) {
+        /* keep retrying token-less */
+      }
     }
     let r;
     try {
@@ -201,6 +269,18 @@ function parseMaster(masterText, baseOrigin) {
   return variants;
 }
 
+// A "1080p" floor means the 1920x1080 master class. Scope-cropped widescreen
+// films present that master at 1920x800 (Runner 2026's only 1080p copy is
+// exactly this), so full master width + widescreen aspect also passes - the
+// same rule as verify.meetsQualityFloor.
+function meetsFloor(width, height, min) {
+  if (!min) return true;
+  if (height >= min) return true;
+  const masterWidth = Math.round((min * 16) / 9);
+  if (!width || width < masterWidth) return false;
+  return height > 0 && width / height >= 1.85;
+}
+
 function probeResolution(bufPath) {
   return new Promise((resolve) => {
     execFile(
@@ -254,7 +334,7 @@ async function pick1080(ref, onLog, minH = 1080) {
     const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
     if (!variants.length) continue;
     for (const v of variants) {
-      if (v.height < min) break;
+      if (!meetsFloor(v.width, v.height, min)) break;
       try {
         const idx = (await request(v.url, {}, 20000)).body.toString('utf8');
         const segLine = idx
@@ -282,7 +362,7 @@ async function pick1080(ref, onLog, minH = 1080) {
         });
         const pr = await probeResolution(segPath);
         onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
-        if (pr.ok && pr.height >= min) {
+        if (pr.ok && meetsFloor(pr.width, pr.height, min)) {
           best = { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta };
           break;
         }
@@ -327,7 +407,7 @@ async function download(ref, outPath, opts = {}) {
   await spawnFfmpeg(best.url, tmp, UA, opts);
   if (opts.signal && opts.signal.aborted) throw Object.assign(new Error('aborted'), { aborted: true });
   const pr = await probeResolution(tmp);
-  if (!pr.ok || pr.height < min) {
+  if (!pr.ok || !meetsFloor(pr.width, pr.height, min)) {
     try { fs.unlinkSync(tmp); } catch (e) {}
     throw new Error(`Downloaded file is ${pr.width}x${pr.height}, not ${min}p`);
   }
@@ -336,7 +416,7 @@ async function download(ref, outPath, opts = {}) {
   return { path: outPath, width: pr.width, height: pr.height, host: best.host, meta: best.meta };
 }
 
-module.exports = { pick1080, download, fetchStreamUrls, UA };
+module.exports = { pick1080, download, fetchStreamUrls, acquireApiToken, UA };
 
 // CLI: vidsrc_dl.js <tv|movie> <tmdb|imdb> [season] [episode] [outPath]
 if (require.main === module) {

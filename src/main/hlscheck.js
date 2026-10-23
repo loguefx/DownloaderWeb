@@ -4190,30 +4190,40 @@ function cachedMaxVariant(playerWebContentsId) {
   return best;
 }
 
-async function playerVideoHeight(playerWebContentsId) {
+async function playerVideoSize(playerWebContentsId) {
   const wc = liveWebContents(playerWebContentsId);
-  if (!wc || wc.isDestroyed()) return 0;
+  if (!wc || wc.isDestroyed()) return { w: 0, h: 0 };
   const expr = `(() => {
     const vids = Array.from(document.querySelectorAll('video'));
-    let best = 0;
-    for (const v of vids) best = Math.max(best, v.videoHeight || 0);
-    return best;
+    let w = 0, h = 0;
+    for (const v of vids) {
+      if (((v.videoWidth || 0) * (v.videoHeight || 0)) > w * h) {
+        w = v.videoWidth || 0;
+        h = v.videoHeight || 0;
+      }
+    }
+    return { w, h };
   })()`;
-  let best = 0;
+  let best = { w: 0, h: 0 };
   const frames = collectFrames(wc);
   const targets = frames.length ? frames : [wc];
   for (const frame of targets) {
     try {
-      const h = await Promise.race([
+      const r = await Promise.race([
         frame.executeJavaScript(expr, true),
-        new Promise((resolve) => setTimeout(() => resolve(0), 1500))
+        new Promise((resolve) => setTimeout(() => resolve(null), 1500))
       ]);
-      best = Math.max(best, Number(h) || 0);
+      if (r && ((r.w || 0) * (r.h || 0)) > best.w * best.h) best = { w: r.w || 0, h: r.h || 0 };
     } catch (e) {
       // ignore
     }
   }
   return best;
+}
+
+async function playerVideoHeight(playerWebContentsId) {
+  const size = await playerVideoSize(playerWebContentsId);
+  return size.h || 0;
 }
 
 function heightFromBuffer(buf) {
@@ -4327,6 +4337,15 @@ async function loadNetocdnMaster(det, pid) {
 async function preferMinHeight(det, minHeight) {
   const min = Number(minHeight) || 0;
   if (!det || !min) return { ok: true, height: 0 };
+  // A "1080p" floor means the 1920x1080 master class. Scope-cropped 2.00:1 /
+  // 2.39:1 films present that master at 1920x800 (full width, short height),
+  // so a width that reaches the class's master width with a widescreen aspect
+  // also satisfies the floor - same rule as verify.meetsQualityFloor.
+  const meets = (w, h) => {
+    if (h >= min) return true;
+    const masterWidth = Math.round((min * 16) / 9);
+    return !!w && w >= masterWidth && h > 0 && w / h >= 1.85;
+  };
   const pid = det.playerWebContentsId || det.webContentsId;
   let best = cachedMaxVariant(pid);
   if (!best || best.h < min) {
@@ -4348,20 +4367,27 @@ async function preferMinHeight(det, minHeight) {
     }
   }
   let height = (best && best.h) || 0;
-  if (!height) height = await playerVideoHeight(pid);
+  let width = (best && best.w) || 0;
+  if (!height) {
+    const size = await playerVideoSize(pid);
+    height = size.h || 0;
+    if (!width) width = size.w || 0;
+  }
   if (!height && det.playlistText && isMediaPlaylist(det.playlistText)) {
     height = await heightFromFirstSegment(det, pid);
   }
   if (!height) {
     const deadline = Date.now() + 4000;
     while (Date.now() < deadline) {
-      height = await playerVideoHeight(pid);
+      const size = await playerVideoSize(pid);
+      height = size.h || 0;
+      if (!width) width = size.w || 0;
       if (height) break;
       await new Promise((r) => setTimeout(r, 400));
     }
   }
-  if (height >= min) {
-    if (best && best.uri && best.h >= min) {
+  if (meets(width, height)) {
+    if (best && best.uri && meets(best.w || 0, best.h)) {
       det.url = best.uri;
       if (best.text && isMediaPlaylist(best.text)) {
         det.playlistText = rewritePlaylistUris(best.text, best.uri);

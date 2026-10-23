@@ -96,7 +96,21 @@ function describeProbeError(err) {
 function belowMinHeight(probed, minHeight) {
   const min = Number(minHeight) || 0;
   if (!min || !probed || !(probed.height > 0)) return false;
-  return probed.height < min;
+  return !meetsQualityFloor(probed.width || 0, probed.height, min);
 }
 
-module.exports = { verifyFile, ffprobePath, belowMinHeight };
+// A "1080p" floor means the 1920x1080 master class. Scope-cropped 2.00:1 /
+// 2.39:1 films present that master at 1920x800 (a 720p class at 1280x534):
+// full master width, short height. A height-only floor rejects every
+// widescreen 1080p film (Runner 2026 is exactly this - its only 1080p copy
+// measures 1920x800), so a width that reaches the class's master width with a
+// widescreen aspect ratio also satisfies the floor.
+function meetsQualityFloor(width, height, min) {
+  if (!min) return true;
+  if (height >= min) return true;
+  const masterWidth = Math.round((min * 16) / 9);
+  if (!width || width < masterWidth) return false;
+  return height > 0 && width / height >= 1.85;
+}
+
+module.exports = { verifyFile, ffprobePath, belowMinHeight, meetsQualityFloor };
