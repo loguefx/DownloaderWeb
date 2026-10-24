@@ -62,7 +62,9 @@ function makeFakeLibrary(dir) {
     guardRoot: mk('ShowF/ShowF 5.mp4'), // bare number at root WHILE a Season folder exists
     guardRootSeason2: mk('ShowF/Season 2/placeholder-S02E99.mp4'), // gives ShowF a season folder
     seasonDigit: mk('ShowG/Season 1/ShowG S1E2.mp4'), // S1E2: the "1" is a SEASON, not ep 1
-    dotSep: mk('ShowH/ShowH.18.mp4') // dot-separated anime naming
+    dotSep: mk('ShowH/ShowH.18.mp4'), // dot-separated anime naming
+    titleOnly: mk('ShowI/ShowI - Pilot.mp4'), // named by TITLE only, no number
+    partTrap: mk('ShowJ/ShowJ - The Beginning Part 2.mp4') // must not match "The Beginning"
   };
   return files;
 }
@@ -189,6 +191,28 @@ async function main() {
   check(
     'dot-separated anime "ShowH.18.mp4" counts as S1E18',
     organizer.existingEpisodeFile(libRoot, { series: 'ShowH', season: 1, episode: 18 }) === files.dotSep
+  );
+
+  // --- title-only files (no episode number at all) ---
+  check(
+    'title-only file matches when the episode name is supplied',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowI', season: 1, episode: 1 }, null, 'Pilot') === files.titleOnly
+  );
+  check(
+    'title-only file does NOT match without a name (would be re-downloaded)',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowI', season: 1, episode: 1 }) === null
+  );
+  check(
+    'title-only file does NOT match a different episode name',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowI', season: 1, episode: 1 }, null, 'Totally Different') === null
+  );
+  check(
+    '"The Beginning Part 2" does NOT satisfy ep named "The Beginning"',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowJ', season: 1, episode: 1 }, null, 'The Beginning') === null
+  );
+  check(
+    '"The Beginning Part 2" DOES satisfy ep named "The Beginning Part 2"',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowJ', season: 1, episode: 1 }, null, 'The Beginning Part 2') === files.partTrap
   );
 
   console.log('\n[2] safePlace: new file, overwrite refusal, ledger, trash');

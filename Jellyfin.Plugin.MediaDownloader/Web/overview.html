@@ -481,6 +481,13 @@
                         <div><b>Keep watching for new episodes</b><span>Re-checks every 24 h and queues new episodes, late dubs and new seasons.</span></div></label>
                     <div class="hint" data-watch-hint></div>
                 </div>
+                <div class="field" data-opt-preview>
+                    <button type="button" class="mdl-btn" data-preview>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="3"/></svg>
+                        Preview against my library</button>
+                    <div class="hint">Shows exactly which selected episodes are already on your drives (skipped) and which would download. Nothing is queued.</div>
+                    <div data-preview-result></div>
+                </div>
                 <div class="field">
                     <label class="lbl">File will be saved as</label>
                     <div class="mdl-path" data-saved-as>–</div>
@@ -1188,7 +1195,11 @@
                 function checkSeason(t, s) {
                     const eps = s.eps.map((e) => e.episode);
                     if (!eps.length) { s.checked = true; return Promise.resolve(); }
-                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, minHeight: Number(t.quality) || 0 })
+                    // Send the episode titles too, so a hand-named file with no
+                    // number ("Show - Pilot.mp4") still counts as in-library.
+                    const epNames = {};
+                    (s.eps || []).forEach((e) => { if (e && e.name) epNames[e.episode] = e.name; });
+                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, epNames: epNames, minHeight: Number(t.quality) || 0 })
                         .then((r) => {
                             ((r && r.episodes) || []).forEach((e) => {
                                 s.status[e.episode] = e.status;
@@ -1214,6 +1225,92 @@
                             }
                             renderTitle();
                         });
+                }
+
+                // Dry-run: ask the engine to match the CURRENT selection
+                // against the on-disk library and show the answer. Uses the
+                // same recognizer the queue uses, so "preview says skip" and
+                // "queue skips it" can never disagree.
+                function runPreview(t) {
+                    if (!t || t.kind === 'movie') return;
+                    const sels = selection(t);
+                    if (!sels.length) { t.preview = { status: 'empty' }; renderTitle(); return; }
+                    t.preview = { status: 'pending' };
+                    renderTitle();
+                    const jobs = sels.map((sel) => {
+                        const s = (t.seasons || []).find((x) => x.season === sel.season);
+                        // Episode titles too, so hand-named files count.
+                        const epNames = {};
+                        ((s && s.eps) || []).forEach((e) => { if (e && e.name) epNames[e.episode] = e.name; });
+                        return post('MediaDownloader/LibraryReport', {
+                            series: t.title, kind: 'series', season: sel.season,
+                            episodes: sel.episodes, epNames: epNames, library: t.library
+                        });
+                    });
+                    Promise.all(jobs).then((results) => {
+                        if (S.t !== t) return;
+                        t.preview = { status: 'done', results };
+                        renderTitle();
+                    }).catch((err) => {
+                        if (S.t !== t) return;
+                        t.preview = { status: 'error', message: (err && err.message) ? err.message : String(err) };
+                        renderTitle();
+                    });
+                }
+
+                function previewHtml(t) {
+                    const p = t.preview;
+                    if (!p) return '';
+                    if (p.status === 'pending') {
+                        return '<div class="small muted" style="margin-top:.7em;"><span class="mdl-spin"></span> Scanning your library drives…</div>';
+                    }
+                    if (p.status === 'empty') {
+                        return '<div class="mdl-callout yellow" style="margin-top:.7em;">' + ICON.warn +
+                            '<div><b>Nothing selected yet.</b><div class="small">Pick a season or some episodes first.</div></div></div>';
+                    }
+                    if (p.status === 'error') {
+                        return '<div class="mdl-callout red" style="margin-top:.7em;">' + ICON.warn +
+                            '<div><b>Preview failed.</b><div class="small">' + esc(p.message) + '</div></div></div>';
+                    }
+                    const recognized = [], missing = [], unknown = [];
+                    const seenFiles = {};
+                    let total = 0;
+                    (p.results || []).forEach((r) => {
+                        ((r && r.episodes) || []).forEach((e) => {
+                            total++;
+                            (e.status === 'recognized' ? recognized : missing).push(e);
+                        });
+                        ((r && r.files) || []).forEach((f) => {
+                            if (f && f.path && !seenFiles[f.path] && !f.matched) { seenFiles[f.path] = 1; unknown.push(f.path); }
+                        });
+                    });
+                    const label = (e) => {
+                        const s = (t.seasons || []).find((x) => x.season === e.season);
+                        const ep = (s && s.eps) ? s.eps.find((x) => x.episode === e.episode) : null;
+                        const name = (e && e.name) || (ep && ep.name) || '';
+                        return 'S' + e.season + 'E' + e.episode + (name ? ' · ' + name : '');
+                    };
+                    let h = '<div style="margin-top:.7em;">';
+                    h += '<div class="small muted" style="margin-bottom:.5em;">Checked the selected ' + plural(total, 'episode') +
+                        ' against the library drives — nothing was queued:</div>';
+                    if (recognized.length) {
+                        h += '<div class="mdl-callout green">' + ICON.check + '<div><b>' + recognized.length + ' already in your library — skipped</b>' +
+                            recognized.map((e) => '<div class="small mono" style="margin-top:.25em;word-break:break-all;">' + esc(label(e)) + ' → ' + esc(e.path || '') + '</div>').join('') +
+                            '</div></div>';
+                    }
+                    if (missing.length) {
+                        h += '<div class="mdl-callout red">' + ICON.warn + '<div><b>' + missing.length + ' will be downloaded</b>' +
+                            missing.map((e) => '<div class="small" style="margin-top:.25em;">' + esc(label(e)) + '</div>').join('') +
+                            '</div></div>';
+                    }
+                    if (unknown.length) {
+                        h += '<div class="mdl-callout yellow">' + ICON.warn + '<div><b>' + unknown.length + ' on-disk file(s) don\'t match the selected episodes</b>' +
+                            '<div class="small">If one of these is a copy you expected to count, its name may be unreadable:</div>' +
+                            unknown.map((p) => '<div class="small mono" style="margin-top:.25em;word-break:break-all;">' + esc(p) + '</div>').join('') +
+                            '</div></div>';
+                    }
+                    h += '</div>';
+                    return h;
                 }
 
                 function checkMovie(t) {
@@ -1339,6 +1436,8 @@
 
                     // options
                     $('[data-opt-watch]').hidden = t.kind === 'movie';
+                    $$('[data-opt-preview]').forEach((f) => { f.hidden = t.kind === 'movie'; });
+                    $$('[data-preview-result]').forEach((b) => { b.innerHTML = previewHtml(t); });
                     $$('[data-mode]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-mode') === t.modeAudio));
                     $('[data-quality]').value = t.quality;
                     if ($('[data-quality]').value !== t.quality) { $('[data-quality]').value = '1080'; t.quality = '1080'; }
@@ -1805,7 +1904,7 @@
 
                     // title view
                     const t = S.t;
-                    if (t && el.hasAttribute('data-tmode')) { t.mode = el.getAttribute('data-tmode'); renderTitle(); return; }
+                    if (t && el.hasAttribute('data-tmode')) { t.mode = el.getAttribute('data-tmode'); t.preview = null; renderTitle(); return; }
                     if (t && el.hasAttribute('data-season')) {
                         const sn = Number(el.getAttribute('data-season'));
                         if (t.mode === 'full') {
@@ -1819,6 +1918,7 @@
                         } else {
                             t.active = sn;
                         }
+                        t.preview = null;
                         renderTitle();
                         return;
                     }
@@ -1828,10 +1928,12 @@
                         const set = {};
                         if (el.getAttribute('data-sel') === 'all') availableEps(s).forEach((e) => { set[e] = true; });
                         t.sel[s.season] = set;
+                        t.preview = null;
                         renderTitle();
                         return;
                     }
                     if (t && el.hasAttribute('data-mode')) { t.modeAudio = el.getAttribute('data-mode'); renderTitle(); return; }
+                    if (el.hasAttribute('data-preview')) { runPreview(S.t); return; }
                     if (el.hasAttribute('data-submit')) { submitTitle(); return; }
 
                     // browse view
@@ -1896,12 +1998,14 @@
                         if (!s) return;
                         const set = t.sel[s.season] = t.sel[s.season] || {};
                         set[Number(el.getAttribute('data-ep'))] = el.checked;
+                        t.preview = null;
                         renderTitle();
                         return;
                     }
                     if (t && el.hasAttribute('data-manual')) {
                         t.manual[el.getAttribute('data-manual')] = Math.max(0, parseInt(el.value, 10) || 0);
                         if (t.manual.to < t.manual.from) t.manual.to = t.manual.from;
+                        t.preview = null;
                         renderTitle();
                         return;
                     }

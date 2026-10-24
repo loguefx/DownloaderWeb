@@ -188,6 +188,41 @@ function titleOnDisk(outputRoot, seriesName) {
   return !!seriesVideoFile(outputRoot, seriesName);
 }
 
+// Every video file under the series' folders (any recognized video extension),
+// deduped and sorted. Used by the dry-run report to show the user exactly what
+// is on disk for a series - so they can eyeball what the engine will and will
+// recognize before trusting a download.
+function listSeriesVideoFiles(outputRoot, seriesName) {
+  const out = [];
+  const seen = new Set();
+  if (!outputRoot || !seriesName) return out;
+  const dirs = seriesDirs(outputRoot, { series: seriesName, season: null, episode: null });
+  for (const dir of dirs) {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(dir);
+    } catch (e) {
+      continue;
+    }
+    for (const f of ents) {
+      const full = path.join(dir, f);
+      if (seen.has(full)) continue;
+      let isFile = false;
+      try {
+        isFile = fs.statSync(full).isFile();
+      } catch (e) {
+        continue;
+      }
+      if (!isFile) continue;
+      if (VIDEO_EXTS.includes(path.extname(f).toLowerCase())) {
+        seen.add(full);
+        out.push(full);
+      }
+    }
+  }
+  return out.sort();
+}
+
 // True when this episode is already on disk. Exact path first, then collision
 // suffixes, then any file in a same-series folder that names the same season +
 // episode. SFlix titles often bake "Season 3" / the episode slug into the
@@ -238,6 +273,30 @@ function seriesHasSeasonFolders(outputRoot, meta) {
   return false;
 }
 
+// Does a file name carry this episode's TITLE as a whole phrase? This is the
+// fallback for hand-named files that have NO episode number at all (e.g.
+// "Show - Pilot.mp4"). Rules keep it precise:
+//   - the title is at least 4 chars (skips trivial "a"/"the" names);
+//   - it must appear as a whole phrase (word-bounded), not a substring of a
+//     longer word;
+//   - it must NOT be immediately followed by a continuation marker, so
+//     "The Beginning" does not swallow "The Beginning Part 2" (a different ep).
+// Returns true/false; an empty/short title returns false (never blocks).
+function titleMatches(fileName, episodeName) {
+  if (!episodeName) return false;
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const title = norm(episodeName);
+  if (title.length < 4) return false;
+  const file = ' ' + norm(fileName) + ' ';
+  const idx = file.indexOf(title);
+  if (idx < 0) return false;
+  // Word-bounded: single spaces on both sides (norm collapses to one space).
+  if (file[idx - 1] !== ' ' || file[idx + title.length] !== ' ') return false;
+  const after = file.slice(idx + title.length + 1);
+  if (/^(part|pt|2nd|second|continued|the rest)\b/i.test(after)) return false;
+  return true;
+}
+
 function seasonFromName(name) {
   const s = String(name || '');
   let m = s.match(/season\s*0*(\d{1,3})/i);
@@ -258,7 +317,10 @@ function seasonFromName(name) {
 // Jellyfin build plan Part 11: match .mkv/.avi/.m4v/.ts as well as .mp4, find
 // SxxEyy anywhere in the file name, ignore "(year)" / "[tmdbid-…]" in folder
 // names, and treat "S01E01-E02" two-part files as BOTH episodes.
-function existingEpisodeFile(outputRoot, meta, ext = null) {
+// `episodeName` (optional) is the episode's real title (e.g. "Pilot"). When
+// provided, a file named by that title alone - with no episode number at all -
+// also counts as present. This is the last-resort match for hand-named files.
+function existingEpisodeFile(outputRoot, meta, ext = null, episodeName = '') {
   if (!outputRoot) return null;
   const exact = expectedPath(outputRoot, meta, '.mp4');
   if (fs.existsSync(exact)) return exact;
@@ -360,15 +422,20 @@ function existingEpisodeFile(outputRoot, meta, ext = null) {
         if (a > b) [a, b] = [b, a];
         if (ep >= a && ep <= b) return path.join(dir, f);
       }
-      if (!loose) continue;
-      if (looseRe.test(base)) return path.join(dir, f);
-      const lm = base.match(looseRangeRe);
-      if (lm) {
-        let a = parseInt(lm[1], 10);
-        let b = parseInt(lm[2], 10);
-        if (a > b) [a, b] = [b, a];
-        if (ep >= a && ep <= b) return path.join(dir, f);
+      if (loose) {
+        if (looseRe.test(base)) return path.join(dir, f);
+        const lm = base.match(looseRangeRe);
+        if (lm) {
+          let a = parseInt(lm[1], 10);
+          let b = parseInt(lm[2], 10);
+          if (a > b) [a, b] = [b, a];
+          if (ep >= a && ep <= b) return path.join(dir, f);
+        }
       }
+      // Last resort: the file is named by the episode's own TITLE, with no
+      // number at all ("Show - Pilot.mp4"). Scoped to the series folders, so a
+      // title only counts for this show.
+      if (episodeName && titleMatches(base, episodeName)) return path.join(dir, f);
     }
   }
   return null;
@@ -410,12 +477,14 @@ module.exports = {
   parseSeasonFromUrl,
   seasonFromName,
   seriesHasSeasonFolders,
+  titleMatches,
   buildBaseName,
   seriesRoot,
   seriesDir,
   seriesDirs,
   seriesVideoFile,
   titleOnDisk,
+  listSeriesVideoFiles,
   buildOutputPath,
   expectedPath,
   existingEpisodeFile,

@@ -111,6 +111,43 @@ function check(name, cond, extra) {
   const lc5 = await service.libraryCheck({ series: 'Totally Unknown Show', season: 1, episodes: [1], locations: [lib], minHeight: 0 });
   check('unknown show -> missing', lc5.episodes[0].status === 'missing', JSON.stringify(lc5.episodes[0]));
 
+  // ---- 2b. service.libraryReport (dry-run: recognize vs. on-disk) ----------
+  console.log('\n[2b] service.libraryReport');
+  copyTo(path.join(lib, 'TitleShow', 'TitleShow - Pilot.mp4')); // title-only, no number
+  const rp1 = await service.libraryReport({
+    series: 'South Park', season: 1, episodes: [1, 2], locations: [lib]
+  });
+  check(
+    'report: ep1 recognized, ep2 missing',
+    rp1.episodes.find((e) => e.episode === 1).status === 'recognized' &&
+      rp1.episodes.find((e) => e.episode === 2).status === 'missing',
+    JSON.stringify(rp1.episodes)
+  );
+  check(
+    'report: the on-disk file is listed and matched to ep1',
+    rp1.files.some((f) => /South Park S01E01/.test(f.path) && f.matched && f.matched.episode === 1),
+    JSON.stringify(rp1.files)
+  );
+  check('report: no unrecognized files for South Park', rp1.unrecognized.length === 0, JSON.stringify(rp1.unrecognized));
+
+  const rp2 = await service.libraryReport({
+    series: 'TitleShow', season: 1, episodes: [1, 2], locations: [lib], epNames: { 1: 'Pilot' }
+  });
+  check(
+    'report: title-only file recognized when the name is supplied',
+    rp2.episodes.find((e) => e.episode === 1).status === 'recognized',
+    JSON.stringify(rp2.episodes)
+  );
+  const rp3 = await service.libraryReport({
+    series: 'TitleShow', season: 1, episodes: [1], locations: [lib]
+  });
+  check(
+    'report: title-only file NOT recognized without a name (would be re-downloaded)',
+    rp3.episodes.find((e) => e.episode === 1).status === 'missing' &&
+      rp3.unrecognized.some((p) => /TitleShow - Pilot/.test(p)),
+    JSON.stringify(rp3)
+  );
+
   // ---- 3. auto watch-list rule (service.submitJob) --------------------------
   console.log('\n[3] auto watch-list rule');
   const LIB = { name: 'TV Shows', locations: [lib] };

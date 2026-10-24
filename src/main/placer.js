@@ -262,8 +262,8 @@ async function placeItem(item, stagedPath) {
   const finalPath = organizer.expectedPath(pick.folder, meta, '.mp4');
   const cfg = engineconfig.get();
 
-  // Already on the target drive?
-  const already = organizer.existingEpisodeFile(pick.folder, meta);
+  // Already on the target drive? (episode name lets a hand-named file count)
+  const already = organizer.existingEpisodeFile(pick.folder, meta, null, item.episodeName || '');
   let replacePath = null;
   if (already) {
     const probed = await require('./verify').verifyFile(already);

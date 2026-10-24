@@ -281,11 +281,14 @@ async function submitJob(job) {
     // built from its template so S2E4..S2E11 all resolve.
     for (const sel of job.selections) {
       const season = sel.season != null ? sel.season : (ref && ref.season) || 1;
+      // Optional episode titles ("1": "Pilot") so hand-named files are seen.
+      const selNames = sel.epNames && typeof sel.epNames === 'object' ? sel.epNames : {};
       for (const ep of sel.episodes) {
         const epUrl =
           require('./urltemplate').buildEpisodeUrl({ baseUrl: url, season, series }, ep) || url;
+        const epName = selNames[ep] || selNames[String(ep)] || '';
         const r = await bulk.queueOne(
-          stamp({ url: epUrl, series, season, episode: ep, mode, outputRoot: staging }),
+          stamp({ url: epUrl, series, season, episode: ep, mode, outputRoot: staging, episodeName: epName }),
           onLog
         );
         queued += r.queued;
@@ -304,7 +307,8 @@ async function submitJob(job) {
           season: sel.season != null ? sel.season : (ref && ref.season) || 1,
           mode,
           startEp: '1',
-          endEp: 'auto'
+          endEp: 'auto',
+          episodeNames: sel.epNames && typeof sel.epNames === 'object' ? sel.epNames : {}
         });
       }
     }
@@ -548,17 +552,33 @@ async function libraryCheck(payload) {
   const episodes = !movie && Array.isArray(payload.episodes) && payload.episodes.length ? payload.episodes : [null];
   const locations = Array.isArray(payload.locations) ? payload.locations : [];
   const folders = [engineconfig.stagingPath(), ...locations.map((l) => placer.toEnginePath(l))];
+  // Optional per-episode titles ("1": "Pilot"). Lets a hand-named file with no
+  // number still count as present. Accepts an object keyed by episode number or
+  // an array of { episode, name }.
+  const epNames = {};
+  if (payload && payload.epNames) {
+    if (Array.isArray(payload.epNames)) {
+      for (const it of payload.epNames) {
+        if (it && it.episode != null && it.name) epNames[it.episode] = String(it.name);
+      }
+    } else if (typeof payload.epNames === 'object') {
+      for (const k of Object.keys(payload.epNames)) {
+        if (payload.epNames[k]) epNames[k] = String(payload.epNames[k]);
+      }
+    }
+  }
 
   const out = [];
   for (const ep of episodes) {
     const meta = { series, season, episode: ep };
+    const epName = ep != null ? (epNames[ep] || epNames[String(ep)] || '') : '';
     let status = 'missing';
     let foundPath = null;
     for (const folder of folders) {
       try {
         if (!folder) continue;
         // A movie (no episode) is matched on its exact <Title>/<Title>.mp4 path.
-        const f = ep != null || movie ? organizer.existingEpisodeFile(folder, meta) : null;
+        const f = ep != null || movie ? organizer.existingEpisodeFile(folder, meta, null, epName) : null;
         if (f) {
           foundPath = f;
           break;
@@ -585,6 +605,89 @@ async function libraryCheck(payload) {
     }
   }
   return { series, season, episodes: out };
+}
+
+// ---- dry-run report: what we recognize vs. what is on disk, before downloading ----
+// Read-only. For a series and (optionally) the episodes we are about to queue,
+// reports:
+//   - each requested episode: recognized (path) or missing;
+//   - EVERY video file on disk for that series, and which requested episode (if
+//     any) it satisfies - so files that do NOT line up with the selection are
+//     visible ("unrecognized") instead of silently re-downloaded or skipped.
+// This is the "let me eyeball it before I trust a download" check.
+async function libraryReport(payload) {
+  const series = String((payload && payload.series) || '').trim();
+  if (!series) throw Object.assign(new Error('series is required'), { code: 'BAD_REQUEST', status: 400 });
+  const movie = payload.kind === 'movie';
+  const season = !movie && payload.season != null ? payload.season : null;
+  const episodes = !movie && Array.isArray(payload.episodes) && payload.episodes.length ? payload.episodes : [];
+  const locations = Array.isArray(payload.locations) ? payload.locations : [];
+  const folders = [engineconfig.stagingPath(), ...locations.map((l) => placer.toEnginePath(l))];
+
+  // Optional per-episode titles ("1": "Pilot").
+  const epNames = {};
+  if (payload && payload.epNames) {
+    if (Array.isArray(payload.epNames)) {
+      for (const it of payload.epNames) {
+        if (it && it.episode != null && it.name) epNames[it.episode] = String(it.name);
+      }
+    } else if (typeof payload.epNames === 'object') {
+      for (const k of Object.keys(payload.epNames)) {
+        if (payload.epNames[k]) epNames[k] = String(payload.epNames[k]);
+      }
+    }
+  }
+
+  const epsOut = [];
+  const matchedPathToEp = new Map();
+  for (const ep of episodes) {
+    const meta = { series, season, episode: ep };
+    const epName = ep != null ? (epNames[ep] || epNames[String(ep)] || '') : '';
+    let foundPath = null;
+    for (const folder of folders) {
+      if (!folder) continue;
+      try {
+        const f = organizer.existingEpisodeFile(folder, meta, null, epName);
+        if (f) {
+          foundPath = f;
+          break;
+        }
+      } catch (e) {
+        // unreadable folder
+      }
+    }
+    if (foundPath) matchedPathToEp.set(foundPath, { season, episode: ep });
+    epsOut.push({
+      episode: ep,
+      season,
+      name: epName || null,
+      status: foundPath ? 'recognized' : 'missing',
+      path: foundPath || null
+    });
+  }
+
+  // Every on-disk video file for this series, tagged with the requested
+  // episode it satisfies (if any). Files with matched:null do not correspond to
+  // any requested episode - the ones worth a second look.
+  const files = [];
+  const seen = new Set();
+  for (const folder of folders) {
+    if (!folder) continue;
+    for (const f of organizer.listSeriesVideoFiles(folder, series)) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      files.push({ path: f, matched: matchedPathToEp.get(f) || null });
+    }
+  }
+  const unrecognized = files.filter((x) => !x.matched).map((x) => x.path);
+
+  return {
+    series,
+    season,
+    episodes: epsOut,
+    files,
+    unrecognized
+  };
 }
 
 // ---- drives verification (Part 5 safety net) ----
@@ -698,6 +801,7 @@ module.exports = {
   settingsPut,
   sourcesHealth,
   libraryCheck,
+  libraryReport,
   verifyDrives,
   onLog,
   recentLog,

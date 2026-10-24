@@ -28,6 +28,7 @@
 //   GET    /api/settings
 //   PUT    /api/settings
 //   POST   /api/library/check               engine-side duplicate check (Part 6)
+//   POST   /api/library/report              dry-run: recognize vs. on-disk, before downloading
 //   POST   /api/library/verify              verify library drives (mount + write round-trip)
 
 const http = require('http');
@@ -748,6 +749,12 @@ async function handle(req, res, u) {
     // ---- library check (Part 6) ----
     if (req.method === 'POST' && seg === 'library' && parts[2] === 'check') {
       json(res, 200, await service.libraryCheck(await readBody(req)));
+      return;
+    }
+
+    // ---- library report (dry-run: recognize vs. on-disk) ----
+    if (req.method === 'POST' && seg === 'library' && parts[2] === 'report') {
+      json(res, 200, await service.libraryReport(await readBody(req)));
       return;
     }
 

@@ -509,6 +509,50 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         }
 
         /// <summary>
+        /// Dry-run report for the title page: for the selected episodes, which
+        /// are already recognized on disk vs. missing, plus every on-disk file
+        /// for that series and whether it lines up with the selection. Read-only.
+        /// Body: { "series", "season", "episodes": [..], "epNames"?, "library"? }.
+        /// </summary>
+        [HttpPost("LibraryReport")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> LibraryReport()
+        {
+            JsonObject node;
+            try
+            {
+                node = JsonNode.Parse(await ReadBodyTextAsync().ConfigureAwait(false)) as JsonObject;
+            }
+            catch (Exception)
+            {
+                node = null;
+            }
+            if (node == null)
+            {
+                return BadRequest(new { error = "JSON object body required" });
+            }
+
+            if (!node.ContainsKey("locations"))
+            {
+                var libName = Str(node, "library");
+                var libs = ResolveLibraries(string.IsNullOrWhiteSpace(libName) ? null : new[] { libName });
+                var all = new JsonArray();
+                foreach (var lib in libs)
+                {
+                    foreach (var loc in lib["locations"].AsArray())
+                    {
+                        all.Add((JsonNode)loc.GetValue<string>());
+                    }
+                }
+                node["locations"] = all;
+            }
+            node.Remove("library");
+
+            var el = JsonSerializer.Deserialize<JsonElement>(node.ToJsonString());
+            return await ProxyAsync(() => _engine.PostAsync("api/library/report", el)).ConfigureAwait(false);
+        }
+
+        /// <summary>
         /// Verify a library's drive folders (Settings &gt; Verify drives).
         /// Resolves the library's current locations and asks the engine to do a
         /// real write + read-back round-trip, so the user gets a green/red

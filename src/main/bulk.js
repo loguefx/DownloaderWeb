@@ -36,8 +36,8 @@ const range = (a, b) => {
 //     engine never downloads over a file it cannot inspect;
 //   - a low-quality file the engine did not place is never queued for
 //     replacement; it is listed for the manual quality check instead.
-async function existingKeepsEpisode(outputRoot, meta, pageUrl, onLog) {
-  const already = organizer.existingEpisodeFile(outputRoot, meta);
+async function existingKeepsEpisode(outputRoot, meta, pageUrl, onLog, episodeName = '') {
+  const already = organizer.existingEpisodeFile(outputRoot, meta, null, episodeName);
   if (!already) return null;
   const floor = (sites.resolve(pageUrl || '') || {}).minHeight || 0;
   if (!floor) return already;
@@ -850,6 +850,9 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       }
     }
 
+    // Optional per-episode titles for this entry ("1": "Pilot") so a
+    // hand-named file with no number is still recognized as present.
+    const episodeNames = (entry && entry.episodeNames) || {};
     for (const ep of episodes) {
       let url = episodeUrls[ep] || episodeUrls[String(ep)];
       if (!url && !(profile && profile.inventEpisodeUrls === false)) {
@@ -870,7 +873,8 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       // would land on top of season 1 in a media server.
       const epSeason = season != null ? season : organizer.parseSeasonFromUrl(url);
       const meta = { series, season: epSeason, episode: ep };
-      const already = await existingKeepsEpisode(outputRoot, meta, url, onLog);
+      const epName = episodeNames[ep] || episodeNames[String(ep)] || '';
+      const already = await existingKeepsEpisode(outputRoot, meta, url, onLog, epName);
       if (already) {
         skipped += 1;
         onLog(`Already exists, skipping: ${path.basename(already)}`);
@@ -902,6 +906,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         library: opts.library || null,
         minHeight: Number(opts.minHeight) || 0,
         anime: !!opts.anime,
+        episodeName: epName,
         jobId: opts.jobId || null,
         url,
         template,
@@ -939,7 +944,8 @@ async function queueOne(entry, onLog = () => {}) {
   }
   if (outputRoot) organizer.ensureDir(outputRoot);
   const meta = { series, season, episode };
-  const already = outputRoot ? await existingKeepsEpisode(outputRoot, meta, url, onLog) : null;
+  const episodeName = String((entry && entry.episodeName) || '');
+  const already = outputRoot ? await existingKeepsEpisode(outputRoot, meta, url, onLog, episodeName) : null;
   if (already) {
     onLog(`Already exists, skipping: ${path.basename(already)}`);
     return { queued: 0, skipped: 1 };
@@ -968,6 +974,7 @@ async function queueOne(entry, onLog = () => {}) {
     library: (entry && entry.library) || null,
     minHeight: Number((entry && entry.minHeight) || 0),
     anime: !!(entry && entry.anime),
+    episodeName,
     jobId: (entry && entry.jobId) || null,
     url,
     baseUrl: url,
