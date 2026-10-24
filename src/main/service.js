@@ -320,7 +320,52 @@ async function submitJob(job) {
   }
 
   // "Keep watching this series" -> the watcher pulls new episodes daily.
-  if (job.watch && job.kind !== 'movie') {
+  // Any title that is ALREADY IN THE LIBRARY is watched automatically (new
+  // episodes, new seasons, or a re-pull if the copy ever goes missing) - no
+  // manual checkbox needed. (Movies included: the daily check just confirms
+  // the file is still there.) Only an EXPLICIT opt-out (noWatch:true, sent
+  // when the user unchecks the box) stops the auto-watch - a plain
+  // watch:false is just "unchecked", which the old UI leaves in its default
+  // state, so the library rule still applies for it.
+  const optedOut = job.noWatch === true;
+  const manualWatch = job.watch === true && job.kind !== 'movie';
+  if (!optedOut && !manualWatch) {
+    let onDisk = false;
+    const roots = [staging];
+    if (lib && Array.isArray(lib.locations)) {
+      for (const l of lib.locations) {
+        try {
+          roots.push(placer.toEnginePath(l, engineconfig.get().pathMappings));
+        } catch (e) {
+          // unreadable location
+        }
+      }
+    }
+    for (const r of roots) {
+      try {
+        if (r && organizer.titleOnDisk(r, series)) {
+          onDisk = true;
+          break;
+        }
+      } catch (e) {
+        // unreadable folder
+      }
+    }
+    if (onDisk) {
+      const { template, season } = bulk.entryTemplate({ baseUrl: url, season: (ref && ref.season) || null });
+      schedule.add({
+        series,
+        season,
+        mode,
+        template,
+        baseUrl: url,
+        outputRoot: staging,
+        library: lib,
+        minHeight
+      });
+      onLog(`"${series}" is already in your library - added to the watch list automatically (new episodes and seasons).`);
+    }
+  } else if (!optedOut && manualWatch) {
     const { template, season } = bulk.entryTemplate({ baseUrl: url, season: (ref && ref.season) || null });
     schedule.add({
       series,

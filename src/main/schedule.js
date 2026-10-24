@@ -82,6 +82,19 @@ class ScheduleStore extends EventEmitter {
     if (this.items.length !== before) this._save();
   }
 
+  // The watcher confirmed the NEXT season exists and queued it: advance the
+  // watch to that season so daily checks track the show forward instead of
+  // re-probing the season we are already caught up on. The key embeds the
+  // season, so it is recomputed for the new value.
+  bumpSeason(key, season) {
+    this.load();
+    const it = this.items.find((x) => x.key === key);
+    if (!it || it.season === season) return;
+    it.season = season;
+    it.key = ScheduleStore.key({ series: it.series, season, mode: it.mode, template: it.template || it.baseUrl });
+    this._save();
+  }
+
   markChecked(key) {
     this.load();
     const it = this.items.find((x) => x.key === key);

@@ -478,7 +478,8 @@
                 </div>
                 <div class="field" data-opt-watch>
                     <label class="check"><input type="checkbox" data-watch />
-                        <div><b>Keep watching for new episodes</b><span>Re-checks every 24 h and queues new episodes and late dubs.</span></div></label>
+                        <div><b>Keep watching for new episodes</b><span>Re-checks every 24 h and queues new episodes, late dubs and new seasons.</span></div></label>
+                    <div class="hint" data-watch-hint></div>
                 </div>
                 <div class="field">
                     <label class="lbl">File will be saved as</label>
@@ -1204,6 +1205,13 @@
                                 const lib = libraryOfPath(t.found[0]);
                                 if (lib) { t.library = lib; t.libraryFromDisk = true; }
                             }
+                            // Already in the library -> the engine adds it to
+                            // the watch list automatically. Surface that here
+                            // (and let the user opt out by unchecking).
+                            if (t.found.length && !t.watchTouched && !t.watch) {
+                                t.watch = true;
+                                t.watchAuto = true;
+                            }
                             renderTitle();
                         });
                 }
@@ -1220,6 +1228,7 @@
                         t.movieHeight = e && e.height;
                         if (e && e.path) {
                             t.found.push(e.path);
+                            t.onDiskMovie = true;
                             const lib = libraryOfPath(e.path);
                             if (lib && !t.libraryLocked) { t.library = lib; t.libraryFromDisk = true; }
                         }
@@ -1234,9 +1243,15 @@
 
                 const today = () => new Date().toISOString().slice(0, 10);
                 function epStatus(s, e) {
+                    // On-disk / queued facts WIN over TMDB's air date: an
+                    // episode already in the library counts as "have" even if
+                    // TMDB lists a future date (pilot releases, date errors),
+                    // and a queued one is never reported as "unaired".
+                    const st = s.status[e.episode];
+                    if (st === 'in-library' || st === 'queued' || st === 'low-quality') return st;
                     if (e.airDate && e.airDate > today()) return 'unaired';
-                    if (!s.checked) return s.status[e.episode] || 'checking';
-                    return s.status[e.episode] || 'missing';
+                    if (!s.checked) return st || 'checking';
+                    return st || 'missing';
                 }
                 function availableEps(s) {
                     if (!s.eps) {
@@ -1245,6 +1260,34 @@
                         return out;
                     }
                     return s.eps.filter((e) => !BLOCKED[epStatus(s, e)]).map((e) => e.episode);
+                }
+
+                // ONE place to count a season's episodes so the chips, banner,
+                // and footer can never disagree. "have" = full-quality copies,
+                // "low" = on disk but below the floor (replaceable), "missing"
+                // = aired but nowhere on disk, "onDisk" = have + low.
+                function seasonCounts(s) {
+                    let have = 0, low = 0, queued = 0, unaired = 0, total = 0;
+                    (s.eps || []).forEach((e) => {
+                        total++;
+                        const st = epStatus(s, e);
+                        if (st === 'in-library') have++;
+                        else if (st === 'low-quality') low++;
+                        else if (st === 'queued') queued++;
+                        else if (st === 'unaired') unaired++;
+                    });
+                    const aired = total - unaired;
+                    const missing = Math.max(0, aired - have - low - queued);
+                    return { total, aired, have, low, queued, missing, onDisk: have + low };
+                }
+                function titleCounts(t) {
+                    const c = { total: 0, aired: 0, have: 0, low: 0, queued: 0, missing: 0 };
+                    (t.seasons || []).forEach((s) => {
+                        const x = seasonCounts(s);
+                        c.total += x.total; c.aired += x.aired; c.have += x.have;
+                        c.low += x.low; c.queued += x.queued; c.missing += x.missing;
+                    });
+                    return c;
                 }
 
                 // The selection the footer button will queue: [{season, episodes}]
@@ -1300,6 +1343,9 @@
                     $('[data-quality]').value = t.quality;
                     if ($('[data-quality]').value !== t.quality) { $('[data-quality]').value = '1080'; t.quality = '1080'; }
                     $('[data-watch]').checked = !!t.watch;
+                    $('[data-watch-hint]').textContent = t.watch && (t.watchAuto || (t.found && t.found.length))
+                        ? 'Auto-enabled: this title is already in your library, so new episodes and seasons are queued automatically. Uncheck to stop.'
+                        : '';
                     const libSel = $('[data-library]');
                     libSel.innerHTML = (S.libraries || []).map((l) => '<option value="' + esc(l.name) + '">' + esc(l.name) + ' (' + esc(l.collectionType) + ')</option>').join('') ||
                         '<option value="">No libraries - add one in Jellyfin</option>';
@@ -1319,11 +1365,14 @@
                     }
                     if (t.kind === 'movie') {
                         if (!t.movieStatus || t.movieStatus === 'checking') return '<div class="small muted"><span class="mdl-spin"></span> Checking every library drive and the queue…</div>';
+                        const watchNote = t.onDiskMovie ? '<div class="small" style="margin-top:.2em;">On the watch list automatically: if it ever goes missing from the library it is re-downloaded on the daily check.</div>' : '';
                         if (t.movieStatus === 'in-library') return '<div class="mdl-callout green">' + ICON.copy + '<div><b>Already in your library. Nothing to download.</b>' +
                             (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') +
-                            (t.movieHeight ? '<div class="small muted">' + t.movieHeight + 'p · checked with ffprobe just now</div>' : '') + '</div></div>';
+                            (t.movieHeight ? '<div class="small muted">' + t.movieHeight + 'p · checked with ffprobe just now</div>' : '') +
+                            watchNote + '</div></div>';
                         if (t.movieStatus === 'low-quality') return '<div class="mdl-callout yellow">' + ICON.copy + '<div><b>In your library, but below the quality floor' + (t.movieHeight ? ' (' + t.movieHeight + 'p)' : '') + '.</b>' +
-                            ' Downloading again replaces it with a better copy under the same name.' + (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') + '</div></div>';
+                            ' Downloading again replaces it with a better copy under the same name.' + (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') +
+                            watchNote + '</div></div>';
                         if (t.movieStatus === 'queued') return '<div class="mdl-callout blue">' + ICON.list + '<div><b>Already in the queue.</b> It will land in your library when it finishes.</div></div>';
                         return '<div class="mdl-callout">' + ICON.check + '<div><b>Not in your libraries yet.</b> <span class="muted">Checked every TV, Movies and Anime drive plus the queue · just now</span></div></div>';
                     }
@@ -1332,32 +1381,30 @@
                     if (loaded.length < t.seasons.length) {
                         return '<div class="small muted"><span class="mdl-spin"></span> Checking your libraries and the queue… (' + loaded.length + ' of ' + plural(t.seasons.length, 'season') + ')</div>';
                     }
-                    let total = 0, have = 0, queued = 0, low = 0, unaired = 0;
-                    t.seasons.forEach((s) => (s.eps || []).forEach((e) => {
-                        const st = epStatus(s, e);
-                        total++;
-                        if (st === 'in-library') have++;
-                        else if (st === 'queued') queued++;
-                        else if (st === 'low-quality') low++;
-                        else if (st === 'unaired') unaired++;
-                    }));
-                    const aired = total - unaired;
-                    const pctHave = aired ? Math.round(have / aired * 100) : 0;
-                    const pctQ = aired ? Math.round(queued / aired * 100) : 0;
+                    // Accurate split from ONE count pass: on disk = full
+                    // quality (have) + below-floor copies (low, replaceable).
+                    // "to get" means aired but nowhere on disk.
+                    const c = titleCounts(t);
+                    const onDisk = c.have + c.low;
+                    const pctHave = c.aired ? Math.round(c.have / c.aired * 100) : 0;
+                    const pctLow = c.aired ? Math.round(c.low / c.aired * 100) : 0;
+                    const pctQ = c.aired ? Math.round(c.queued / c.aired * 100) : 0;
                     const where = t.found.length ? (t.library ? t.library + ' library · ' : '') + '<span class="mono">' + esc(t.found[0].replace(/[\\/][^\\/]*[\\/][^\\/]*$/, '')) + '</span>' : '';
                     const extra = [];
-                    if (queued) extra.push(plural(queued, 'episode') + ' already in the queue');
-                    if (low) extra.push(plural(low, 'episode') + ' below the quality floor can be replaced');
-                    if (unaired) extra.push(unaired + ' not aired yet');
-                    const color = have === aired && aired > 0 ? 'green' : (have || queued ? 'blue' : '');
-                    const head = have === aired && aired > 0
-                        ? 'Complete: all ' + aired + ' aired episodes are in your library'
-                        : have ? have + ' of ' + aired + ' episodes are already in your library, so they can\'t be selected'
-                        : 'None of the ' + aired + ' aired episodes are in your libraries yet';
+                    if (c.have) extra.push(c.have + ' in full quality');
+                    if (c.low) extra.push(plural(c.low, 'episode') + ' below the quality floor can be replaced');
+                    if (c.missing) extra.push(plural(c.missing, 'episode') + ' to download');
+                    if (c.queued) extra.push(plural(c.queued, 'episode') + ' already in the queue');
+                    if (c.unaired) extra.push(c.unaired + ' not aired yet');
+                    const color = onDisk === c.aired && c.aired > 0 ? 'green' : (onDisk || c.queued ? 'blue' : '');
+                    const head = onDisk === c.aired && c.aired > 0
+                        ? 'Complete: all ' + c.aired + ' aired episodes are on disk'
+                        : onDisk > 0 ? onDisk + ' of ' + c.aired + ' aired episodes are on disk'
+                        : 'None of the ' + c.aired + ' aired episodes are on disk yet';
                     return '<div class="mdl-callout ' + color + '">' + ICON.copy + '<div style="flex:1;min-width:0;"><b>' + esc(head) + '</b>' +
                         (where ? '<div class="small" style="margin-top:.2em;word-break:break-all;">' + where + '</div>' : '') +
                         (extra.length ? '<div class="small" style="margin-top:.2em;">' + esc(extra.join(' · ')) + '.</div>' : '') +
-                        '<div class="mdl-bar" style="display:flex;"><i style="width:' + pctHave + '%;background:var(--md-green)"></i><i style="width:' + pctQ + '%;background:var(--md-purple)"></i></div>' +
+                        '<div class="mdl-bar" style="display:flex;"><i style="width:' + pctHave + '%;background:var(--md-green)"></i><i style="width:' + pctLow + '%;background:var(--md-amber,#e8a13c)"></i><i style="width:' + pctQ + '%;background:var(--md-purple)"></i></div>' +
                         '<div class="small muted" style="margin-top:.35em;">Checked TV, Movies and Anime on every drive, plus the queue · just now</div></div></div>';
                 }
 
@@ -1403,7 +1450,18 @@
                             const set = t.sel[s.season] || {};
                             const n = availableEps(s).filter((e) => set[e]).length;
                             sub = n + ' of ' + avail + ' selected · ' + s.count + ' on TMDB';
-                        } else sub = (s.checked ? avail + ' to get' : 'checking…') + ' · ' + s.count + ' on TMDB';
+                        } else {
+                            // Accurate split: "to get" = aired but NOT on disk.
+                            // Copies on disk are reported separately (with the
+                            // below-floor ones marked replaceable) instead of
+                            // being lumped in as "to get".
+                            const c = seasonCounts(s);
+                            const parts = [];
+                            parts.push(c.missing > 0 ? c.missing + ' to get' : (c.onDisk > 0 ? 'on disk' : 'not on disk'));
+                            if (c.onDisk > 0) parts.push(c.onDisk + ' have' + (c.low ? ' (' + c.low + ' replaceable)' : ''));
+                            else if (c.queued > 0) parts.push(c.queued + ' queued');
+                            sub = parts.join(' · ') + ' · ' + s.count + ' on TMDB';
+                        }
                         let cls = 'mdl-season';
                         if (t.mode === 'episodes' && t.active === s.season) cls += ' on';
                         if (t.mode === 'season' && t.picked[s.season]) cls += ' picked';
@@ -1412,8 +1470,11 @@
                     }).join('') + '</div>';
 
                     if (t.mode === 'full') {
-                        const n = selection(t).reduce((a, x) => a + x.episodes.length, 0);
-                        h += '<div class="mdl-callout">' + ICON.check + '<div>Every aired episode that is not already in your library or the queue: <b>' + plural(n, 'episode') + '</b> across ' + plural(t.seasons.length, 'season') + '.' +
+                        const c = titleCounts(t);
+                        const toDownload = c.missing + c.low;
+                        h += '<div class="mdl-callout">' + ICON.check + '<div><b>' + plural(toDownload, 'episode') + '</b> to download (' +
+                             c.missing + ' new' + (c.low ? ', ' + c.low + ' replacing below-floor copies' : '') + ') across ' + plural(t.seasons.length, 'season') + '.' +
+                             (c.have ? ' Your ' + c.have + ' full-quality episodes are left alone.' : '') +
                              '<div class="small muted" style="margin-top:.2em;">Episode counts come from TMDB, so no season is cut short.</div></div></div>';
                         return h;
                     }
@@ -1516,6 +1577,11 @@
                         }));
                     } else {
                         const sel = selection(t);
+                        // The engine auto-watches any title already in the library.
+                        // An explicit uncheck (watchTouched) is the only thing
+                        // that stops it; a plain unchecked box is just the
+                        // default state and must not block the library rule.
+                        const noWatch = !!(t.watchTouched && !t.watch);
                         jobs = sel.map((x, i) => Object.assign({}, base, {
                             kind: 'series',
                             sourceUrl: VIDSRC + 'tv/' + encodeURIComponent(t.tmdb) + '-' + x.season + '-' + x.episodes[0],
@@ -1523,6 +1589,7 @@
                             selections: [{ season: x.season, episodes: x.episodes }],
                             // Keep watching from the newest season picked.
                             watch: !!t.watch && i === sel.length - 1,
+                            noWatch: noWatch,
                             label: t.title + ' · Season ' + x.season + ' · ' + (x.episodes.length === 1 ? 'E' + x.episodes[0] : plural(x.episodes.length, 'episode'))
                         }));
                     }
@@ -1847,7 +1914,7 @@
                         renderTitle();
                         return;
                     }
-                    if (t && el.hasAttribute('data-watch')) { t.watch = el.checked; return; }
+                    if (t && el.hasAttribute('data-watch')) { t.watch = el.checked; t.watchTouched = true; if (el.checked) t.watchAuto = false; return; }
                 });
 
                 $('[data-search-form]').addEventListener('submit', (ev) => { ev.preventDefault(); doSearch(); });

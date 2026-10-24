@@ -24,6 +24,13 @@ function hasEpisodeToken(template) {
   return /\{episode\d*\}/i.test(String(template));
 }
 
+// A {season} token means the template can be filled for ANY season (Vidsrc
+// /embed/tv/{id}-{season}-{episode}, SFlix season-{season}). Without it the
+// season is baked into the URL and only that one season can be probed.
+function hasSeasonToken(template) {
+  return /\{season\d*\}/i.test(String(template));
+}
+
 // Converts a pasted sample episode URL into a template by tokenizing the
 // episode number (and a season marker if present). Handles common shapes:
 //   .../ep-12  .../episode-12  .../ep_12  .../e12  .../12 (trailing)
@@ -157,4 +164,4 @@ function parseEpisodeFromUrl(url) {
   return null;
 }
 
-module.exports = { fill, toTemplate, buildEpisodeUrl, hasEpisodeToken, parseEpisodeFromUrl };
+module.exports = { fill, toTemplate, buildEpisodeUrl, hasEpisodeToken, hasSeasonToken, parseEpisodeFromUrl };

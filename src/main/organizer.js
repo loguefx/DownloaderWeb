@@ -118,42 +118,12 @@ function expectedPath(outputRoot, meta, ext = '.mp4') {
   return path.join(seriesDir(outputRoot, meta), buildBaseName(meta) + ext);
 }
 
-// True when this episode is already on disk. Exact path first, then collision
-// suffixes, then any file in a same-series folder that names the same season +
-// episode. SFlix titles often bake "Season 3" / the episode slug into the
-// series name, so a later batch with a cleaner name would otherwise re-queue
-// finished files. Both the current "S1E1" and the legacy
-// "Season 1 - Episode 01" spellings count, so renaming does not re-download a
-// library that was built before the switch.
-//
-// Jellyfin build plan Part 11: match .mkv/.avi/.m4v/.ts as well as .mp4, find
-// SxxEyy anywhere in the file name, ignore "(year)" / "[tmdbid-…]" in folder
-// names, and treat "S01E01-E02" two-part files as BOTH episodes.
-function existingEpisodeFile(outputRoot, meta, ext = null) {
-  if (!outputRoot) return null;
-  const exact = expectedPath(outputRoot, meta, '.mp4');
-  if (fs.existsSync(exact)) return exact;
-  const ep = parseInt(meta && meta.episode, 10);
-  if (!(ep > 0)) return null;
-  const seasonRaw = meta && meta.season;
-  const season =
-    seasonRaw != null && String(seasonRaw).trim() !== '' && !isNaN(parseInt(seasonRaw, 10))
-      ? parseInt(seasonRaw, 10)
-      : null;
-  const extAlt = extAlternation(ext);
-  // Two independent tests: the S/E marker may appear ANYWHERE in the name
-  // (Jellyfin's "Show - S02E05 - Title" layout), and the file must end in a
-  // video extension, optionally with a " (n)" collision suffix.
-  const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlt})$`, 'i');
-  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}(?!\\d)`;
-  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}(?!\\d)`;
-  const nameRe = new RegExp(`(?:${legacy}|${sxe})`, 'i');
-  // "S01E01-E02" (or "S1E1 - E2"): one file covering a range of episodes.
-  // Captured and compared numerically so EVERY episode of the range counts.
-  const rangeRe = new RegExp(
-    `s0*${season != null ? season : '\\d{1,2}'}e(\\d{1,3})(?!\\d)\\s*-\\s*e(\\d{1,3})(?!\\d)`,
-    'i'
-  );
+// Every directory that may hold this series' files: the expected season
+// folder, the series folder itself, its "Season N" subfolders, and any
+// sibling under the root whose name matches the series key ("(year)" /
+// "[tmdb-…]" variants included). Shared by the episode matcher, the movie
+// matcher, and the on-disk presence check.
+function seriesDirs(outputRoot, meta) {
   const dirs = [];
   const addDir = (dir) => {
     if (dir && !dirs.includes(dir)) dirs.push(dir);
@@ -187,6 +157,82 @@ function existingEpisodeFile(outputRoot, meta, ext = null) {
       // ignore
     }
   }
+  return dirs;
+}
+
+// First video file inside a folder that matches the series (any video
+// extension, optional " (n)" collision suffix). A movie's file name usually
+// carries quality tags ("Movie.1080p.10bit.mp4"), so the exact <Title>/
+// <Title>.mp4 path misses it - any video in the series folder counts.
+function seriesVideoFile(outputRoot, seriesName) {
+  if (!outputRoot || !seriesName) return null;
+  const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlternation(null)})$`, 'i');
+  for (const dir of seriesDirs(outputRoot, { series: seriesName, season: null, episode: null })) {
+    let files = [];
+    try {
+      files = fs.readdirSync(dir);
+    } catch (e) {
+      continue;
+    }
+    for (const f of files.sort()) {
+      if (extRe.test(f)) return path.join(dir, f);
+    }
+  }
+  return null;
+}
+
+// Is ANY file of this title on disk in this root (an episode of the series,
+// or the movie itself)? Drives the "already in your library -> watch it
+// automatically" rule and the presence hints.
+function titleOnDisk(outputRoot, seriesName) {
+  return !!seriesVideoFile(outputRoot, seriesName);
+}
+
+// True when this episode is already on disk. Exact path first, then collision
+// suffixes, then any file in a same-series folder that names the same season +
+// episode. SFlix titles often bake "Season 3" / the episode slug into the
+// series name, so a later batch with a cleaner name would otherwise re-queue
+// finished files. Both the current "S1E1" and the legacy
+// "Season 1 - Episode 01" spellings count, so renaming does not re-download a
+// library that was built before the switch.
+//
+// Jellyfin build plan Part 11: match .mkv/.avi/.m4v/.ts as well as .mp4, find
+// SxxEyy anywhere in the file name, ignore "(year)" / "[tmdbid-…]" in folder
+// names, and treat "S01E01-E02" two-part files as BOTH episodes.
+function existingEpisodeFile(outputRoot, meta, ext = null) {
+  if (!outputRoot) return null;
+  const exact = expectedPath(outputRoot, meta, '.mp4');
+  if (fs.existsSync(exact)) return exact;
+  const ep = parseInt(meta && meta.episode, 10);
+  if (!(ep > 0)) {
+    // A movie (or any episode-less title): fall back to "any video file in a
+    // folder that matches the series" so hand-named files still count as
+    // present instead of being re-downloaded over their own library.
+    return seriesVideoFile(outputRoot, meta && meta.series);
+  }
+  const seasonRaw = meta && meta.season;
+  const season =
+    seasonRaw != null && String(seasonRaw).trim() !== '' && !isNaN(parseInt(seasonRaw, 10))
+      ? parseInt(seasonRaw, 10)
+      : null;
+  const extAlt = extAlternation(ext);
+  // Two independent tests: the S/E marker may appear ANYWHERE in the name
+  // (Jellyfin's "Show - S02E05 - Title" layout), and the file must end in a
+  // video extension, optionally with a " (n)" collision suffix.
+  const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlt})$`, 'i');
+  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}(?!\\d)`;
+  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}(?!\\d)`;
+  // "1x01" style (common in hand-named libraries). The lookbehind keeps
+  // resolution strings ("1920x1080") from reading as an S/E marker.
+  const xstyle = `(?<!\\d)0*${season != null ? season : '\\d{1,2}'}[xX]0*${ep}(?!\\d)`;
+  const nameRe = new RegExp(`(?:${legacy}|${sxe}|${xstyle})`, 'i');
+  // "S01E01-E02" (or "S1E1 - E2"): one file covering a range of episodes.
+  // Captured and compared numerically so EVERY episode of the range counts.
+  const rangeRe = new RegExp(
+    `s0*${season != null ? season : '\\d{1,2}'}e(\\d{1,3})(?!\\d)\\s*-\\s*e(\\d{1,3})(?!\\d)`,
+    'i'
+  );
+  const dirs = seriesDirs(outputRoot, meta);
   for (const dir of dirs) {
     let files = [];
     try {
@@ -246,6 +292,9 @@ module.exports = {
   buildBaseName,
   seriesRoot,
   seriesDir,
+  seriesDirs,
+  seriesVideoFile,
+  titleOnDisk,
   buildOutputPath,
   expectedPath,
   existingEpisodeFile,
