@@ -47,5 +47,9 @@ module.exports = {
     // No dubPathMarker: streams are tokenised per data_id (e.g. sub-enma-1 /
     // dub-enma-1); the ROW the button came from proves the audio, not the URL.
   },
-  urlTemplates: ['https://www.enma.lol/watch/{slug}?ep={episode}']
+  urlTemplates: ['https://www.enma.lol/watch/{slug}?ep={episode}'],
+  // Anime uses flat episode numbers (season is in the slug). If the episode
+  // list can't be detected, queue nothing rather than inventing a 1-12 range
+  // - invented episodes risk duplicating or re-adjusting an existing library.
+  inventEpisodeUrls: false
 };

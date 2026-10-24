@@ -34,6 +34,12 @@ module.exports = {
     dubPathMarker: '-dub'
   },
   urlTemplates: ['https://aniwaves.ru/watch/{slug}/ep-{episode}'],
+  // Anime uses flat episode numbers (season is baked into the slug). When the
+  // episode list can't be detected, never invent a 1-12 range: that would
+  // queue episodes that may not exist (or re-queue ones already on disk) and
+  // is exactly the "duplicate / re-adjusted" failure we must not produce. A
+  // failed detection logs and queues nothing instead.
+  inventEpisodeUrls: false,
 
   async beforeResolve(wc, { mode, onLog }) {
     const want = mode === 'sub' ? 'sub' : 'dub';

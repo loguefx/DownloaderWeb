@@ -62,7 +62,11 @@ class Watcher {
         // so new episodes get placed like the original job did.
         stopRunOnFail: false,
         library: s.library || null,
-        minHeight: s.minHeight || 0
+        minHeight: s.minHeight || 0,
+        // Anime keeps its rules on the daily re-check too (source-resolution
+        // floor off, no invented episodes) instead of falling back to the TV
+        // 1080p path.
+        anime: !!s.anime
       };
       const entry = {
         series: s.series,

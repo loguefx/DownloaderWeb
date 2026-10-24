@@ -53,6 +53,10 @@ class ScheduleStore extends EventEmitter {
       existing.baseUrl = spec.baseUrl || existing.baseUrl;
       if (spec.library != null) existing.library = spec.library;
       if (spec.minHeight != null) existing.minHeight = Number(spec.minHeight) || 0;
+      // Anime flag must survive re-submission so the daily re-check keeps the
+      // anime rules (source-resolution floor off, no episode invention) even
+      // after the original job is long gone.
+      if (spec.anime != null) existing.anime = !!spec.anime;
       this._save();
       return false;
     }
@@ -68,6 +72,7 @@ class ScheduleStore extends EventEmitter {
       // library, not be stranded in staging.
       library: spec.library || null,
       minHeight: Number(spec.minHeight) || 0,
+      anime: !!spec.anime,
       addedAt: Date.now(),
       lastChecked: null
     });

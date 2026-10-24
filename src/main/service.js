@@ -361,7 +361,8 @@ async function submitJob(job) {
         baseUrl: url,
         outputRoot: staging,
         library: lib,
-        minHeight
+        minHeight,
+        anime
       });
       onLog(`"${series}" is already in your library - added to the watch list automatically (new episodes and seasons).`);
     }
@@ -375,7 +376,8 @@ async function submitJob(job) {
       baseUrl: url,
       outputRoot: staging,
       library: lib,
-      minHeight
+      minHeight,
+      anime
     });
     onLog(`Watching "${series}" for new episodes.`);
   }
