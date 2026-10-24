@@ -51,7 +51,18 @@ function makeFakeLibrary(dir) {
     lowercase: mk('Show5/Show5 S1E1.mp4'),
     tmdbid: mk('[tmdbid-123456] Show6/Show6 S1E1.mp4'),
     collision: mk('Show7/Show7 S2E5 (1).mkv'),
-    loose: mk('Show8/Show8 S3E2.mp4') // no season folder at all
+    loose: mk('Show8/Show8 S3E2.mp4'), // no season folder at all
+    // --- new: real-world naming the matcher must also recognize ---
+    epInSeason: mk('Show9/Season 02/Show9 - EP18.mp4'), // "EP18" inside "Season 02"
+    eTok: mk('Show10/Season 1/Show10 E05.mp4'), // "E05" inside a season folder
+    flatAnime: mk('ShowA/ShowA 18.mp4'), // bare number, flat single-season anime
+    flatAnimeRange: mk('ShowB/ShowB 01-02.mp4'), // flat two-part, no season folder
+    guardYear: mk('ShowD/Season 1/ShowD 2018.mp4'), // a YEAR, not episode 18
+    guardRes: mk('ShowE/Season 1/ShowE 720p.mp4'), // a RESOLUTION, not episode 72
+    guardRoot: mk('ShowF/ShowF 5.mp4'), // bare number at root WHILE a Season folder exists
+    guardRootSeason2: mk('ShowF/Season 2/placeholder-S02E99.mp4'), // gives ShowF a season folder
+    seasonDigit: mk('ShowG/Season 1/ShowG S1E2.mp4'), // S1E2: the "1" is a SEASON, not ep 1
+    dotSep: mk('ShowH/ShowH.18.mp4') // dot-separated anime naming
   };
   return files;
 }
@@ -110,6 +121,74 @@ async function main() {
   check(
     'absent episode returns null',
     organizer.existingEpisodeFile(libRoot, { series: 'Show2', season: 2, episode: 99 }) === null
+  );
+
+  // --- new naming styles (the "we already have this episode" cases) ---
+  check(
+    'EP18 inside "Season 02" counts as S2E18',
+    organizer.existingEpisodeFile(libRoot, { series: 'Show9', season: 2, episode: 18 }) === files.epInSeason,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'Show9', season: 2, episode: 18 }))
+  );
+  check(
+    'EP18 inside "Season 02" does NOT count as S1E18 (wrong season)',
+    organizer.existingEpisodeFile(libRoot, { series: 'Show9', season: 1, episode: 18 }) === null
+  );
+  check(
+    'EP18 inside "Season 02" does NOT count as S2E19 (wrong episode)',
+    organizer.existingEpisodeFile(libRoot, { series: 'Show9', season: 2, episode: 19 }) === null
+  );
+  check(
+    'E05 inside "Season 1" counts as S1E5',
+    organizer.existingEpisodeFile(libRoot, { series: 'Show10', season: 1, episode: 5 }) === files.eTok
+  );
+  check(
+    'flat anime: bare "ShowA 18.mp4" counts as S1E18 (no season folders)',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowA', season: 1, episode: 18 }) === files.flatAnime
+  );
+  check(
+    'flat anime: bare number counts for unknown season too',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowA', season: null, episode: 18 }) === files.flatAnime
+  );
+  check(
+    'flat two-part "01-02" counts as episode 1',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowB', season: 1, episode: 1 }) === files.flatAnimeRange
+  );
+  check(
+    'flat two-part "01-02" counts as episode 2',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowB', season: 1, episode: 2 }) === files.flatAnimeRange
+  );
+  check(
+    'flat two-part "01-02" does NOT count as episode 3',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowB', season: 1, episode: 3 }) === null
+  );
+
+  // --- guards: numbers that are NOT episode numbers must not match ---
+  check(
+    'year "2018" is NOT episode 18',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowD', season: 1, episode: 18 }) === null,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowD', season: 1, episode: 18 }))
+  );
+  check(
+    'resolution "720p" is NOT episode 72',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowE', season: 1, episode: 72 }) === null
+  );
+  check(
+    'bare number at a series ROOT is NOT trusted when Season folders exist',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowF', season: 2, episode: 5 }) === null,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowF', season: 2, episode: 5 }))
+  );
+  check(
+    'S1E2 counts as episode 2',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowG', season: 1, episode: 2 }) === files.seasonDigit
+  );
+  check(
+    'S1E2 does NOT count as episode 1 (the "1" is a season, not an episode)',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowG', season: 1, episode: 1 }) === null,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowG', season: 1, episode: 1 }))
+  );
+  check(
+    'dot-separated anime "ShowH.18.mp4" counts as S1E18',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowH', season: 1, episode: 18 }) === files.dotSep
   );
 
   console.log('\n[2] safePlace: new file, overwrite refusal, ledger, trash');

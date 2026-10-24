@@ -196,6 +196,65 @@ function titleOnDisk(outputRoot, seriesName) {
 // "Season 1 - Episode 01" spellings count, so renaming does not re-download a
 // library that was built before the switch.
 //
+// Parse a season number out of a folder name: "Season 2", "Season 02", "S2",
+// "2nd Season", "Cour 2", "sezonul 2", "Staffel 3". Returns null when the
+// folder does not name a season. This is what lets an episode-only file name
+// ("Show - EP18.mp4") be tied to the season of the folder it sits in, so we
+// recognize "we already have this episode" across the many naming styles a
+// real library uses - without ever confusing one season's files for another's.
+// True when the series already uses REAL per-season subfolders on disk (i.e.
+// it is NOT a flat single-season layout). A bare episode number at the series
+// root is only safe to trust when this is false, because with season folders
+// present a bare number at the root is ambiguous about which season it is.
+// This scans the actual filesystem - not the synthetic "expected" season dir
+// that seriesDirs() always lists - so a flat anime with no subfolders reads as
+// flat.
+function seriesHasSeasonFolders(outputRoot, meta) {
+  const roots = new Set();
+  roots.add(seriesRoot(outputRoot, meta));
+  const want = seriesKey(meta && meta.series);
+  if (want) {
+    try {
+      for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
+        if (ent.isDirectory() && seriesKey(ent.name) === want) {
+          roots.add(path.join(outputRoot, ent.name));
+        }
+      }
+    } catch (e) {
+      /* unreadable root */
+    }
+  }
+  for (const r of roots) {
+    let ents = [];
+    try {
+      ents = fs.readdirSync(r, { withFileTypes: true });
+    } catch (e) {
+      continue;
+    }
+    for (const ent of ents) {
+      if (ent.isDirectory() && seasonFromName(ent.name) != null) return true;
+    }
+  }
+  return false;
+}
+
+function seasonFromName(name) {
+  const s = String(name || '');
+  let m = s.match(/season\s*0*(\d{1,3})/i);
+  if (m) return parseInt(m[1], 10);
+  m = s.match(/(\d{1,3})\s*(?:st|nd|rd|th)\s+season/i);
+  if (m) return parseInt(m[1], 10);
+  m = s.match(/\bS0*(\d{1,3})\b/i);
+  if (m) return parseInt(m[1], 10);
+  m = s.match(/\bcour\s*0*(\d{1,3})/i);
+  if (m) return parseInt(m[1], 10);
+  m = s.match(/sezonul\s*0*(\d{1,3})/i);
+  if (m) return parseInt(m[1], 10);
+  m = s.match(/\bstaffel\s*0*(\d{1,3})/i);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+
 // Jellyfin build plan Part 11: match .mkv/.avi/.m4v/.ts as well as .mp4, find
 // SxxEyy anywhere in the file name, ignore "(year)" / "[tmdbid-…]" in folder
 // names, and treat "S01E01-E02" two-part files as BOTH episodes.
@@ -216,23 +275,67 @@ function existingEpisodeFile(outputRoot, meta, ext = null) {
       ? parseInt(seasonRaw, 10)
       : null;
   const extAlt = extAlternation(ext);
-  // Two independent tests: the S/E marker may appear ANYWHERE in the name
-  // (Jellyfin's "Show - S02E05 - Title" layout), and the file must end in a
-  // video extension, optionally with a " (n)" collision suffix.
+  // The file must end in a video extension, optionally with a " (n)" collision
+  // suffix. The S/E marker itself may appear ANYWHERE in the name (Jellyfin's
+  // "Show - S02E05 - Title" layout).
   const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlt})$`, 'i');
-  const legacy = `${season != null ? `season\\s*0*${season}\\s*-\\s*` : ''}episode\\s*0*${ep}(?!\\d)`;
-  const sxe = `s0*${season != null ? season : '\\d{1,2}'}e0*${ep}(?!\\d)`;
+
+  // STRICT: the season AND the episode are both named in the file itself.
+  // These are unambiguous, so they are honored in ANY folder of the series.
+  const strictPatterns = [];
+  if (season != null) strictPatterns.push(`season\\s*0*${season}\\s*-\\s*episode\\s*0*${ep}(?!\\d)`);
+  strictPatterns.push(`s0*${season != null ? season : '\\d{1,2}'}e0*${ep}(?!\\d)`);
   // "1x01" style (common in hand-named libraries). The lookbehind keeps
   // resolution strings ("1920x1080") from reading as an S/E marker.
-  const xstyle = `(?<!\\d)0*${season != null ? season : '\\d{1,2}'}[xX]0*${ep}(?!\\d)`;
-  const nameRe = new RegExp(`(?:${legacy}|${sxe}|${xstyle})`, 'i');
+  strictPatterns.push(`(?<!\\d)0*${season != null ? season : '\\d{1,2}'}[xX]0*${ep}(?!\\d)`);
+  const strictRe = new RegExp(strictPatterns.join('|'), 'i');
   // "S01E01-E02" (or "S1E1 - E2"): one file covering a range of episodes.
   // Captured and compared numerically so EVERY episode of the range counts.
-  const rangeRe = new RegExp(
+  const strictRangeRe = new RegExp(
     `s0*${season != null ? season : '\\d{1,2}'}e(\\d{1,3})(?!\\d)\\s*-\\s*e(\\d{1,3})(?!\\d)`,
     'i'
   );
+
+  // LOOSE: the episode is named on its own and the SEASON is proven by the
+  // folder it lives in ("Season 2/Show - EP18.mp4"), or by the whole series
+  // being a flat single-season anime ("Show/Show 18.mp4", no season folders).
+  // This is what makes "we already have this episode" true across the many
+  // naming styles a real library uses, while a bare number is NEVER trusted at
+  // a series root when season folders exist (it would be ambiguous which
+  // season it belongs to).
+  const loosePatterns = [
+    `(?<![a-z0-9])ep\\.?\\s*0*${ep}(?!\\d)`, // "EP18", "EP 18", "ep.18"
+    `(?<![a-z0-9sx])e\\.?\\s*0*${ep}(?!\\d)`, // "E18", "E 18" (not "S1E18"/"1x18")
+    `(?<![a-z0-9])episode\\s*0*${ep}(?!\\d)`, // "Episode 18"
+    // bare number, guarded so it is a STANDALONE episode token: not part of a
+    // longer number (digit), not a season ("S1"/"1E"/"1x"), not a resolution
+    // ("720p"), not a dimension ("1920x1080"). Dot-separated ("Show.18") still
+    // counts - common in anime/scene naming.
+    `(?<![\\dxXsS])0*${ep}(?![\\dxXpPeE])`
+  ];
+  const looseRe = new RegExp(loosePatterns.join('|'), 'i');
+  // flat episode range "01-02" / "1-3" (two-part episodes), same digit guards.
+  const looseRangeRe = new RegExp(
+    `(?<![\\dxXsS])0*(\\d{1,3})(?![\\dxXpPeE])\\s*[-–]\\s*0*(\\d{1,3})(?![\\dxXpPeE])`,
+    'i'
+  );
+
   const dirs = seriesDirs(outputRoot, meta);
+  // True when the series already has REAL season subfolders - i.e. it is NOT a
+  // flat single-season layout, so a bare number at the root is ambiguous.
+  const anySeasonFolder = seriesHasSeasonFolders(outputRoot, meta);
+  const looseAllowed = (dir) => {
+    const anchor = seasonFromName(path.basename(dir));
+    if (anchor != null) {
+      // The folder names a season. If the job names a season too, it must be
+      // the same one; an unknown-season job accepts any season folder.
+      return season == null || anchor === season;
+    }
+    // Non-season folder (series root / sibling): trust episode-only tokens
+    // only when the whole series is flat and we want season 1 or unknown.
+    return !anySeasonFolder && (season == null || season === 1);
+  };
+
   for (const dir of dirs) {
     let files = [];
     try {
@@ -240,13 +343,29 @@ function existingEpisodeFile(outputRoot, meta, ext = null) {
     } catch (e) {
       continue;
     }
+    const loose = looseAllowed(dir);
     for (const f of files) {
       if (!extRe.test(f)) continue;
-      if (nameRe.test(f)) return path.join(dir, f);
-      const rm = f.match(rangeRe);
+      // The episode number must never be read from the file EXTENSION ("mp4"
+      // contains a 4, "m4v" a 4) or the " (n)" collision suffix - strip both
+      // before any number-based test.
+      const base = f
+        .replace(/\s*\(\d+\)\s*\.[A-Za-z0-9]+$/, '') // " (n).ext"
+        .replace(/\.[A-Za-z0-9]+$/, ''); // ".ext"
+      if (strictRe.test(base)) return path.join(dir, f);
+      const rm = base.match(strictRangeRe);
       if (rm) {
         let a = parseInt(rm[1], 10);
         let b = parseInt(rm[2], 10);
+        if (a > b) [a, b] = [b, a];
+        if (ep >= a && ep <= b) return path.join(dir, f);
+      }
+      if (!loose) continue;
+      if (looseRe.test(base)) return path.join(dir, f);
+      const lm = base.match(looseRangeRe);
+      if (lm) {
+        let a = parseInt(lm[1], 10);
+        let b = parseInt(lm[2], 10);
         if (a > b) [a, b] = [b, a];
         if (ep >= a && ep <= b) return path.join(dir, f);
       }
@@ -289,6 +408,8 @@ module.exports = {
   sanitize,
   pad,
   parseSeasonFromUrl,
+  seasonFromName,
+  seriesHasSeasonFolders,
   buildBaseName,
   seriesRoot,
   seriesDir,
