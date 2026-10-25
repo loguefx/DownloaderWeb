@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.32",
+                "changelog": "Library preview (dry-run: shows what is skipped as already in your library vs. what downloads, plus on-disk files it does not recognize). Episode picker now counts files named by episode title. Anime season lists follow the Aniwave/AniList layout (the structure your library uses). Strictly additive: existing files are never replaced or moved.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v32/MediaDownloader.12.1.0.32.zip",
+                "checksum": "47fb340f0b35ed4b3c2e174314f5237a",
+                "timestamp": "2026-10-25T19:46:26.181Z"
+            },
+            {
                 "version": "12.1.0.31",
                 "changelog": "Anime (Enma) row-aware server detection + SFlix movie fixes: vidfast tab no longer dropped by the 5-server cap, movie player URLs with a valid id no longer mangled. TV, movie and anime all verified end-to-end.",
                 "targetAbi": "12.1.0.0",
@@ -248,6 +256,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.32",
+                "changelog": "Library preview (dry-run: shows what is skipped as already in your library vs. what downloads, plus on-disk files it does not recognize). Episode picker now counts files named by episode title. Anime season lists follow the Aniwave/AniList layout (the structure your library uses). Strictly additive: existing files are never replaced or moved.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v32/MediaDownloader.10.11.0.32.zip",
+                "checksum": "a0561e62b86c8a0a8594036918e54929",
+                "timestamp": "2026-10-25T19:46:26.181Z"
+            },
+            {
                 "version": "10.11.0.31",
                 "changelog": "Anime (Enma) row-aware server detection + SFlix movie fixes: vidfast tab no longer dropped by the 5-server cap, movie player URLs with a valid id no longer mangled. TV, movie and anime all verified end-to-end.",
                 "targetAbi": "10.11.0.0",
@@ -486,6 +502,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.32",
+                "changelog": "Library preview (dry-run: shows what is skipped as already in your library vs. what downloads, plus on-disk files it does not recognize). Episode picker now counts files named by episode title. Anime season lists follow the Aniwave/AniList layout (the structure your library uses). Strictly additive: existing files are never replaced or moved.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v32/MediaDownloader.10.10.0.32.zip",
+                "checksum": "2ae8d7f3488e82d2311c279a366cb704",
+                "timestamp": "2026-10-25T19:46:26.181Z"
             },
             {
                 "version": "10.10.0.31",
