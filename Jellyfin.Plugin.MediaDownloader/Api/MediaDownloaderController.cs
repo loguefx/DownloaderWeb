@@ -393,20 +393,27 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesCheck() =>
             await ProxyAsync(() => _engine.PostAsync("api/schedules/check")).ConfigureAwait(false);
 
+        // anime: the UI sets this for anime titles, and the engine answers with
+        // the Aniwave/AniList season layout (the user's library is organized
+        // that way) instead of TMDB's split. Ignored server-side for non-anime.
         [HttpGet("TmdbInfo")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type)
+        public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type, [FromQuery] string anime = null)
         {
             var t = string.IsNullOrEmpty(type) ? "tv" : type;
-            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={Uri.EscapeDataString(t)}")).ConfigureAwait(false);
+            var a = string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}";
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={Uri.EscapeDataString(t)}{a}")).ConfigureAwait(false);
         }
 
         [HttpGet("TmdbSeason")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season) =>
-            await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}")).ConfigureAwait(false);
+        public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] string anime = null)
+        {
+            var a = string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}";
+            return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}{a}")).ConfigureAwait(false);
+        }
 
         [HttpGet("Browse")]
         [ProducesResponseType(StatusCodes.Status200OK)]

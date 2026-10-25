@@ -38,6 +38,7 @@ const library = require('./library');
 const placer = require('./placer');
 const engineconfig = require('./engineconfig');
 const cfsolve = require('./cfsolve');
+const animelayout = require('./anime-layout');
 const { episodeRefFromUrl } = require('./sites/findtitle');
 
 const ACCEPTED_JOBS_FILE = path.join(app.getPath('userData'), 'accepted-jobs.json');
@@ -279,13 +280,31 @@ async function submitJob(job) {
   } else if (scope === 'episodes') {
     // Pick exact episodes. The pasted URL names one episode; the rest are
     // built from its template so S2E4..S2E11 all resolve.
+    //
+    // Anime: the requested (season, episode) pairs follow the authoritative
+    // layout (Aniwave first, then AniList - the user's library is organized
+    // that way), but a TMDB-keyed source (Vidsrc) needs TMDB's numbers.
+    // Translate for the URL ONLY; the file keeps the authoritative numbers
+    // so it lands in the season folder the user expects. Strictly additive:
+    // the per-episode dedupe below still runs, and placement refuses to
+    // touch anything already on the drive.
+    let urlMap = null;
+    try {
+      const tmdbId = String((job.tmdb || '').trim()) || String(((ref && ref.tmdb) || '').trim());
+      if (/^\d+$/.test(tmdbId)) {
+        urlMap = await animelayout.urlMapFor(tmdbId, series, { anime: !!(job.anime) });
+      }
+    } catch (e) {
+      urlMap = null; // best effort: keep the requested numbering
+    }
     for (const sel of job.selections) {
       const season = sel.season != null ? sel.season : (ref && ref.season) || 1;
       // Optional episode titles ("1": "Pilot") so hand-named files are seen.
       const selNames = sel.epNames && typeof sel.epNames === 'object' ? sel.epNames : {};
       for (const ep of sel.episodes) {
+        const m = urlMap ? urlMap(season, ep) : { season, episode: ep };
         const epUrl =
-          require('./urltemplate').buildEpisodeUrl({ baseUrl: url, season, series }, ep) || url;
+          require('./urltemplate').buildEpisodeUrl({ baseUrl: url, season: m.season, series }, m.episode) || url;
         const epName = selNames[ep] || selNames[String(ep)] || '';
         const r = await bulk.queueOne(
           stamp({ url: epUrl, series, season, episode: ep, mode, outputRoot: staging, episodeName: epName }),

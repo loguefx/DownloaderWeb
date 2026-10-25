@@ -11,8 +11,8 @@
 //   GET    /api/health                      version, VPN state, queue, staging
 //   GET    /api/title?url=                  episode list + per-episode status
 //   GET    /api/search?q=&type=             TMDB multi-search (or the Jellyfin catalog)
-//   GET    /api/tmdb/info?tmdb=&type=       seasons + episode counts / movie details
-//   GET    /api/tmdb/season?tmdb=&season=   one season's episodes (name, runtime, air date)
+//   GET    /api/tmdb/info?tmdb=&type=[&anime=1]   seasons + counts (anime layout: Aniwave/AniList truth)
+//   GET    /api/tmdb/season?tmdb=&season=[&anime=1]   one season's episodes (name, runtime, air date)
 //   POST   /api/jobs                        queue a movie / series / episodes
 //   GET    /api/queue                       queue snapshot + counts
 //   GET    /api/events                      Server-Sent Events live updates
@@ -38,6 +38,7 @@ const vpn = require('./vpn');
 const manager = require('./queue');
 const service = require('./service');
 const engineconfig = require('./engineconfig');
+const animelayout = require('./anime-layout');
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -224,7 +225,7 @@ async function searchTitles(q, type) {
     }));
 }
 
-async function tmdbInfo(tmdbId, type) {
+async function tmdbInfo(tmdbId, type, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
   if (type === 'movie') {
@@ -251,30 +252,36 @@ async function tmdbInfo(tmdbId, type) {
       episodes: s.episode_count || 0,
       year: String(s.air_date || '').slice(0, 4)
     }));
-  // Fetch IMDB id (not in the main /tv response)
+  // Fetch IMDB id (not in the main /tv response); the AniList id from the
+  // same call is the deterministic bridge to the AniList season layout.
   let imdb = '';
+  let anilistId = '';
   try {
     const ext = await tmdbFetch(`/tv/${tmdbId}/external_ids`, key);
     imdb = String((ext && ext.imdb_id) || '');
+    anilistId = String((ext && ext.anilist_id) || '');
   } catch (e) { /* optional */ }
 
-  // AniList season merge: TMDB often lists anime sequels as separate entries.
-  // If TMDB only has 1 season, check AniList for additional seasons (sequels)
-  // and merge them in. This fixes shows like "As a Reincarnated Aristocrat"
-  // where Season 2 exists on Aniwave but TMDB only lists Season 1.
-  if (seasons.length <= 1) {
-    try {
-      const anilistResult = await anilistSearchSeasons(body.name || '');
-      if (anilistResult && anilistResult.length > seasons.length) {
-        // Merge: keep TMDB seasons, add AniList extras
-        for (const s of anilistResult) {
-          if (!seasons.some((existing) => existing.season === s.season)) {
-            seasons.push(s);
-          }
-        }
-        seasons.sort((a, b) => a.season - b.season);
-      }
-    } catch (e) { /* AniList merge is best-effort */ }
+  // Anime season layout: ANIWAVE's split is the source of truth (the user's
+  // library is organized that way), AniList's official per-season (cour) split
+  // is the stable fallback, TMDB last. Non-anime shows are unaffected: Aniwave
+  // is keyed by this TMDB id (anime-only catalog) and AniList is only
+  // consulted when the caller says the title is anime, or when TMDB has at
+  // most one season (the original merge gate, which also covers the "Season 2
+  // exists on Aniwave but TMDB only lists Season 1" case).
+  const tmdbSeasons = seasons.slice();
+  let layout = 'tmdb';
+  const allowAnilist = !!(opts && opts.anime) || tmdbSeasons.length <= 1;
+  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId });
+  if (resolved) {
+    layout = resolved.source;
+    seasons = resolved.seasons
+      .filter((s) => s && s.season > 0)
+      .map((s) => ({
+        season: s.season,
+        episodes: (s.episodes || []).length,
+        year: s.year || ''
+      }));
   }
 
   return {
@@ -285,84 +292,95 @@ async function tmdbInfo(tmdbId, type) {
     type: 'tv',
     poster: body.poster_path ? `https://image.tmdb.org/t/p/w342${body.poster_path}` : '',
     overview: (body.overview || '').slice(0, 300),
-    seasons
+    seasons,
+    layout,
+    tmdbSeasons
   };
 }
 
-// Query AniList for a title and return its seasons (including sequels via relations).
-async function anilistSearchSeasons(title) {
-  if (!title || title.length < 3) return null;
-  const https = require('https');
-  const graphqlCall = (query, variables) => new Promise((resolve, reject) => {
-    const payload = JSON.stringify({ query, variables });
-    const req = https.request(
-      { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
-        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload)
-      }},
-      (res) => {
-        const chunks = [];
-        res.on('data', (d) => chunks.push(d));
-        res.on('end', () => {
-          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-          catch (e) { reject(e); }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.write(payload);
-    req.end();
-  });
-
-  // Search for the anime on AniList
-  const search = await graphqlCall(
-    `query($title: String) { Media(search: $title, type: ANIME, sort: START_DATE) { id title { english romaji } episodes seasonYear } }`,
-    { title }
-  );
-  const media = search && search.data && search.data.Media;
-  if (!media) return null;
-
-  let seasons = [{ season: 1, episodes: media.episodes || 0, year: media.seasonYear || '' }];
-
-  // Fetch relations to find sequels
-  try {
-    const rel = await graphqlCall(
-      `query($id: Int) { Media(id: $id) { relations { edges { relationType node { id episodes seasonYear } } } } }`,
-      { id: media.id }
-    );
-    const edges = (rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [];
-    let n = 1;
-    for (const edge of edges) {
-      if (!edge.node || !edge.relationType) continue;
-      if (!/SEQUEL|NEXT_SEASON/i.test(edge.relationType)) continue;
-      n++;
-      seasons.push({ season: n, episodes: edge.node.episodes || 0, year: edge.node.seasonYear || '' });
-    }
-  } catch (e) { /* relations optional */ }
-
-  return seasons;
-}
 
 // One season's episodes (name, runtime, air date). The plugin lists these on
 // the Choose episodes screen and greys out episodes that have not aired yet,
 // so a season is never cut short or padded with episodes that do not exist.
-async function tmdbSeason(tmdbId, seasonNo) {
+async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
-  const body = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(seasonNo)}?language=en-US`, key);
-  if (!body || !Array.isArray(body.episodes)) return null;
+  let body = null;
+  try {
+    body = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(seasonNo)}?language=en-US`, key);
+  } catch (e) {
+    // The season may not exist in TMDB when the anime layout differs (anime
+    // sequels, cour splits) - the authoritative layout below still answers.
+  }
+  const tmdbEps = (body && Array.isArray(body.episodes))
+    ? body.episodes.filter((e) => e && e.episode_number > 0)
+    : [];
+
+  // The authoritative layout (Aniwave first, then AniList for anime) decides
+  // WHICH episodes this season has; TMDB fills in names/air dates where its
+  // numbering lines up. Non-anime shows never hit a tier (Aniwave's catalog
+  // is anime-only and keyed by this TMDB id), so they keep the old behavior.
+  let layout = 'tmdb';
+  let authoritative = null;
+  try {
+    const aw = await animelayout.aniwaveSeasons(String(tmdbId));
+    if (aw) {
+      const hit = aw.find((s) => s.season === Number(seasonNo));
+      if (hit && (hit.episodes || []).length) {
+        authoritative = hit;
+        layout = 'aniwave';
+      }
+    }
+  } catch (e) { /* tier is best-effort */ }
+  if (!authoritative && opts && opts.anime) {
+    try {
+      let title = (body && body.name) || '';
+      if (!title) {
+        const series = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}?language=en-US`, key);
+        title = (series && series.name) || '';
+      }
+      if (title) {
+        // resolveLayout uses the TMDB->AniList id when available (exact work,
+        // no title guessing) and falls back to the guarded title search.
+        const resolved = await animelayout.resolveLayout(String(tmdbId), title, { anime: true });
+        if (resolved) {
+          const hit = resolved.seasons.find((s) => s && s.season === Number(seasonNo));
+          if (hit && (hit.episodes || []).length) {
+            authoritative = hit;
+            layout = resolved.source;
+          }
+        }
+      }
+    } catch (e) { /* tier is best-effort */ }
+  }
+
+  let episodes;
+  if (authoritative) {
+    const byNum = new Map(tmdbEps.map((e) => [e.episode_number, e]));
+    episodes = (authoritative.episodes || []).map((e) => {
+      const t = byNum.get(e.episode);
+      return {
+        episode: e.episode,
+        name: (t && t.name) || e.name || '',
+        runtime: t ? t.runtime : null,
+        airDate: t ? t.air_date : null
+      };
+    });
+  } else {
+    episodes = tmdbEps.map((e) => ({
+      episode: e.episode_number,
+      name: e.name || '',
+      runtime: e.runtime || null,
+      airDate: e.air_date || null
+    }));
+  }
+  if (!episodes.length) return null;
   return {
     tmdb: String(tmdbId),
     season: Number(seasonNo),
-    name: body.name || '',
-    episodes: body.episodes
-      .filter((e) => e && e.episode_number > 0)
-      .map((e) => ({
-        episode: e.episode_number,
-        name: e.name || '',
-        runtime: e.runtime || null,
-        airDate: e.air_date || null
-      }))
+    name: (body && body.name) || '',
+    layout,
+    episodes
   };
 }
 
@@ -595,11 +613,12 @@ async function handle(req, res, u) {
     if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'info') {
       const tmdb = u.searchParams.get('tmdb') || '';
       const type = (u.searchParams.get('type') || 'tv').trim(); // tv | movie
+      const anime = ['1', 'true', 'yes'].includes((u.searchParams.get('anime') || '').toLowerCase());
       if (!tmdb) {
         json(res, 400, { error: 'tmdb id is required' });
         return;
       }
-      const info = await tmdbInfo(tmdb, type);
+      const info = await tmdbInfo(tmdb, type, { anime });
       if (!info) {
         json(res, 404, { error: 'not found or TMDB key not configured' });
         return;
@@ -612,11 +631,12 @@ async function handle(req, res, u) {
     if (req.method === 'GET' && seg === 'tmdb' && parts[2] === 'season') {
       const tmdb = u.searchParams.get('tmdb') || '';
       const season = parseInt(u.searchParams.get('season') || '', 10);
+      const anime = ['1', 'true', 'yes'].includes((u.searchParams.get('anime') || '').toLowerCase());
       if (!tmdb || !(season >= 0)) {
         json(res, 400, { error: 'tmdb and season are required' });
         return;
       }
-      const info = await tmdbSeason(tmdb, season);
+      const info = await tmdbSeason(tmdb, season, { anime });
       if (!info) {
         json(res, 404, { error: 'not found or TMDB key not configured' });
         return;

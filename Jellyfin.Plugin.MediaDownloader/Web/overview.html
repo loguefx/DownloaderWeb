@@ -1144,7 +1144,10 @@
                         if (t.kind === 'movie') checkMovie(t);
                         return;
                     }
-                    get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv')).then((info) => {
+                    // anime=1: for anime, the engine answers with the Aniwave/AniList
+                    // season layout (the user's library is organized that way) instead
+                    // of TMDB's split. Non-anime titles are unaffected server-side.
+                    get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv') + (t.anime ? '&anime=1' : '')).then((info) => {
                         if (stale()) return;
                         t.info = info || null;
                         if (info && info.title) t.title = info.title;
@@ -1174,7 +1177,7 @@
                     const worker = () => {
                         const s = queue.shift();
                         if (!s || S.t !== t) return Promise.resolve();
-                        return get('MediaDownloader/TmdbSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season)
+                        return get('MediaDownloader/TmdbSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season + (t.anime ? '&anime=1' : ''))
                             .then((d) => { if (d && d.episodes && d.episodes.length) s.eps = d.episodes; })
                             .catch(() => { /* fall back to 1..count */ })
                             .then(() => {
