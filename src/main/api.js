@@ -266,21 +266,20 @@ async function tmdbInfo(tmdbId, type, opts = {}) {
   // re-adjust):
   //   - ANIWAVE answers -> use its layout wholesale (it is the user's source
   //     of truth and keyed by this TMDB id - anime-only catalog);
-  //   - TMDB already lists seasons -> KEEP TMDB's counts; AniList may only
-  //     ADD seasons TMDB lacks (the "S2 exists but TMDB only lists S1" case).
-  //     AniList NEVER overrides a TMDB count: its counts have proven
-  //     unreliable in the wild (it reported 24 episodes for "The Apothecary
-  //     Diaries Season 2", which has 12);
-  //   - TMDB has no real season list -> adopt the AniList layout.
-  // Non-anime shows are unaffected: Aniwave is keyed by this TMDB id and
-  // AniList is only consulted when the caller says the title is anime, or
-  // when TMDB has at most one season.
+  //   - AniList is consulted ONLY when the caller flags the title as anime,
+  //     or when TMDB lists NO seasons at all (nothing to corrupt). It may
+  //     then only ADD seasons TMDB lacks (the "S2 exists but TMDB only
+  //     lists S1" case) - it NEVER overrides a TMDB count (its counts have
+  //     proven unreliable: 24 where the season has 12);
+  //   - TV shows and movies keep their TMDB layout untouched. A live-action
+  //     show that happens to share its exact title with an anime (e.g.
+  //     "One Piece") can therefore never inherit the anime's season list.
   const tmdbSeasons = seasons.slice();
   let layout = 'tmdb';
-  const allowAnilist = !!(opts && opts.anime) || tmdbSeasons.length <= 1;
+  const allowAnilist = !!(opts && opts.anime) || tmdbSeasons.length === 0;
   const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId });
   if (resolved) {
-    if (resolved.source === 'aniwave' || tmdbSeasons.length <= 1) {
+    if (resolved.source === 'aniwave' || tmdbSeasons.length === 0) {
       layout = resolved.source;
       seasons = resolved.seasons
         .filter((s) => s && s.season > 0)

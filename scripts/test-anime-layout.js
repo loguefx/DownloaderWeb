@@ -95,6 +95,23 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('empty base takes the extra', out3.length === 1 && out3[0].episodes === 25, out3);
   }
 
+  console.log('\n[2c] TV / live-action protection');
+  {
+    // Netflix-style live-action "One Piece": TMDB lists 1 season (10 eps);
+    // the same-titled anime is one giant entry. The TV season must NOT be
+    // inflated by the anime.
+    const out = mod.addMissingSeasons([{ season: 1, episodes: 10 }], [mk(1, 1100)]);
+    check('live-action count not inflated by a same-titled anime', out.length === 1 && out[0].episodes === 10, out);
+
+    // A multi-season TV show keeps every count even if an anime with the
+    // same name exists.
+    const out2 = mod.addMissingSeasons(
+      [{ season: 1, episodes: 10 }, { season: 2, episodes: 10 }],
+      [mk(1, 1100), mk(2, 500)]
+    );
+    check('multi-season TV layout survives a same-titled anime', out2.length === 2 && out2[0].episodes === 10 && out2[1].episodes === 10, out2);
+  }
+
   console.log('\n[3] aniwaveSeasons: probing, repeat guard, negative cache');
   {
     const calls = [];
@@ -252,6 +269,20 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     mod._resetCache();
     const map2 = await mod.urlMapFor('222222', 'Same Layout Anime', { anime: true, fetcher: same });
     check('no mapper when layouts already agree', map2 === null);
+  }
+
+  console.log('\n[8] TV shows: AniList is never consulted without the anime flag');
+  {
+    mod._resetCache();
+    let anilistCalls = 0;
+    const fetcher = async (a, b) => {
+      if (typeof a === 'string' && a.startsWith('http')) return null; // Aniwave dead
+      anilistCalls++; // any GraphQL call = AniList was consulted
+      return { data: { Media: [] } };
+    };
+    const r = await mod.resolveLayout('79541', 'Succession', { anime: false, allowAnilist: false, fetcher });
+    check('unflagged multi-season title falls through to TMDB', r === null);
+    check('AniList never consulted for an unflagged TV show', anilistCalls === 0, anilistCalls);
   }
 
   console.log('\n[7] add-only: anime-layout.js never touches the disk');
