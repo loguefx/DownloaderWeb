@@ -78,6 +78,23 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('S3E13 -> S2E13', c.season === 2 && c.episode === 13, c);
   }
 
+  console.log('\n[2b] addMissingSeasons: never override a TMDB count');
+  {
+    // The real-world failure: AniList says 24 for both seasons; TMDB says 12/12.
+    const tmdb = [{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }];
+    const anilist = [mk(1, 24), mk(2, 24)];
+    const out = mod.addMissingSeasons(tmdb, anilist);
+    check('TMDB counts survive AniList inflation', out.length === 2 && out[0].episodes === 12 && out[1].episodes === 12, out);
+
+    // The case AniList still earns: a season TMDB does not list yet.
+    const out2 = mod.addMissingSeasons([{ season: 1, episodes: 12 }], [mk(1, 12), mk(2, 12)]);
+    check('missing season is added', out2.length === 2 && out2[1].season === 2 && out2[1].episodes === 12, out2);
+
+    // Empty base takes whatever the other source knows.
+    const out3 = mod.addMissingSeasons([], [mk(1, 25)]);
+    check('empty base takes the extra', out3.length === 1 && out3[0].episodes === 25, out3);
+  }
+
   console.log('\n[3] aniwaveSeasons: probing, repeat guard, negative cache');
   {
     const calls = [];

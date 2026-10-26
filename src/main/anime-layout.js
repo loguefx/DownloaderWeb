@@ -52,10 +52,23 @@ function _resetCache() {
 
 // GET a URL, parse JSON. Any failure (DNS, 4xx/5xx, non-JSON, timeout)
 // resolves to null - callers treat null as "this source doesn't know".
+// timeoutMs is a HARD TOTAL timeout: the socket is destroyed when it fires,
+// so a server that accepts the connection and then hangs (or drips bytes)
+// cannot exceed the budget. (The socket 'timeout' option is an IDLE timer
+// and does not bound a slow drip.)
 function httpJson(url, timeoutMs) {
+  const budget = timeoutMs || 2500;
   return new Promise((resolve) => {
     let u;
-    try { u = new URL(url); } catch (e) { return resolve(null); }
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(hard);
+      resolve(v);
+    };
+    let hard;
+    try { u = new URL(url); } catch (e) { return finish(null); }
     const mod = u.protocol === 'https:' ? https : http;
     let req;
     try {
@@ -66,24 +79,25 @@ function httpJson(url, timeoutMs) {
           path: u.pathname + u.search,
           method: 'GET',
           headers: { Accept: 'application/json, text/plain, */*', 'User-Agent': UA },
-          timeout: timeoutMs || 10000
+          timeout: budget
         },
         (res) => {
           const chunks = [];
           res.on('data', (d) => chunks.push(d));
           res.on('end', () => {
-            if (res.statusCode < 200 || res.statusCode >= 300) return resolve(null);
-            try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-            catch (e) { resolve(null); }
+            if (res.statusCode < 200 || res.statusCode >= 300) return finish(null);
+            try { finish(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+            catch (e) { finish(null); }
           });
-          res.on('error', () => resolve(null));
+          res.on('error', () => finish(null));
         }
       );
     } catch (e) {
-      return resolve(null);
+      return finish(null);
     }
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
+    hard = setTimeout(() => { try { req.destroy(new Error('total-timeout')); } catch (e) { /* already gone */ } }, budget);
+    req.on('error', () => finish(null));
+    req.on('timeout', () => { try { req.destroy(); } catch (e) { /* ignore */ } });
     req.end();
   });
 }
@@ -115,50 +129,54 @@ function sameEpisodeSet(a, b) {
 }
 
 // Aniwave's season list for a TMDB id, or null when no mirror knows it.
-// Probes season 1..N on the first mirror that answers; stops when the API
-// stops returning data (or starts repeating itself, which means the season
-// parameter is being ignored by that build).
+// Season 1 is probed IN PARALLEL across every mirror x API shape with a hard
+// total timeout, so a dead/hanging mirror costs at most one budget tick
+// (2.5 s) instead of stacking timeouts - this is the tier that used to make
+// every anime title take 30+ s to open. The first working mirror then serves
+// seasons 2..N. Stops when the API stops returning data (or starts repeating
+// itself, which means the season parameter is being ignored by that build).
 async function aniwaveSeasons(tmdbId, opts = {}) {
   const id = String(tmdbId || '').trim();
   if (!/^\d{2,}$/.test(id)) return null;
   const key = 'aniwave:' + id;
   const cached = cacheGet(key);
   if (cached !== undefined) return cached;
-  const get = opts.fetcher || ((u) => httpJson(u, 8000));
-  const out = [];
-  let prevEps = null;
-  for (let n = 1; n <= MAX_SEASONS; n++) {
+  const get = opts.fetcher || ((u) => httpJson(u, 2500));
+  const SHAPES = [
+    (base, n) => base + '/api/episode/' + id + '?season=' + n,
+    (base, n) => base + '/ajax/endpoint?ajax=episode/list/' + id + '&season=' + n
+  ];
+
+  // Season 1: all candidates in parallel; first valid answer wins.
+  const combos = [];
+  for (const base of ANIWAVE_MIRRORS) for (const shape of SHAPES) combos.push({ base, url: shape(base, 1) });
+  const results = await Promise.all(combos.map(async (c) => {
+    try { return { base: c.base, payload: await get(c.url) };
+    } catch (e) { return { base: c.base, payload: null }; }
+  }));
+  const winner = results.find((r) => r.payload && Array.isArray(r.payload.result) && r.payload.result.length) || null;
+  if (!winner) {
+    cacheSet(key, null); // negative cache: don't re-probe every title open
+    return null;
+  }
+  const out = [normAniwaveSeason(winner.payload, 1)];
+  let prevEps = out[0].episodes.map((e) => e.episode);
+  for (let n = 2; n <= MAX_SEASONS; n++) {
     let payload = null;
-    let usedMirror = null;
-    for (const base of ANIWAVE_MIRRORS) {
-      const candidates = [
-        base + '/api/episode/' + id + '?season=' + n,
-        base + '/ajax/endpoint?ajax=episode/list/' + id + '&season=' + n
-      ];
-      for (const u of candidates) {
-        try { payload = await get(u); } catch (e) { payload = null; }
-        if (payload && Array.isArray(payload.result) && payload.result.length) {
-          usedMirror = base;
-          break;
-        }
-      }
+    for (const shape of SHAPES) {
+      try { payload = await get(shape(winner.base, n)); } catch (e) { payload = null; }
       if (payload && Array.isArray(payload.result) && payload.result.length) break;
       payload = null;
     }
     const s = normAniwaveSeason(payload, n);
     if (!s) break;
     const nums = s.episodes.map((e) => e.episode);
-    if (prevEps && sameEpisodeSet(nums, prevEps)) break; // season param ignored
+    if (sameEpisodeSet(nums, prevEps)) break; // season param ignored
     prevEps = nums;
     out.push(s);
-    if (usedMirror) ANIWAVE_MIRRORS.unshift(usedMirror); // remember the good one
   }
-  if (out.length) {
-    cacheSet(key, out);
-    return out;
-  }
-  cacheSet(key, null); // negative cache: don't re-probe every title open
-  return null;
+  cacheSet(key, out);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +392,27 @@ async function resolveLayout(tmdbId, title, opts = {}) {
 
 const countOf = (s) => (Array.isArray(s.episodes) ? s.episodes.length : Number(s.episodes) || 0);
 
+// Additive merge: keep every base (TMDB) season with its count, and only ADD
+// season numbers the base lacks. NEVER overrides an existing count.
+//
+// Why: AniList's episode counts have proven unreliable in the wild (it
+// reported 24 episodes for "The Apothecary Diaries Season 2", which has 12),
+// and overriding TMDB's correct 12 with that 24 is exactly the "our logic is
+// wrong about the seasons" failure. AniList still earns its place by adding
+// the missing sequel TMDB hasn't listed yet - the original bug it fixed.
+function addMissingSeasons(baseSeasons, extraSeasons) {
+  const out = (baseSeasons || []).filter((s) => s && s.season > 0)
+    .map((s) => ({ season: s.season, episodes: countOf(s), year: s.year || '' }));
+  const have = new Set(out.map((s) => s.season));
+  for (const s of extraSeasons || []) {
+    if (!s || s.season <= 0 || have.has(s.season)) continue;
+    have.add(s.season);
+    out.push({ season: s.season, episodes: countOf(s), year: s.year || '' });
+  }
+  out.sort((a, b) => a.season - b.season);
+  return out;
+}
+
 // PURE: map a (season, episode) pair expressed in the authoritative layout
 // onto TMDB's numbering, so a TMDB-keyed source fetches the right content.
 //
@@ -438,6 +477,7 @@ module.exports = {
   anilistIdFor,
   resolveLayout,
   mapEpisode,
+  addMissingSeasons,
   urlMapFor,
   tmdbSeasonCounts,
   normAniwaveSeason,

@@ -262,26 +262,37 @@ async function tmdbInfo(tmdbId, type, opts = {}) {
     anilistId = String((ext && ext.anilist_id) || '');
   } catch (e) { /* optional */ }
 
-  // Anime season layout: ANIWAVE's split is the source of truth (the user's
-  // library is organized that way), AniList's official per-season (cour) split
-  // is the stable fallback, TMDB last. Non-anime shows are unaffected: Aniwave
-  // is keyed by this TMDB id (anime-only catalog) and AniList is only
-  // consulted when the caller says the title is anime, or when TMDB has at
-  // most one season (the original merge gate, which also covers the "Season 2
-  // exists on Aniwave but TMDB only lists Season 1" case).
+  // Anime season layout, additive-first (the user's rule: add on, never
+  // re-adjust):
+  //   - ANIWAVE answers -> use its layout wholesale (it is the user's source
+  //     of truth and keyed by this TMDB id - anime-only catalog);
+  //   - TMDB already lists seasons -> KEEP TMDB's counts; AniList may only
+  //     ADD seasons TMDB lacks (the "S2 exists but TMDB only lists S1" case).
+  //     AniList NEVER overrides a TMDB count: its counts have proven
+  //     unreliable in the wild (it reported 24 episodes for "The Apothecary
+  //     Diaries Season 2", which has 12);
+  //   - TMDB has no real season list -> adopt the AniList layout.
+  // Non-anime shows are unaffected: Aniwave is keyed by this TMDB id and
+  // AniList is only consulted when the caller says the title is anime, or
+  // when TMDB has at most one season.
   const tmdbSeasons = seasons.slice();
   let layout = 'tmdb';
   const allowAnilist = !!(opts && opts.anime) || tmdbSeasons.length <= 1;
   const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId });
   if (resolved) {
-    layout = resolved.source;
-    seasons = resolved.seasons
-      .filter((s) => s && s.season > 0)
-      .map((s) => ({
-        season: s.season,
-        episodes: (s.episodes || []).length,
-        year: s.year || ''
-      }));
+    if (resolved.source === 'aniwave' || tmdbSeasons.length <= 1) {
+      layout = resolved.source;
+      seasons = resolved.seasons
+        .filter((s) => s && s.season > 0)
+        .map((s) => ({
+          season: s.season,
+          episodes: (s.episodes || []).length,
+          year: s.year || ''
+        }));
+    } else {
+      seasons = animelayout.addMissingSeasons(tmdbSeasons, resolved.seasons);
+      if (seasons.length > tmdbSeasons.length) layout = 'tmdb+anilist';
+    }
   }
 
   return {
@@ -332,7 +343,12 @@ async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
       }
     }
   } catch (e) { /* tier is best-effort */ }
-  if (!authoritative && opts && opts.anime) {
+  // AniList may answer for a season TMDB does NOT have at all (a missing
+  // sequel). A season TMDB knows keeps TMDB's own episode list: AniList's
+  // counts have proven unreliable (24 where the season has 12) and must
+  // never override TMDB's correct one. (Aniwave, above, still wins when it
+  // answers - that is the user's source of truth.)
+  if (!authoritative && !tmdbEps.length && opts && opts.anime) {
     try {
       let title = (body && body.name) || '';
       if (!title) {
@@ -406,6 +422,25 @@ async function handle(req, res, u) {
     // IP - the one downloads actually go out through.
     if (req.method === 'GET' && seg === 'sources' && parts[2] === 'health') {
       json(res, 200, await service.sourcesHealth());
+      return;
+    }
+
+    // ---- anime layout diagnostics: what each tier answered for a title ----
+    // GET /api/anime/diag?tmdb=&title=  (no mutation; read-only)
+    if (req.method === 'GET' && seg === 'anime' && parts[2] === 'diag') {
+      const tmdb = u.searchParams.get('tmdb') || '';
+      const title = u.searchParams.get('title') || '';
+      const out = { tmdb, title, aniwave: null, anilist: null, tmdbSeasons: null };
+      try { out.aniwave = await animelayout.aniwaveSeasons(tmdb); } catch (e) { out.aniwave = 'error: ' + e.message; }
+      try {
+        const alId = tmdb ? await animelayout.anilistIdFor(tmdb) : null;
+        const al = title ? await animelayout.anilistSeasons(title, { anilistId: alId }) : null;
+        out.anilist = { anilistId: alId || null, seasons: al ? al.map((s) => ({ season: s.season, episodes: (s.episodes || []).length })) : null };
+      } catch (e) { out.anilist = 'error: ' + e.message; }
+      if (getTmdbKey()) {
+        try { out.tmdbSeasons = await animelayout.tmdbSeasonCounts(tmdb); } catch (e) { out.tmdbSeasons = 'error: ' + e.message; }
+      }
+      json(res, 200, out);
       return;
     }
 
