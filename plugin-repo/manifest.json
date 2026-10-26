@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.34",
+                "changelog": "Watching tab in the plugin (see, manage, and run the watcher); report-only watcher mode by default - verify the scanner's per-title reports before auto-download can start; seamless queue/season loads",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v34/MediaDownloader.12.1.0.34.zip",
+                "checksum": "bd3c71b14185e801f529baf2ec80f0ef",
+                "timestamp": "2026-10-26T18:44:56.740Z"
+            },
+            {
                 "version": "12.1.0.33",
                 "changelog": "33: recognizes episodes already on disk in differently-named series folders (no more duplicates - new episodes are added to your existing folders); titles without a TMDB id are resolved by name and the no-TMDB message is now accurate; queue removals are instant; season loading is much faster (parallel lanes, TMDB caching, parallel file checks).",
                 "targetAbi": "12.1.0.0",
@@ -264,6 +272,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.34",
+                "changelog": "Watching tab in the plugin (see, manage, and run the watcher); report-only watcher mode by default - verify the scanner's per-title reports before auto-download can start; seamless queue/season loads",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v34/MediaDownloader.10.11.0.34.zip",
+                "checksum": "d6ee947a4c6db467a79c9e9757a76399",
+                "timestamp": "2026-10-26T18:44:56.739Z"
+            },
+            {
                 "version": "10.11.0.33",
                 "changelog": "33: recognizes episodes already on disk in differently-named series folders (no more duplicates - new episodes are added to your existing folders); titles without a TMDB id are resolved by name and the no-TMDB message is now accurate; queue removals are instant; season loading is much faster (parallel lanes, TMDB caching, parallel file checks).",
                 "targetAbi": "10.11.0.0",
@@ -518,6 +534,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.34",
+                "changelog": "Watching tab in the plugin (see, manage, and run the watcher); report-only watcher mode by default - verify the scanner's per-title reports before auto-download can start; seamless queue/season loads",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v34/MediaDownloader.10.10.0.34.zip",
+                "checksum": "7a9aefb1edc57c1802d0f88506daa406",
+                "timestamp": "2026-10-26T18:44:56.739Z"
             },
             {
                 "version": "10.10.0.33",
