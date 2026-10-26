@@ -17,6 +17,27 @@ const sites = require('./sites');
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
 
+// ---- queue liveness (future-proofing: nothing may sit stuck forever) ------
+// Phase caps for the watchdog. Any phase that runs past its cap is killed
+// and the item is retried like any other failed attempt - a hang (a promise
+// that never settles, a page that never finishes, a copy that never ends)
+// can never wedge the queue. Caps are deliberately generous so a SLOW but
+// healthy download is never touched:
+//   resolving  - discovery walks several sources; 20 min is very slow
+//   ready      - waiting for a download slot; the slot holder has its own
+//                (downloading) cap, so this just needs to be bounded
+//   verifying  - ffprobe is capped at 30 s; 10 min is far beyond it
+//   placing    - must exceed the placement child's own 90-min timeout
+// downloading  - computed per item: the downloader's own watchdog allows up
+//                to 6x the media duration, so the cap must be looser (below).
+const PHASE_CAPS_MS = {
+  resolving: 20 * 60000,
+  ready: 14 * 3600000,
+  verifying: 10 * 60000,
+  placing: 95 * 60000
+};
+const DOWNLOAD_CAP_MIN_MS = 30 * 60000;
+
 // Sequential download manager. Each item carries a `discover()` closure that
 // resolves a fresh stream (used on first attempt and on every retry, so expiring
 // tokens are re-fetched). Integrates VPN gating (pause on drop, resume on
@@ -30,6 +51,8 @@ class DownloadManager extends EventEmitter {
     this._active = new Set(); // items currently being processed (per-site concurrency + prefetch)
     this._pauseWaiters = [];
     this._downloadWaiters = [];
+    this._watchdogTimer = null;
+    this.watchdogTickMs = 30000; // mutable for tests
 
     vpn.on('status', ({ connected }) => this._onVpnStatus(connected));
   }
@@ -60,6 +83,7 @@ class DownloadManager extends EventEmitter {
   // ---- public API ----
 
   add(item) {
+    this._startWatchdog();
     const ACTIVE = ['queued', 'resolving', 'downloading', 'verifying', 'paused', 'ready', 'placing'];
     // Dedupe by key (used by the watcher): skip if an equivalent item is already
     // active; replace any stale (waiting/failed/done) one so it can retry.
@@ -241,6 +265,82 @@ class DownloadManager extends EventEmitter {
       if (it._holdsDownloadSlot && it._playerBoundDownload) n += 1;
     }
     return n;
+  }
+
+  // ---- queue liveness watchdog ---------------------------------------------
+  // Belt-and-braces around EVERY phase, including ones added later:
+  //   1. phase caps - a stuck item is killed and retried (never parked);
+  //   2. re-kick    - queued items with no running worker get kicked again,
+  //      so a dead worker or a lost kick can never wedge the queue.
+  // The downloader's stall watchdog (inside the ffmpeg/stream layer) is the
+  // fast, byte-level guard; this is the slow net around the whole lifecycle.
+  _phaseCap(item) {
+    const cap = PHASE_CAPS_MS[item.status];
+    if (cap != null) return cap;
+    if (item.status === 'downloading') {
+      const dur = item.expectedDuration > 0 ? item.expectedDuration : 0;
+      return Math.max(DOWNLOAD_CAP_MIN_MS, (dur * 6 + 30 * 60) * 1000);
+    }
+    return null; // queued (gated), waiting, paused, failed, done: legitimate holds
+  }
+
+  _watchdogTick() {
+    const now = Date.now();
+    for (const item of this.items) {
+      if (!this._active.has(item)) continue;
+      if (item._lastPhase !== item.status) {
+        item._lastPhase = item.status;
+        item._phaseAt = now;
+        continue;
+      }
+      const cap = this._phaseCap(item);
+      if (!cap) continue;
+      const age = now - (item._phaseAt || now);
+      if (age <= cap) continue;
+      const mins = Math.max(1, Math.round(age / 60000));
+      this._log(
+        `"${item.label}" was stuck in "${item.status}" for ${mins} min - killing it so the queue can move on (it will retry).`
+      );
+      item._watchdogKilled = true;
+      item._watchdogReason = `stuck in "${item.status}" for ${mins} min`;
+      try {
+        if (item._controller) item._controller.abort();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    // Re-kick liveness. (isReadOnly can throw if the data dir is unreadable;
+    // never let the watchdog itself die.)
+    let readOnly = false;
+    try {
+      readOnly = library.isReadOnly();
+    } catch (e) {
+      readOnly = false;
+    }
+    if (
+      !this._paused &&
+      !this._vpnDown &&
+      !this._stopRequested &&
+      !readOnly &&
+      this._active.size === 0 &&
+      this.items.some((i) => i.status === 'queued')
+    ) {
+      this._log('Queue liveness: items are queued but no worker is running - re-kicking.');
+      this._kick();
+    }
+  }
+
+  _startWatchdog() {
+    if (this._watchdogTimer) return;
+    const tick = this.watchdogTickMs > 0 ? this.watchdogTickMs : 30000;
+    this._watchdogTimer = setInterval(() => {
+      try {
+        this._watchdogTick();
+      } catch (e) {
+        this._log('Queue watchdog error: ' + e.message);
+      }
+    }, tick);
+    if (this._watchdogTimer.unref) this._watchdogTimer.unref();
   }
 
   // Fills the worker pool: up to each site's concurrency downloads, plus that
@@ -768,11 +868,18 @@ class DownloadManager extends EventEmitter {
         return settled;
       } catch (err) {
         if (err.name === 'AbortError') {
-          // Paused (VPN/user): keep partial and the download slot so a
-          // prefetched episode cannot start while we are paused.
-          item.status = 'paused';
-          this._emit();
-          continue;
+          if (item._watchdogKilled) {
+            // The queue watchdog killed a phase that ran past its cap: this
+            // is a FAILED ATTEMPT (retry with backoff), not a user pause.
+            item._watchdogKilled = false;
+            err.message = item._watchdogReason || 'killed by the queue watchdog';
+          } else {
+            // Paused (VPN/user): keep partial and the download slot so a
+            // prefetched episode cannot start while we are paused.
+            item.status = 'paused';
+            this._emit();
+            continue;
+          }
         }
         this._releaseDownloadSlot(item);
         item.attempts += 1;
@@ -975,4 +1082,8 @@ class DownloadManager extends EventEmitter {
   }
 }
 
-module.exports = new DownloadManager();
+const manager = new DownloadManager();
+module.exports = manager;
+// Exposed for the liveness tests (they shorten caps/tick and assert the kill).
+module.exports.PHASE_CAPS_MS = PHASE_CAPS_MS;
+module.exports.DOWNLOAD_CAP_MIN_MS = DOWNLOAD_CAP_MIN_MS;

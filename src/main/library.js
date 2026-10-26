@@ -22,10 +22,17 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 const TRASH_DIRNAME = '.mediadownloader-trash';
 const TRASH_KEEP_DAYS = 30;
 const LOCK_TIMEOUT_MS = 10 * 60 * 1000; // a lock older than this is considered stale
+// Hard cap for the library-drive move (run in a child process so it can be
+// killed). A hung NAS share is the realistic case this protects against: the
+// kill leaves the file in staging and the job retries, instead of freezing
+// the engine forever. 90 min is far beyond any legitimate copy of a
+// feature-length file, even on a slow link.
+const PLACE_TIMEOUT_MS = 90 * 60 * 1000;
 
 function defaultDataDir() {
   if (process.platform === 'win32') {
@@ -318,25 +325,82 @@ class Library {
     }
   }
 
-  async _copyFile(src, dest) {
-    const CHUNK = 16 * 1024 * 1024;
-    const srcFd = fs.openSync(src, 'r');
-    const dstFd = fs.openSync(dest, 'w');
-    try {
-      const size = fs.fstatSync(srcFd).size;
-      const buf = Buffer.alloc(CHUNK);
-      let off = 0;
-      while (off < size) {
-        const n = fs.readSync(srcFd, buf, 0, Math.min(CHUNK, size - off), off);
-        if (n <= 0) break;
-        fs.writeSync(dstFd, buf, 0, n);
-        off += n;
+  // Runs the library-drive move (src/main/movefile.js) in a CHILD process
+  // with a hard timeout. Why a child and not a worker_thread: on Windows a
+  // thread blocked in a syscall (hung SMB) cannot be force-terminated, but a
+  // child process can (TerminateProcess). On timeout the child is killed, the
+  // half-written .partial is cleaned up best-effort, and the error flows back
+  // to the queue as a retryable failure - the staged file is untouched, so a
+  // later pass re-places it.
+  async runMove(params, timeoutMs) {
+    const bin = process.versions.electron
+      ? { cmd: process.execPath, env: Object.assign({}, process.env, { ELECTRON_RUN_AS_NODE: '1' }) }
+      : { cmd: process.execPath, env: process.env };
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let out = '';
+      let errOut = '';
+      let child;
+      try {
+        child = spawn(bin.cmd, [path.join(__dirname, 'movefile-child.js'), JSON.stringify(params)], {
+          env: bin.env,
+          windowsHide: true
+        });
+      } catch (e) {
+        return reject(e);
       }
-      fs.fsyncSync(dstFd);
-    } finally {
-      fs.closeSync(srcFd);
-      fs.closeSync(dstFd);
-    }
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        try {
+          child.kill('SIGKILL');
+        } catch (e) {
+          /* already dead */
+        }
+        try {
+          fs.unlinkSync(params.finalPath + '.partial');
+        } catch (e) {
+          /* drive may be the hung thing */
+        }
+        reject(
+          Object.assign(
+            new Error(
+              `Placement timed out after ${Math.round(timeoutMs / 60000)} min - the library drive may be hung. ` +
+                'The file is safe in staging; the job will retry.'
+            ),
+            { code: 'PLACE_TIMEOUT' }
+          )
+        );
+      }, timeoutMs);
+      child.stdout.on('data', (d) => {
+        out += d.toString();
+      });
+      child.stderr.on('data', (d) => {
+        errOut += d.toString();
+      });
+      child.on('error', (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        let result = null;
+        try {
+          const lines = out.trim().split('\n');
+          result = JSON.parse(lines[lines.length - 1] || '{}');
+        } catch (e) {
+          result = null;
+        }
+        if (code === 0 && result && result.ok) return resolve(result);
+        const msg =
+          (result && result.error) || errOut.trim().slice(-300) || `placement child exited ${code}`;
+        reject(new Error(msg));
+      });
+    });
   }
 
   // Moves a verified file into its final position without ever losing a file.
@@ -378,20 +442,27 @@ class Library {
         }
       }
 
-      fs.mkdirSync(path.dirname(finalPath), { recursive: true });
-      if (this._sameVolume(partPath, path.dirname(finalPath))) {
-        this._renameIntoPlace(partPath, finalPath, replacingSameName ? finalPath : replacePath || null);
-      } else {
-        await this._copyIntoPlace(partPath, finalPath, replacingSameName ? finalPath : replacePath || null, partStat.size);
-        // Staging source is consumed by the move.
-        try {
-          fs.unlinkSync(partPath);
-        } catch (e) {
-          // ignore
-        }
-      }
+      // The actual move runs in a child process with a hard timeout: a hung
+      // network share blocks fs calls, and only killing a child (safe on
+      // Windows) frees the engine. The child re-checks the overwrite refusal
+      // itself (last line of defence) and consumes the staged source.
+      const moveResult = await this.runMove(
+        {
+          partPath,
+          finalPath,
+          replacePath: replacePath || null,
+          expectExisting: !!replacePath,
+          sameVolume: this._sameVolume(partPath, path.dirname(finalPath)),
+          trashDirname: TRASH_DIRNAME
+        },
+        this.placeTimeoutMs != null ? this.placeTimeoutMs : PLACE_TIMEOUT_MS
+      );
 
       this.recordPlaced(finalPath, partStat.size);
+      if (replacePath && moveResult && moveResult.trashedTo) {
+        // The child performed the trash; the parent owns the audit trail.
+        this.audit('trashed', replacePath, `replaced by ${path.basename(finalPath)}`, { to: moveResult.trashedTo });
+      }
       this.audit(
         replacePath ? 'replaced' : 'placed',
         finalPath,
@@ -404,39 +475,9 @@ class Library {
     }
   }
 
-  _renameIntoPlace(partPath, finalPath, replaceSameName) {
-    if (replaceSameName) {
-      const aside = `${finalPath}.old-${Date.now()}`;
-      fs.renameSync(finalPath, aside); // old file safe on the same drive
-      fs.renameSync(partPath, finalPath); // new file in place
-      this.trashFile(aside, 'replaced by a newer download');
-      return;
-    }
-    fs.renameSync(partPath, finalPath);
-    if (replaceSameName) this.trashFile(replaceSameName, 'replaced by a newer download');
-  }
-
-  async _copyIntoPlace(partPath, finalPath, replaceSameName, expectBytes) {
-    const partial = `${finalPath}.partial`;
-    await this._copyFile(partPath, partial);
-    const st = fs.statSync(partial);
-    if (expectBytes != null && st.size !== expectBytes) {
-      try {
-        fs.unlinkSync(partial);
-      } catch (e) {
-        // ignore
-      }
-      throw new Error(`Size mismatch after copy: got ${st.size}, expected ${expectBytes}`);
-    }
-    if (replaceSameName) {
-      const aside = `${finalPath}.old-${Date.now()}`;
-      fs.renameSync(finalPath, aside);
-      fs.renameSync(partial, finalPath);
-      this.trashFile(aside, 'replaced by a newer download');
-      return;
-    }
-    fs.renameSync(partial, finalPath);
-  }
+  // (The actual move helpers moved to src/main/movefile.js so they can run
+  //  in a child process; trashFile above is still used by purgeTrash's
+  //  bookkeeping and kept as-is.)
 }
 
 // Shared instance for the running app (queue.js, bulk.js, service.js).
@@ -446,5 +487,6 @@ module.exports = library;
 module.exports.Library = Library;
 module.exports.TRASH_DIRNAME = TRASH_DIRNAME;
 module.exports.TRASH_KEEP_DAYS = TRASH_KEEP_DAYS;
+module.exports.PLACE_TIMEOUT_MS = PLACE_TIMEOUT_MS;
 module.exports.defaultDataDir = defaultDataDir;
 module.exports.createLibrary = (opts) => new Library(opts);
