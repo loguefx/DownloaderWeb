@@ -526,15 +526,18 @@ async function handle(req, res, u) {
         json(res, 200, service.queueSnapshot());
         return;
       }
-      if (req.method === 'POST' && action === 'pause') {
+      // Global actions live at /api/queue/<action> (parts[2] = the action
+      // itself). These used to read parts[3] - the {id}/{action} slot - and
+      // 404'd every time the Pause / Resume / Stop buttons were pressed.
+      if (req.method === 'POST' && parts[2] === 'pause') {
         json(res, 200, service.queuePause());
         return;
       }
-      if (req.method === 'POST' && action === 'resume') {
+      if (req.method === 'POST' && parts[2] === 'resume') {
         json(res, 200, service.queueResume());
         return;
       }
-      if (req.method === 'POST' && action === 'stop') {
+      if (req.method === 'POST' && parts[2] === 'stop') {
         json(res, 200, service.queueStop());
         return;
       }

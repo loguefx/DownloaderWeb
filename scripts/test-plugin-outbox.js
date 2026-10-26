@@ -140,6 +140,33 @@ async function main() {
   check('engine: rejected job "itg-bad" NOT queued', byJob('itg-bad').length === 0, 'count=' + byJob('itg-bad').length);
   check('engine: queued item stamped with library', byJob('itg-1')[0] && byJob('itg-1')[0].library && byJob('itg-1')[0].library.name === 'Anime');
 
+  // ---- queue control (the Pause/Resume/Stop buttons) ------------------------
+  // The exact URLs the plugin's controller proxies. The engine used to 404
+  // these (it read the action from the {id}/{action} slot instead of the
+  // action segment), which is why the Pause / Resume / Stop buttons failed in
+  // the dashboard. Pause and resume are reversible; stop is sticky, so it is
+  // the last queue-control call.
+  const ctl = (url) => new Promise((resolve) => {
+    const mod = require('http');
+    const r = mod.request(`http://127.0.0.1:${PORT}${url}`, { method: 'POST', headers: { authorization: `Bearer ${KEY}` } }, (res) => {
+      let d = '';
+      res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        let json = null;
+        try { json = JSON.parse(d); } catch (e) { /* not json */ }
+        resolve({ status: res.statusCode, json, body: d });
+      });
+    });
+    r.on('error', (e) => resolve({ status: 0, body: String(e) }));
+    r.end();
+  });
+  let q = await ctl('/api/queue/pause');
+  check('queue pause -> 200 + paused', q.status === 200 && q.json && q.json.paused === true, q.body.slice(0, 120));
+  q = await ctl('/api/queue/resume');
+  check('queue resume -> 200 + unpaused', q.status === 200 && q.json && q.json.paused === false, q.body.slice(0, 120));
+  q = await ctl('/api/queue/stop');
+  check('queue stop -> 200 (last call - sticky)', q.status === 200, q.body.slice(0, 120));
+
   // ---- summary --------------------------------------------------------------
   manager.stopAll('itg done');
   await api.stop();

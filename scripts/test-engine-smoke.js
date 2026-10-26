@@ -95,6 +95,7 @@ async function main() {
   const manager = M('queue');
   const service = M('service');
   const api = M('api');
+  const config = M('config');
 
   // ---- 1. engineconfig first run -------------------------------------------
   console.log('\n[1] engineconfig first run');
@@ -233,6 +234,14 @@ async function main() {
   r = await req('GET', '/api/queue', null, { authorization: `Bearer ${KEY}` });
   check('queue snapshot -> 200', r.status === 200 && Array.isArray(r.json.items));
 
+  // Regression (Pause/Resume/Stop buttons 404'd): the dispatcher used to read
+  // the action from the {id}/{action} slot (parts[3]) instead of parts[2],
+  // so POST /api/queue/pause fell through to "no such endpoint".
+  r = await req('POST', '/api/queue/pause', null, { authorization: `Bearer ${KEY}` });
+  check('POST /api/queue/pause -> 200 + paused', r.status === 200 && r.json && r.json.paused === true, r.body.slice(0, 120));
+  r = await req('POST', '/api/queue/resume', null, { authorization: `Bearer ${KEY}` });
+  check('POST /api/queue/resume -> 200 + unpaused', r.status === 200 && r.json && r.json.paused === false, r.body.slice(0, 120));
+
   r = await req('POST', '/api/jobs', { title: 'X' }, { authorization: `Bearer ${KEY}` });
   check('job without sourceUrl -> 400', r.status === 400, r.body.slice(0, 120));
 
@@ -240,6 +249,11 @@ async function main() {
   check('library/check without series -> 400', r.status === 400);
 
   // A real job (fake site): must be accepted, deduped, and stamped with the library.
+  // The manifest assertions below need queue persistence ON: the default is
+  // start-empty mode, which deliberately never writes queue-manifest.json. (The
+  // old harness read that file unconditionally and crashed here, silently
+  // skipping every check after this point.)
+  config.download.persistQueueAcrossRestarts = true;
   const job = {
     jobId: 'smoke-1',
     kind: 'series',
@@ -268,6 +282,7 @@ async function main() {
   const mrec = manifest.find((x) => x.series === 'Show' && x.episode === 3);
   check('manifest persists library', mrec && mrec.library && mrec.library.name === 'Anime', JSON.stringify(mrec));
   check('manifest persists minHeight/jobId', mrec && mrec.minHeight === 1080 && mrec.jobId === 'smoke-1');
+  config.download.persistQueueAcrossRestarts = false; // back to the start-empty default
 
   // accepted-jobs dedupe file
   check('accepted-jobs.json written', fs.existsSync(path.join(DATA_DIR, 'accepted-jobs.json')));
@@ -310,6 +325,12 @@ async function main() {
 
   r = await req('DELETE', `/api/queue/${mv.id}`, null, { authorization: `Bearer ${KEY}` });
   check('DELETE /api/queue/{id} removes the item', r.status === 200 && !manager.items.some((x) => x.id === mv.id));
+
+  // Stop is sticky (workers stay parked), so it is the LAST queue-control call
+  // in this harness.
+  r = await req('POST', '/api/queue/stop', null, { authorization: `Bearer ${KEY}` });
+  check('POST /api/queue/stop -> 200', r.status === 200, r.body.slice(0, 120));
+  check('stop parks the workers (sticky)', !!manager._stopRequested, String(manager._stopRequested));
 
   // settings round-trip
   r = await req('PUT', '/api/settings', { fillMode: 'spread' }, { authorization: `Bearer ${KEY}` });
