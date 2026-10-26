@@ -143,6 +143,46 @@ function isRateLimited(err) {
   return /429|too many requests/i.test(String((err && err.message) || err || ''));
 }
 
+// ---- Stall watchdog ---------------------------------------------------------
+// The long-running phases (ffmpeg pulling segments, the final remux) run with
+// no outer timeout: ffmpeg's -rw_timeout only fires on a FULLY idle socket,
+// so a CDN that keeps the connection alive but stops delivering (or slows to a
+// crawl) never trips it. Without this, one stuck download sits at e.g. 82%
+// forever, holds the single download slot, and the queue's retry logic never
+// gets a chance to run.
+//
+// Rule: STALL_MS of silence on the process output (progress lines) is a stall
+// -> caller kills the process and rejects. The rejection flows into the
+// queue's normal retry path (backoff, then "gave up" so the rest of the queue
+// can run). An absolute wall-time backstop (6x the media duration, never under
+// 15 min) catches the slow-drip case where output still trickles in.
+const STALL_MS = 120000;
+const WATCH_TICK_MS = 5000;
+
+// st = { startedAt, lastActivity, lastProgress, durationSec }
+function watchForStall(st, onStall) {
+  st.stopWatch = () => clearInterval(st.watchTimer);
+  st.watchTimer = setInterval(() => {
+    const idle = Date.now() - st.lastActivity;
+    let reason = null;
+    if (idle > STALL_MS) {
+      reason =
+        `no progress for ${Math.round(idle / 1000)}s` +
+        (st.lastProgress ? ` (last seen ${st.lastProgress})` : '');
+    } else if (
+      st.durationSec >= 60 &&
+      Date.now() - st.startedAt > Math.max(15 * 60000, st.durationSec * 6 * 1000)
+    ) {
+      reason = `took ${Math.round((Date.now() - st.startedAt) / 60000)} min for a ${Math.round(
+        st.durationSec / 60
+      )} min episode`;
+    }
+    if (!reason) return;
+    st.stopWatch();
+    onStall(reason);
+  }, WATCH_TICK_MS);
+}
+
 const hlsGate = { active: 0, waiters: [], cooldownUntil: 0, cooldownTimer: null };
 
 function wakeHlsWaiters() {
@@ -341,6 +381,34 @@ function writeStreamWithProgress(readable, partPath, total, { signal, onProgress
   return new Promise((resolve, reject) => {
     const out = fs.createWriteStream(partPath);
     let received = 0;
+    // Body-stall guard: a CDN can hold the connection open and stop sending.
+    // req.setTimeout only covers the initial request, so without this the body
+    // (and the whole queue) hangs here forever. 90s of no data is a stall.
+    const IDLE_MS = 90000;
+    let idle = null;
+    const armIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => {
+        try {
+          readable.destroy();
+        } catch (e) {
+          /* ignore */
+        }
+        try {
+          out.destroy();
+        } catch (e) {
+          /* ignore */
+        }
+        reject(new Error(`no data for ${Math.round(IDLE_MS / 1000)}s - the download stalled, so it was aborted; will retry`));
+      }, IDLE_MS);
+    };
+    const disarmIdle = () => {
+      if (idle) {
+        clearTimeout(idle);
+        idle = null;
+      }
+    };
+    armIdle();
     const onAbort = () => {
       try {
         readable.destroy();
@@ -360,12 +428,25 @@ function writeStreamWithProgress(readable, partPath, total, { signal, onProgress
     }
     readable.on('data', (chunk) => {
       received += chunk.length;
+      armIdle();
       if (onProgress) onProgress({ received, total, percent: total ? received / total : null });
     });
+    // Body fully received: what remains is disk I/O, not the network - drop
+    // the guard so a slow final flush cannot be misread as a stall.
+    readable.on('end', disarmIdle);
     readable.pipe(out);
-    out.on('finish', () => out.close(() => resolve({ bytes: received })));
-    out.on('error', reject);
-    readable.on('error', reject);
+    out.on('finish', () => {
+      disarmIdle();
+      out.close(() => resolve({ bytes: received }));
+    });
+    out.on('error', (e) => {
+      disarmIdle();
+      reject(e);
+    });
+    readable.on('error', (e) => {
+      disarmIdle();
+      reject(e);
+    });
   });
 }
 
@@ -671,14 +752,20 @@ function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
     const proc = spawn(ffmpegPath(), args, { windowsHide: true });
     let durationSec = 0;
     let stderrTail = '';
+    const st = { startedAt: Date.now(), lastActivity: Date.now(), lastProgress: '', durationSec: 0 };
     proc.stderr.on('data', (buf) => {
       const text = buf.toString();
       stderrTail = (stderrTail + text).slice(-4000);
+      st.lastActivity = Date.now();
       if (!durationSec) {
         const d = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
         if (d) durationSec = +d[1] * 3600 + +d[2] * 60 + parseFloat(d[3]);
       }
+      st.durationSec = durationSec;
       const t = text.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (t) {
+        st.lastProgress = t[0].replace(/^time=/, '').trim();
+      }
       if (t && onProgress) {
         const cur = +t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]);
         onProgress({
@@ -686,6 +773,16 @@ function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
           total: durationSec,
           percent: durationSec ? Math.min(cur / durationSec, 0.999) : null
         });
+      }
+    });
+    watchForStall(st, (reason) => {
+      // First rejection wins; the kill makes the 'close' handler's AbortError
+      // a no-op. The queue treats this as a retryable failure.
+      reject(new Error(reason + ' - the download stalled, so it was killed; will retry'));
+      try {
+        proc.kill('SIGKILL');
+      } catch (e) {
+        /* already dead */
       }
     });
     let aborted = false;
@@ -701,8 +798,12 @@ function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
       if (signal.aborted) onAbort();
       else signal.addEventListener('abort', onAbort, { once: true });
     }
-    proc.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
+    proc.on('error', (err) => {
+      st.stopWatch();
+      reject(describeBinaryError(err, ffmpegPath()));
+    });
     proc.on('close', (code) => {
+      st.stopWatch();
       if (aborted) return reject(new AbortError());
       if (code === 0) return resolve(partPath);
       reject(new Error((stderrTail || `ffmpeg exited ${code}`).trim().slice(-500)));
@@ -766,17 +867,21 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
     let durationSec = 0;
     let writtenSec = 0;
     let stderrTail = '';
+    const st = { startedAt: Date.now(), lastActivity: Date.now(), lastProgress: '', durationSec: 0 };
 
     proc.stderr.on('data', (buf) => {
       const text = buf.toString();
       stderrTail = (stderrTail + text).slice(-4000);
+      st.lastActivity = Date.now();
 
       if (!durationSec) {
         const d = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
         if (d) durationSec = +d[1] * 3600 + +d[2] * 60 + parseFloat(d[3]);
       }
+      st.durationSec = durationSec;
       const t = text.match(/time=\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
       if (t) {
+        st.lastProgress = t[0].replace(/^time=/, '').trim();
         writtenSec = Math.max(writtenSec, +t[1] * 3600 + +t[2] * 60 + parseFloat(t[3]));
       }
       if (t && onProgress) {
@@ -786,6 +891,16 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
           total: durationSec,
           percent: durationSec ? Math.min(cur / durationSec, 0.999) : null
         });
+      }
+    });
+    watchForStall(st, (reason) => {
+      // First rejection wins; the kill makes the 'close' handler's AbortError
+      // a no-op. The queue treats this as a retryable failure.
+      reject(new Error(reason + ' - the download stalled, so it was killed; will retry'));
+      try {
+        proc.kill('SIGKILL');
+      } catch (e) {
+        /* already dead */
       }
     });
 
@@ -803,8 +918,12 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
       else signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    proc.on('error', (err) => reject(describeBinaryError(err, ffmpegPath())));
+    proc.on('error', (err) => {
+      st.stopWatch();
+      reject(describeBinaryError(err, ffmpegPath()));
+    });
     proc.on('close', (code) => {
+      st.stopWatch();
       if (aborted) return reject(new AbortError());
       if (code === 0) {
         // Some CDNs serve the episode body as one huge segment and 502 on it. The
@@ -890,4 +1009,15 @@ function download(detection, partPath, opts) {
   return withHlsGate(() => downloadHls(detection, partPath, opts));
 }
 
-module.exports = { download, downloadMp4, downloadHls, AbortError, ffmpegPath, ffprobePath };
+module.exports = {
+  download,
+  downloadMp4,
+  downloadHls,
+  AbortError,
+  ffmpegPath,
+  ffprobePath,
+  // Exported for the stall-watchdog tests (and engine diagnostics).
+  watchForStall,
+  STALL_MS,
+  WATCH_TICK_MS
+};
