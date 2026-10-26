@@ -590,7 +590,16 @@ async function handle(req, res, u) {
         return;
       }
       if (req.method === 'POST' && key === 'check') {
-        json(res, 200, service.schedulesCheckNow());
+        // Fire-and-forget: a full-library pass can take minutes (many titles,
+        // TMDB calls, source resolution), and the plugin's 90s HTTP timeout
+        // must not cut it off. The answer returns immediately; progress
+        // streams through the activity log ("Checking N scheduled series…",
+        // one line per title, "Schedule check complete.").
+        const p = service.schedulesCheckNow();
+        if (p && typeof p.catch === 'function') {
+          p.catch((e) => { /* per-series errors are already logged */ });
+        }
+        json(res, 200, { started: true });
         return;
       }
       if (req.method === 'DELETE' && key) {

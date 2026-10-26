@@ -539,6 +539,7 @@
                 <div class="mdl-tabs" data-q-tabs>
                     <button type="button" data-qtab="queue" class="on">Queue<em data-qc="queue">0</em></button>
                     <button type="button" data-qtab="waiting">Waiting for dub<em data-qc="waiting">0</em></button>
+                    <button type="button" data-qtab="watching">Watching<em data-qc="watching">0</em></button>
                     <button type="button" data-qtab="failed">Failed<em data-qc="failed">0</em></button>
                     <button type="button" data-qtab="outbox">Outbox<em data-qc="outbox">0</em></button>
                     <button type="button" data-qtab="done">Finished<em data-qc="done">0</em></button>
@@ -781,12 +782,22 @@
                         if (online) {
                             tasks.push(get('MediaDownloader/Queue').then((q) => { S.queue = q; }).catch(() => {}));
                             tasks.push(get('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
+                            // Watch list: a local JSON file on the engine - one
+                            // cheap call, no per-title lookups, so the tab is
+                            // instant no matter how many titles are watched.
+                            tasks.push(get('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; }).catch(() => {}));
                             if (S.view === 'queue') {
                                 tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
                                     if (items.length) {
                                         S.log = S.log.concat(items).slice(-300);
                                         S.logSince = items[items.length - 1].ts;
+                                        // A manual "check now" finished: drop the
+                                        // spinner and point at the log for details.
+                                        if (S.wCheckBusy && items.some((it) => /schedule check complete/i.test(String(it.msg || '')))) {
+                                            S.wCheckBusy = false;
+                                            S.wCheckMsg = 'Done — the activity log shows what was queued for each title.';
+                                        }
                                     }
                                 }).catch(() => {}));
                             }
@@ -1786,6 +1797,7 @@
                     const ob = (S.outbox && S.outbox.items) || [];
                     $('[data-qc="queue"]').textContent = lists.queue.length;
                     $('[data-qc="waiting"]').textContent = (S.waiting || []).length;
+                    $('[data-qc="watching"]').textContent = (S.schedules || []).length;
                     $('[data-qc="failed"]').textContent = lists.failed.length;
                     $('[data-qc="outbox"]').textContent = ob.filter((o) => o.state !== 'sent').length;
                     $('[data-qc="done"]').textContent = lists.done.length;
@@ -1811,6 +1823,26 @@
                             esc(['S' + (x.season != null ? x.season : 1) + 'E' + x.episode, (x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
                             '<span class="mdl-pill yellow">Waiting for dub</span><button type="button" class="mdl-btn icon sm" title="Stop waiting" data-wait-del="' + esc(x.key) + '">✕</button></div>').join('')
                             : '<div class="mdl-empty">' + (online ? 'Nothing is waiting for a dub.' : 'Engine offline.') + '</div>';
+                        return;
+                    }
+                    if (S.qtab === 'watching') {
+                        bar.innerHTML = '<p class="small muted" style="margin-bottom:.8em;">Watched titles are re-checked about every 24 h. Only episodes that have AIRED and are not already on disk get queued - new seasons are picked up automatically and your existing files are never touched.</p>' +
+                            '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-w-check' + (S.wCheckBusy ? ' disabled' : '') + '>' + (S.wCheckBusy ? '<span class="mdl-spin"></span> Checking…' : 'Check for new episodes now') + '</button></div>' +
+                            (S.wCheckMsg ? '<div class="hint" style="margin-bottom:.8em;">' + S.wCheckMsg + '</div>' : '');
+                        const w = S.schedules || [];
+                        box.innerHTML = w.length ? w.map((x) => {
+                            const what = x.movie ? 'Movie' : 'Season ' + (x.season != null ? x.season : '?');
+                            const bits = [what, (x.mode || 'dub').toUpperCase()];
+                            if (x.anime) bits.push('ANIME');
+                            if (x.library && x.library.name) bits.push(x.library.name);
+                            if (x.minHeight) bits.push(x.minHeight + 'p+');
+                            if (x.tmdb) bits.push('tmdb ' + x.tmdb);
+                            bits.push(x.lastChecked ? 'checked ' + whenOf(x.lastChecked) : 'not checked yet');
+                            return '<div class="mdl-row"><div class="grow"><div class="t">' + esc(x.series) + '</div><div class="sub">' + esc(bits.join(' · ')) + '</div></div>' +
+                                (x.anime ? '<span class="mdl-pill purple">anime</span>' : '') +
+                                '<button type="button" class="mdl-btn icon sm" title="Stop watching" data-w-del="' + esc(x.key) + '">✕</button></div>';
+                        }).join('')
+                            : '<div class="mdl-empty">Nothing is being watched. Queue a show and tick “Keep watching” - or re-open a title that is already in your library and it is added automatically.</div>';
                         return;
                     }
                     const list = lists[S.qtab] || [];
@@ -2028,6 +2060,41 @@
                         const state = el.getAttribute('data-purge');
                         if (!confirm(state === 'sent' ? 'Clear all delivered jobs from the outbox?' : 'Clear all rejected jobs from the outbox?')) return;
                         post('MediaDownloader/Outbox/purge', { state: state }).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-w-check')) {
+                        if (S.wCheckBusy) return;
+                        S.wCheckBusy = true;
+                        S.wCheckMsg = 'Checking… follow the per-title progress in the activity log.';
+                        renderQueue();
+                        // Fire-and-forget: the engine answers instantly and the
+                        // pass runs on (a big library takes minutes). The 4 s
+                        // queue polling streams the log; the spinner drops the
+                        // moment "Schedule check complete." lands (refresh()).
+                        post('MediaDownloader/Schedules/check')
+                            .then(() => { refresh(); })
+                            .catch((err) => {
+                                S.wCheckBusy = false;
+                                S.wCheckMsg = 'Check failed to start: ' + err.message;
+                                renderQueue();
+                            });
+                        return;
+                    }
+                    if (el.hasAttribute('data-w-del')) {
+                        const key = el.getAttribute('data-w-del');
+                        const arr = S.schedules || [];
+                        const idx = arr.findIndex((x) => x.key === key);
+                        if (idx >= 0) {
+                            const removed = arr.splice(idx, 1)[0];
+                            renderQueue();
+                            del('MediaDownloader/Schedules/' + encodeURIComponent(key)).then(refresh).catch((err) => {
+                                arr.splice(idx, 0, removed);
+                                renderQueue();
+                                alert(err.message);
+                            });
+                        } else {
+                            del('MediaDownloader/Schedules/' + encodeURIComponent(key)).then(refresh).catch((err) => alert(err.message));
+                        }
                         return;
                     }
                     if (el.hasAttribute('data-wait-del')) {

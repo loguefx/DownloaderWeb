@@ -393,6 +393,10 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesCheck() =>
             await ProxyAsync(() => _engine.PostAsync("api/schedules/check")).ConfigureAwait(false);
 
+        [HttpDelete("Schedules/{key}")]
+        public async Task<IActionResult> SchedulesRemove(string key) =>
+            await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + Uri.EscapeDataString(key ?? string.Empty))).ConfigureAwait(false);
+
         // anime: the UI sets this for anime titles, and the engine answers with
         // the Aniwave/AniList season layout (the user's library is organized
         // that way) instead of TMDB's split. Ignored server-side for non-anime.
