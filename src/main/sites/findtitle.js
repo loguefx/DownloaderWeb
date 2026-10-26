@@ -297,17 +297,17 @@ function idFromPlayerUrl(url) {
   const mQ = s.match(/[?&](?:tmdb|id|video_id)=([A-Za-z0-9]+)/i);
   if (mQ) {
     const v = mQ[1].toLowerCase();
-    if (/^\d{4,8}$/.test(v)) out.tmdb = v;
+    if (/^\d{3,8}$/.test(v)) out.tmdb = v;
     else if (/^tt\d{6,}$/.test(v)) out.imdb = v;
   }
   const mI = s.match(/[?&]imdb=(tt\d{6,})/i);
   if (mI) out.imdb = mI[1].toLowerCase();
-  const mP = s.match(/\/(?:embed\/)?(?:tv|movie)\/(?:tt(\d{6,})|(\d{4,8}))\b/i);
+  const mP = s.match(/\/(?:embed\/)?(?:tv|movie)\/(?:tt(\d{6,})|(\d{3,8}))\b/i);
   if (mP) {
     if (mP[1]) out.imdb = 'tt' + mP[1];
     else if (mP[2] && !out.tmdb) out.tmdb = mP[2];
   }
-  const mS = s.match(/\/(\d{4,8})-(\d{1,3})-(\d{1,3})(?:\/|&|$|\?)/);
+  const mS = s.match(/\/(\d{3,8})-(\d{1,3})-(\d{1,3})(?:\/|&|$|\?)/);
   if (mS && !out.tmdb) out.tmdb = mS[1];
   return out;
 }

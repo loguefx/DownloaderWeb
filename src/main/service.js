@@ -351,6 +351,15 @@ async function submitJob(job) {
   // watch:false is just "unchecked", which the old UI leaves in its default
   // state, so the library rule still applies for it.
   const optedOut = job.noWatch === true;
+  // TMDB id for the daily "what has aired" check: from the job, else parsed
+  // out of the source URL (Vidsrc embeds carry it in the path). Stored on the
+  // schedule entry so the watcher can ask TMDB instead of guessing from the
+  // source page.
+  let watchTmdb = String(job.tmdb || '').trim() || String((ref && ref.tmdb) || '').trim();
+  if (!watchTmdb) {
+    try { watchTmdb = require('./sites/findtitle').idFromPlayerUrl(url).tmdb || ''; } catch (e) { watchTmdb = ''; }
+  }
+  const watchImdb = String(job.imdb || '').trim() || String((ref && ref.imdb) || '').trim() || '';
   const manualWatch = job.watch === true && job.kind !== 'movie';
   if (!optedOut && !manualWatch) {
     let onDisk = false;
@@ -385,7 +394,10 @@ async function submitJob(job) {
         outputRoot: staging,
         library: lib,
         minHeight,
-        anime
+        anime,
+        tmdb: watchTmdb,
+        imdb: watchImdb,
+        movie: job.kind === 'movie'
       });
       onLog(`"${series}" is already in your library - added to the watch list automatically (new episodes and seasons).`);
     }
@@ -400,7 +412,10 @@ async function submitJob(job) {
       outputRoot: staging,
       library: lib,
       minHeight,
-      anime
+      anime,
+      tmdb: watchTmdb,
+      imdb: watchImdb,
+      movie: job.kind === 'movie'
     });
     onLog(`Watching "${series}" for new episodes.`);
   }
