@@ -587,11 +587,11 @@ async function libraryCheck(payload) {
     }
   }
 
-  const out = [];
-  for (const ep of episodes) {
+  // 1) Resolve every episode's on-disk path first - cheap synchronous scans,
+  //    done for ALL episodes before any probing starts.
+  const resolved = episodes.map((ep) => {
     const meta = { series, season, episode: ep };
     const epName = ep != null ? (epNames[ep] || epNames[String(ep)] || '') : '';
-    let status = 'missing';
     let foundPath = null;
     for (const folder of folders) {
       try {
@@ -606,23 +606,40 @@ async function libraryCheck(payload) {
         // unreadable folder
       }
     }
-    if (foundPath) {
-      const probed = await require('./verify').verifyFile(foundPath);
-      const floor = Number(payload.minHeight) || 0;
-      status = probed.probeOk && (!floor || probed.height >= floor) ? 'in-library' : 'low-quality';
-      out.push({
-        episode: ep,
-        status,
-        path: foundPath,
-        height: probed.height || null,
-        ours: library.isOurs(foundPath)
-      });
-    } else if ((ep != null || movie) && isQueued(series, season, ep)) {
-      out.push({ episode: ep, status: 'queued' });
-    } else {
-      out.push({ episode: ep, status: 'missing' });
+    return { ep, foundPath };
+  });
+  // 2) Probe the found files with limited parallelism. ffprobe is the slow
+  //    part, and a 24-episode season used to wait on 24 SERIAL probes;
+  //    four at a time keeps the disk/CPU happy while cutting the wait ~4x.
+  //    verifyFile never rejects - it resolves with { probeOk:false } on error.
+  const probes = new Array(resolved.length).fill(null);
+  let nextProbe = 0;
+  async function probeWorker() {
+    while (nextProbe < resolved.length) {
+      const i = nextProbe;
+      nextProbe += 1;
+      if (resolved[i].foundPath) probes[i] = await require('./verify').verifyFile(resolved[i].foundPath);
     }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(4, resolved.length) }, () => probeWorker())
+  );
+  // 3) Assemble the answer in the original episode order.
+  const floor = Number(payload.minHeight) || 0;
+  const out = resolved.map((r, i) => {
+    if (r.foundPath) {
+      const probed = probes[i] || {};
+      return {
+        episode: r.ep,
+        status: probed.probeOk && (!floor || probed.height >= floor) ? 'in-library' : 'low-quality',
+        path: r.foundPath,
+        height: probed.height || null,
+        ours: library.isOurs(r.foundPath)
+      };
+    }
+    if ((r.ep != null || movie) && isQueued(series, season, r.ep)) return { episode: r.ep, status: 'queued' };
+    return { episode: r.ep, status: 'missing' };
+  });
   return { series, season, episodes: out };
 }
 

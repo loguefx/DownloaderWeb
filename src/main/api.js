@@ -225,7 +225,39 @@ async function searchTitles(q, type) {
     }));
 }
 
+// Small in-memory TTL cache for TMDB answers. Re-opening a title (or
+// re-rendering its seasons) is then instant, and the TMDB API stays out of
+// the hot path while the user is picking episodes. Ten minutes is long
+// enough for a session, short enough that newly aired episodes show up on
+// the next visit. Failed lookups are NOT cached, so a retry can succeed.
+const TMDB_CACHE_MS = 10 * 60 * 1000;
+const tmdbCache = new Map();
+function tmdbCacheGet(key) {
+  const hit = tmdbCache.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.ts > TMDB_CACHE_MS) {
+    tmdbCache.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+function tmdbCacheSet(key, value) {
+  if (tmdbCache.size > 200) tmdbCache.delete(tmdbCache.keys().next().value);
+  tmdbCache.set(key, { ts: Date.now(), value });
+}
+
 async function tmdbInfo(tmdbId, type, opts = {}) {
+  const key = getTmdbKey();
+  if (!key) return null;
+  const cacheKey = 'info|' + type + '|' + tmdbId + '|' + !!(opts && opts.anime);
+  const cached = tmdbCacheGet(cacheKey);
+  if (cached) return cached;
+  const value = await tmdbInfoFetch(tmdbId, type, opts);
+  if (value) tmdbCacheSet(cacheKey, value);
+  return value;
+}
+
+async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
   if (type === 'movie') {
@@ -313,6 +345,17 @@ async function tmdbInfo(tmdbId, type, opts = {}) {
 // the Choose episodes screen and greys out episodes that have not aired yet,
 // so a season is never cut short or padded with episodes that do not exist.
 async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
+  const key = getTmdbKey();
+  if (!key) return null;
+  const cacheKey = 'season|' + tmdbId + '|' + seasonNo + '|' + !!(opts && opts.anime);
+  const cached = tmdbCacheGet(cacheKey);
+  if (cached) return cached;
+  const value = await tmdbSeasonFetch(tmdbId, seasonNo, opts);
+  if (value) tmdbCacheSet(cacheKey, value);
+  return value;
+}
+
+async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
   let body = null;

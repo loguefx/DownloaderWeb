@@ -781,16 +781,6 @@
                         if (online) {
                             tasks.push(get('MediaDownloader/Queue').then((q) => { S.queue = q; }).catch(() => {}));
                             tasks.push(get('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
-                            // Sources health: which catalogs are actually alive
-                            // from the ENGINE's IP right now (the downloads'
-                            // perspective). Cheap probes; failures are cosmetic.
-                            tasks.push(get('MediaDownloader/SourcesHealth').then((sh) => {
-                                S.sources = sh;
-                                S.sourcesError = null;
-                            }).catch((e) => {
-                                S.sources = null;
-                                S.sourcesError = (e && e.message) || 'failed to check';
-                            }));
                             if (S.view === 'queue') {
                                 tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
@@ -803,6 +793,11 @@
                         } else if (!online) {
                             S.queue = null;
                         }
+                        // Sources health probes EXTERNAL sites (seconds each at
+                        // worst), so it must never gate this render: fire it in
+                        // the background (throttled) and let its own row update
+                        // when the answer lands.
+                        maybeSources();
                         return Promise.all(tasks);
                     }).catch((err) => {
                         S.health = { engine: 'error', error: err.message };
@@ -980,6 +975,23 @@
                     el.innerHTML = rows +
                         '<div class="hint" style="margin-top:.6em;">Probed ' + whenOf(sh.checkedAt) + (vpnTxt ? ' with ' + vpnTxt : '') +
                         ' from the engine — this is the IP downloads actually use. A red source here will fail downloads through it.</div>';
+                }
+
+                // Throttle: the probes are real external HTTP calls on the
+                // engine, so at most one round per minute - between checks the
+                // last answer stays on screen ("Probed X" tells how fresh it
+                // is). The first call always goes through so a fresh overview
+                // page fills in.
+                let lastSourcesAt = 0;
+                const SOURCES_TTL = 60 * 1000;
+                function maybeSources() {
+                    const h = S.health || {};
+                    if (h.engine !== 'online') return;
+                    if (S.sources || S.sourcesError) {
+                        if (Date.now() - lastSourcesAt < SOURCES_TTL) return;
+                    }
+                    lastSourcesAt = Date.now();
+                    checkSources();
                 }
 
                 let srcChecking = null;
@@ -1217,7 +1229,7 @@
                             })
                             .then(worker);
                     };
-                    return Promise.all([worker(), worker(), worker()]);
+                    return Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
                 }
 
                 function checkSeason(t, s) {
@@ -1972,7 +1984,23 @@
                         return;
                     }
                     if (el.hasAttribute('data-remove')) {
-                        del('MediaDownloader/Queue/' + Number(el.getAttribute('data-remove'))).then(refresh).catch((err) => alert(err.message));
+                        const id = Number(el.getAttribute('data-remove'));
+                        // Optimistic: the row leaves the list immediately, the
+                        // engine call reconciles (and the row comes back if it
+                        // failed) - removing must feel instant.
+                        const arr = (S.queue && S.queue.items) || [];
+                        const idx = arr.findIndex((i) => i.id === id);
+                        if (idx >= 0) {
+                            const removed = arr.splice(idx, 1)[0];
+                            renderQueue();
+                            del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => {
+                                arr.splice(idx, 0, removed);
+                                renderQueue();
+                                alert(err.message);
+                            });
+                        } else {
+                            del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => alert(err.message));
+                        }
                         return;
                     }
                     if (el.hasAttribute('data-retry')) {
@@ -1980,7 +2008,20 @@
                         return;
                     }
                     if (el.hasAttribute('data-ob-del')) {
-                        del('MediaDownloader/Outbox/' + encodeURIComponent(el.getAttribute('data-ob-del'))).then(refresh).catch((err) => alert(err.message));
+                        const jobId = el.getAttribute('data-ob-del');
+                        const ob = (S.outbox && S.outbox.items) || [];
+                        const idx = ob.findIndex((o) => String(o.jobId) === String(jobId));
+                        if (idx >= 0) {
+                            const removed = ob.splice(idx, 1)[0];
+                            renderQueue();
+                            del('MediaDownloader/Outbox/' + encodeURIComponent(jobId)).then(refresh).catch((err) => {
+                                ob.splice(idx, 0, removed);
+                                renderQueue();
+                                alert(err.message);
+                            });
+                        } else {
+                            del('MediaDownloader/Outbox/' + encodeURIComponent(jobId)).then(refresh).catch((err) => alert(err.message));
+                        }
                         return;
                     }
                     if (el.hasAttribute('data-purge')) {
@@ -1990,7 +2031,20 @@
                         return;
                     }
                     if (el.hasAttribute('data-wait-del')) {
-                        del('MediaDownloader/Waiting/' + encodeURIComponent(el.getAttribute('data-wait-del'))).then(refresh).catch((err) => alert(err.message));
+                        const key = el.getAttribute('data-wait-del');
+                        const w = S.waiting || [];
+                        const idx = w.findIndex((x) => x.key === key);
+                        if (idx >= 0) {
+                            const removed = w.splice(idx, 1)[0];
+                            renderQueue();
+                            del('MediaDownloader/Waiting/' + encodeURIComponent(key)).then(refresh).catch((err) => {
+                                w.splice(idx, 0, removed);
+                                renderQueue();
+                                alert(err.message);
+                            });
+                        } else {
+                            del('MediaDownloader/Waiting/' + encodeURIComponent(key)).then(refresh).catch((err) => alert(err.message));
+                        }
                         return;
                     }
                     if (el.hasAttribute('data-log-clear')) { S.log = []; renderLog(); return; }
