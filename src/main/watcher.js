@@ -70,7 +70,11 @@ class Watcher {
   async checkSchedules() {
     const items = schedule.list();
     if (!items.length) return { checked: 0, newSeasons: 0 };
-    this.onLog(`Checking ${items.length} scheduled series for new episodes...`);
+    const dryRun = this.watcherMode().dryRun;
+    this.onLog(
+      `Checking ${items.length} scheduled series for new episodes...` +
+        (dryRun ? ' (report only - nothing will be queued)' : '')
+    );
     let newSeasons = 0;
     for (const s of items) {
       schedule.markChecked(s.key);
@@ -92,9 +96,13 @@ class Watcher {
       }
       try {
         if (s.movie) {
-          await this.checkMovie(s);
+          await this.checkMovie(s, dryRun);
         } else if (s.tmdb) {
-          newSeasons += await this.checkSeriesTmdb(s);
+          newSeasons += await this.checkSeriesTmdb(s, dryRun);
+        } else if (dryRun) {
+          // The legacy path downloads (startBatch); in report-only mode it
+          // must not run at all - the title is reported as unchecked instead.
+          this.onLog(`"${s.series}" has no TMDB data - report mode skips it (nothing downloaded).`);
         } else {
           newSeasons += await this.checkSeriesLegacy(s);
         }
@@ -106,21 +114,37 @@ class Watcher {
     return { checked: items.length, newSeasons };
   }
 
+  // Watcher mode: report-only is the DEFAULT (engineconfig.watchDryRun).
+  // The user verifies what the scanner sees before it may queue anything.
+  watcherMode() {
+    try {
+      const c = engineconfig.get() || {};
+      return { dryRun: c.watchDryRun !== false };
+    } catch (e) {
+      return { dryRun: true };
+    }
+  }
+
   // Movie watch: the daily check is "is the file still there?". Present in
   // staging or any library drive -> done (silent, nothing to do). Missing ->
-  // re-queue the ONE movie (queueOne dedupes if it is already in the queue).
+  // re-queue the ONE movie (queueOne dedupes if it is already in the queue),
+  // unless report-only mode is on, in which case it is only reported.
   // The old batch path had no movie awareness and would have queued the movie
   // up to 12 times as "S1E1..S1E12".
-  async checkMovie(s) {
+  async checkMovie(s, dryRun) {
     for (const root of this.rootsFor(s)) {
       try {
         if (root && organizer.titleOnDisk(root, s.series)) {
-          this.onLog(`"${s.series}" (movie): already on disk - nothing to do.`);
+          this.onLog(`"${s.series}" (movie): on disk.`);
           return { action: 'on-disk' };
         }
       } catch (e) {
         // unreadable root
       }
+    }
+    if (dryRun) {
+      this.onLog(`"${s.series}" (movie): MISSING from disk - report only, NOT re-queued.`);
+      return { action: 'missing-reported' };
     }
     this.onLog(`"${s.series}" (movie) is not on disk - re-queuing it.`);
     await bulk.queueOne(
@@ -150,10 +174,15 @@ class Watcher {
   //                 has aired episodes, queue them and advance the watch.
   // Future episodes are NEVER queued (the old source-detection path guessed a
   // 1-12 range and re-queued every not-yet-out episode daily).
-  async checkSeriesTmdb(s) {
+  async checkSeriesTmdb(s, dryRun) {
     const anime = !!s.anime;
     const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime });
     if (!info || !(info.seasons || []).length) {
+      if (dryRun) {
+        // The fallback downloads (startBatch) - report-only mode must not run it.
+        this.onLog(`TMDB has no seasons for "${s.series}" yet - report mode skips the source page check (nothing downloaded).`);
+        return 0;
+      }
       this.onLog(`TMDB has no seasons for "${s.series}" yet - falling back to the source page check.`);
       return this.checkSeriesLegacy(s);
     }
@@ -195,15 +224,18 @@ class Watcher {
       return 0;
     }
 
-    const { queued, present } = await this.queueMissingEps(s, season, aired, urlMap, template, roots);
+    const { queued, present, missing } = await this.queueMissingEps(s, season, aired, urlMap, template, roots, dryRun);
     const fresh = aired.length - present;
     this.onLog(
       `"${s.series}" season ${season}: ${aired.length} aired, ${present} already on disk, ${queued} new queued` +
+        (dryRun && missing.length ? `, ${missing.length} missing (${missing.map((n) => `E${n}`).join(', ')}) - report only, nothing queued` : '') +
         (notAired ? `, ${notAired} not out yet (skipped until they air)` : '') + '.'
     );
 
     // Caught up on this season? Check the next one (anime layout included -
-    // info.seasons is authoritative for anime).
+    // info.seasons is authoritative for anime). In report-only mode the next
+    // season is still REPORTED (aired/on disk/missing) but nothing is queued
+    // and the watch season is NOT advanced.
     if (present >= aired.length && fresh === 0) {
       const next = seasonNums.find((x) => x === season + 1);
       if (next) {
@@ -211,10 +243,19 @@ class Watcher {
         const nextEps = (nextData && nextData.episodes) || [];
         const nextAired = nextEps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
         if (nextAired.length) {
-          this.onLog(`New season detected: "${s.series}" season ${next} - queueing its new episodes.`);
-          await this.queueMissingEps(s, next, nextAired, urlMap, template, roots);
-          schedule.bumpSeason(s.key, next);
-          return 1;
+          if (dryRun) {
+            const r = await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, true);
+            this.onLog(
+              `"${s.series}" season ${next} (new): ${nextAired.length} aired, ${r.present} on disk, ${r.missing.length} missing` +
+                (r.missing.length ? ` (${r.missing.map((n) => `E${n}`).join(', ')})` : '') +
+                ` - report only, watch stays on season ${season}.`
+            );
+          } else {
+            this.onLog(`New season detected: "${s.series}" season ${next} - queueing its new episodes.`);
+            await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, dryRun);
+            schedule.bumpSeason(s.key, next);
+            return 1;
+          }
         }
       }
     }
@@ -224,9 +265,11 @@ class Watcher {
   // Queues the aired episodes of a season that are not already on disk
   // (staging or any library drive) and not already in the queue. Additive
   // only: nothing existing is touched, replaced, or re-downloaded.
-  async queueMissingEps(s, season, eps, urlMap, template, roots) {
+  // dryRun: missing episodes are collected and reported, never queued.
+  async queueMissingEps(s, season, eps, urlMap, template, roots, dryRun) {
     let queued = 0;
     let present = 0;
+    const missing = [];
     for (const e of eps) {
       const meta = { series: s.series, season, episode: e.episode };
       let onDisk = false;
@@ -262,6 +305,11 @@ class Watcher {
         this.onLog(`No source URL for "${s.series}" S${season}E${e.episode} - skipping it.`);
         continue;
       }
+      if (dryRun) {
+        // Report-only: record the gap, spend no bandwidth on it.
+        missing.push(e.episode);
+        continue;
+      }
       const r = await bulk.queueOne(
         {
           url,
@@ -279,7 +327,7 @@ class Watcher {
       );
       queued += r.queued || 0;
     }
-    return { queued, present };
+    return { queued, present, missing };
   }
 
   // Fallback: the source page itself lists the episode count (catalog sites).
@@ -356,7 +404,11 @@ class Watcher {
   checkNow() {
     const items = pending.list();
     if (!items.length) return { checked: 0 };
-    this.onLog(`Checking ${items.length} pending dub(s) for new releases...`);
+    const dryRun = this.watcherMode().dryRun;
+    this.onLog(
+      `Checking ${items.length} pending dub(s) for new releases...` +
+        (dryRun ? ' (report only - nothing will be re-queued)' : '')
+    );
 
     for (const spec of items) {
       const url = urltemplate.buildEpisodeUrl(
@@ -384,7 +436,14 @@ class Watcher {
         }
       }
       if (onDisk) {
+        // Clearing an entry that is on disk is safe in every mode.
         pending.remove(spec.key);
+        continue;
+      }
+
+      if (dryRun) {
+        this.onLog(`Pending dub "${spec.label}" still missing - report only, not re-queued.`);
+        pending.markChecked(spec.key);
         continue;
       }
 

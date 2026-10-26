@@ -90,6 +90,14 @@ async function main() {
   const pending = M('pending');
   const manager = M('queue');
   const watcher = M('watcher');
+  const engineconfig = M('engineconfig');
+  const service = M('service');
+
+  // Sections [1]-[7] test the ENABLED watcher (they expect real queuing).
+  // Report-only is the shipped default (engineconfig.watchDryRun: true), so
+  // switch it off here; section [8] verifies the report-only behavior.
+  engineconfig.dataDir = DATA_DIR;
+  service.watcherModeSet({ dryRun: false });
 
   const libRoot = path.join(DATA_DIR, 'library');
   const staging = path.join(DATA_DIR, 'staging');
@@ -302,6 +310,46 @@ async function main() {
   watcher.checkNow();
   check('missing pending episode is (re)queued for the dub', managerAdds.some((m) => m.series === 'Pending Show' && m.episode === 8));
   check('...and stays on the list until it downloads', pending.list().some((p) => p.episode === 8));
+
+  // ---- 8. Report-only (dry-run) mode: verify before it may queue ------------
+  console.log('\n[8] Report-only mode: reports everything, queues nothing');
+  service.watcherModeSet({ dryRun: true });
+  const logs = [];
+  watcher.onLog = (m) => { logs.push(String(m)); };
+  queueCalls.length = 0;
+  legacyCalls.length = 0;
+
+  // At this point (from sections above): Fast Show is missing S1E9-12, Movie
+  // Show's file was deleted, Legacy Show has no TMDB id, Pending Show S1E8
+  // is still on the waiting list and not on disk.
+  const futureSeasonBefore = (schedule.list().find((x) => x.series === 'Future Show') || {}).season;
+  await watcher.checkSchedules();
+  check('dry-run: NOTHING was queued (TV, anime, movie)', queueCalls.length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  check('dry-run: the legacy path did not run either', legacyCalls.length === 0, String(legacyCalls.length));
+  check('dry-run: the report names the missing episodes', logs.some((l) => /Fast Show/.test(l) && /report only/.test(l) && /E9/.test(l) && /E12/.test(l)), logs.filter((l) => /Fast Show/.test(l)).join(' | '));
+  check('dry-run: the pass is announced as report-only', logs.some((l) => /report only/.test(l) && /scheduled series/.test(l)), logs.slice(0, 3).join(' | '));
+  check('dry-run: the missing movie is reported, not re-queued', logs.some((l) => /Movie Show/.test(l) && /MISSING/.test(l) && /NOT re-queued/.test(l)), logs.filter((l) => /Movie Show/.test(l)).join(' | '));
+  check('dry-run: the no-TMDB title is skipped, not downloaded', logs.some((l) => /Legacy Show/.test(l) && /report mode skips it/.test(l)), logs.filter((l) => /Legacy Show/.test(l)).join(' | '));
+  check('dry-run: no season bump happened', (schedule.list().find((x) => x.series === 'Future Show') || {}).season === futureSeasonBefore);
+
+  // Pending dubs: still missing -> reported, NOT re-queued; on-disk still clears.
+  const managerAdds2 = [];
+  manager.add = (rec) => { managerAdds2.push(rec); return true; };
+  watcher.checkNow();
+  check('dry-run: the missing pending dub is NOT re-queued', !managerAdds2.some((m) => m.series === 'Pending Show'));
+  check('dry-run: ...it stays on the waiting list', pending.list().some((p) => p.episode === 8), JSON.stringify(pending.list().map((p) => p.episode)));
+
+  // Enabled again: the same pass now queues what it reported.
+  service.watcherModeSet({ dryRun: false });
+  queueCalls.length = 0;
+  legacyCalls.length = 0;
+  await watcher.checkSchedules();
+  check('enabled again: the missing episodes are queued', queueCalls.filter((c) => c.series === 'Fast Show').length === 4, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  check('enabled again: the missing movie is re-queued exactly once', queueCalls.filter((c) => c.series === 'Movie Show').length === 1, String(queueCalls.filter((c) => c.series === 'Movie Show').length));
+  check('enabled again: the legacy path runs for the no-TMDB title', legacyCalls.some((l) => l.entries[0].series === 'Legacy Show'), String(legacyCalls.length));
+  // Restore the shipped default: report-only until the user turns it off.
+  service.watcherModeSet({ dryRun: true });
+  check('shipped default is report-only', service.watcherMode().dryRun === true);
 
   // ---- summary ----------------------------------------------------------------
   console.log(`\n${passed} passed, ${failed} failed`);

@@ -486,6 +486,20 @@ function waitingRemove(key) {
 
 // ---- schedules (keep watching) ----
 
+// Watcher mode. Report-only (watchDryRun true) is the DEFAULT: the scanner
+// verifies and reports before it is allowed to spend any bandwidth. The
+// Watching tab's toggle flips it off once the user trusts the reports.
+function watcherMode() {
+  const c = engineconfig.get() || {};
+  return { dryRun: c.watchDryRun !== false };
+}
+
+function watcherModeSet(patch) {
+  const dryRun = !!(patch && patch.dryRun);
+  engineconfig.set({ watchDryRun: dryRun });
+  return { dryRun };
+}
+
 function schedulesList() {
   return schedule.list();
 }
@@ -843,6 +857,8 @@ module.exports = {
   queueRetry,
   waitingList,
   waitingRemove,
+  watcherMode,
+  watcherModeSet,
   schedulesList,
   schedulesAdd,
   schedulesRemove,

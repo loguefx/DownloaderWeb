@@ -22,8 +22,9 @@
 //   POST   /api/queue/{id}/retry
 //   GET    /api/waiting                     waiting-for-dub list
 //   DELETE /api/waiting/{key}
-//   GET    /api/schedules                   keep-watching series
+//   GET    /api/schedules                   keep-watching series (+ watcher mode)
 //   POST   /api/schedules
+//   POST   /api/schedules/mode              set watcher report-only (dryRun) on/off
 //   DELETE /api/schedules/{key}
 //   GET    /api/settings
 //   PUT    /api/settings
@@ -577,7 +578,8 @@ async function handle(req, res, u) {
     if (seg === 'schedules') {
       const key = parts[2];
       if (req.method === 'GET' && !key) {
-        json(res, 200, { items: service.schedulesList() });
+        // dryRun: watcher mode, so the UI can show the report-only banner.
+        json(res, 200, { items: service.schedulesList(), dryRun: service.watcherMode().dryRun });
         return;
       }
       if (req.method === 'POST' && !key) {
@@ -587,6 +589,13 @@ async function handle(req, res, u) {
           return;
         }
         json(res, 200, service.schedulesAdd(spec));
+        return;
+      }
+      if (req.method === 'POST' && key === 'mode') {
+        // Watcher mode: { dryRun: bool }. true = report only (the default),
+        // false = the scanner may queue missing aired episodes / new seasons.
+        const body = await readBody(req);
+        json(res, 200, service.watcherModeSet(body));
         return;
       }
       if (req.method === 'POST' && key === 'check') {

@@ -60,7 +60,13 @@ function defaults() {
     // catalogs are skipped). When set, challenged pages are cleared
     // automatically (no on-screen checkbox) and those catalogs become a
     // popup-free backup source.
-    cloudflare: { solverUrl: '' }
+    cloudflare: { solverUrl: '' },
+    // Watcher (daily new-episode scanner) mode. true = REPORT ONLY: the pass
+    // verifies aired episodes, on-disk coverage and new seasons and logs
+    // exactly what it would queue, but queues NOTHING (no movie re-pulls,
+    // no pending-dub retries, no season bumps). The user verifies the
+    // reports before turning auto-download on (set to false).
+    watchDryRun: true
   };
 }
 

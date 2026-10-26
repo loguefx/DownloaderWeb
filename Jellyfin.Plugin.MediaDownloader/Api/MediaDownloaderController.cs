@@ -393,6 +393,20 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesCheck() =>
             await ProxyAsync(() => _engine.PostAsync("api/schedules/check")).ConfigureAwait(false);
 
+        // Watcher mode toggle (Watching tab). Body: { "dryRun": bool }.
+        // true  = report only (the default): the daily pass verifies aired
+        //         episodes, on-disk coverage and new seasons and reports what
+        //         it would queue, but downloads nothing;
+        // false = the scanner queues missing aired episodes / new seasons.
+        [HttpPost("Schedules/mode")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> SchedulesMode() =>
+            await ProxyAsync(async () =>
+            {
+                var body = await ReadBodyAsync().ConfigureAwait(false);
+                return await _engine.PostAsync("api/schedules/mode", body).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+
         [HttpDelete("Schedules/{key}")]
         public async Task<IActionResult> SchedulesRemove(string key) =>
             await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + Uri.EscapeDataString(key ?? string.Empty))).ConfigureAwait(false);

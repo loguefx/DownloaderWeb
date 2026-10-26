@@ -785,7 +785,7 @@
                             // Watch list: a local JSON file on the engine - one
                             // cheap call, no per-title lookups, so the tab is
                             // instant no matter how many titles are watched.
-                            tasks.push(get('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; }).catch(() => {}));
+                            tasks.push(get('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; S.schedulesDryRun = sc ? !!sc.dryRun : true; }).catch(() => {}));
                             if (S.view === 'queue') {
                                 tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
@@ -1826,7 +1826,22 @@
                         return;
                     }
                     if (S.qtab === 'watching') {
-                        bar.innerHTML = '<p class="small muted" style="margin-bottom:.8em;">Watched titles are re-checked about every 24 h. Only episodes that have AIRED and are not already on disk get queued - new seasons are picked up automatically and your existing files are never touched.</p>' +
+                        // Watcher mode banner: report-only is the default until the
+                        // user has verified the reports and turns auto-download on.
+                        // Unknown (older engine) is treated as report-only too -
+                        // the new engine config default is dryRun: true.
+                        const dryRun = S.schedulesDryRun !== false;
+                        const modeBanner = dryRun
+                            ? '<div class="mdl-row" style="display:flex;align-items:center;gap:.8em;flex-wrap:wrap;border-radius:.6em;padding:.7em .9em;margin-bottom:.9em;background:var(--md-yellow-bg);border:1px solid rgba(0,0,0,.06);">' +
+                                  '<span class="mdl-pill yellow">Report only</span>' +
+                                  '<span class="small" style="flex:1;min-width:14em;">The watcher is verifying what it sees and is <b>not</b> downloading anything. Read its per-title reports in the activity log, then turn auto-download on.</span>' +
+                                  '<button type="button" class="mdl-btn sm" data-w-mode="on">Turn on auto-download</button></div>'
+                            : '<div class="mdl-row" style="display:flex;align-items:center;gap:.8em;flex-wrap:wrap;border-radius:.6em;padding:.7em .9em;margin-bottom:.9em;background:var(--md-green-bg);border:1px solid rgba(0,0,0,.06);">' +
+                                  '<span class="mdl-pill green">Auto-download on</span>' +
+                                  '<span class="small" style="flex:1;min-width:14em;">New aired episodes and seasons are queued automatically; files you already have are never touched.</span>' +
+                                  '<button type="button" class="mdl-btn sm" data-w-mode="off">Switch to report only</button></div>';
+                        bar.innerHTML = modeBanner +
+                            '<p class="small muted" style="margin-bottom:.8em;">Watched titles are re-checked about every 24 h. Only episodes that have AIRED and are not already on disk get queued - new seasons are picked up automatically and your existing files are never touched.</p>' +
                             '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-w-check' + (S.wCheckBusy ? ' disabled' : '') + '>' + (S.wCheckBusy ? '<span class="mdl-spin"></span> Checking…' : 'Check for new episodes now') + '</button></div>' +
                             (S.wCheckMsg ? '<div class="hint" style="margin-bottom:.8em;">' + S.wCheckMsg + '</div>' : '');
                         const w = S.schedules || [];
@@ -2078,6 +2093,15 @@
                                 S.wCheckMsg = 'Check failed to start: ' + err.message;
                                 renderQueue();
                             });
+                        return;
+                    }
+                    if (el.hasAttribute('data-w-mode')) {
+                        const wantOn = el.getAttribute('data-w-mode') === 'on';
+                        if (wantOn && !confirm('Turn on auto-download? The watcher will queue missing aired episodes and new seasons from now on.')) return;
+                        if (!wantOn && !confirm('Switch back to report only? The watcher will keep checking but stop queuing anything.')) return;
+                        post('MediaDownloader/Schedules/mode', { dryRun: !wantOn })
+                            .then((r) => { S.schedulesDryRun = r ? !!r.dryRun : !wantOn; renderQueue(); })
+                            .catch((err) => alert(err.message));
                         return;
                     }
                     if (el.hasAttribute('data-w-del')) {
