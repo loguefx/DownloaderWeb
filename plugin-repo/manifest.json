@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.33",
+                "changelog": "33: recognizes episodes already on disk in differently-named series folders (no more duplicates - new episodes are added to your existing folders); titles without a TMDB id are resolved by name and the no-TMDB message is now accurate; queue removals are instant; season loading is much faster (parallel lanes, TMDB caching, parallel file checks).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v33/MediaDownloader.12.1.0.33.zip",
+                "checksum": "990d378b40f2429f92be26fa89c592f6",
+                "timestamp": "2026-10-26T12:45:31.855Z"
+            },
+            {
                 "version": "12.1.0.32",
                 "changelog": "Library preview (dry-run: shows what is skipped as already in your library vs. what downloads, plus on-disk files it does not recognize). Episode picker now counts files named by episode title. Anime season lists follow the Aniwave/AniList layout (the structure your library uses). Strictly additive: existing files are never replaced or moved.",
                 "targetAbi": "12.1.0.0",
@@ -256,6 +264,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.33",
+                "changelog": "33: recognizes episodes already on disk in differently-named series folders (no more duplicates - new episodes are added to your existing folders); titles without a TMDB id are resolved by name and the no-TMDB message is now accurate; queue removals are instant; season loading is much faster (parallel lanes, TMDB caching, parallel file checks).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v33/MediaDownloader.10.11.0.33.zip",
+                "checksum": "ae3ec45c679957b8436dbf5cac492441",
+                "timestamp": "2026-10-26T12:45:31.854Z"
+            },
+            {
                 "version": "10.11.0.32",
                 "changelog": "Library preview (dry-run: shows what is skipped as already in your library vs. what downloads, plus on-disk files it does not recognize). Episode picker now counts files named by episode title. Anime season lists follow the Aniwave/AniList layout (the structure your library uses). Strictly additive: existing files are never replaced or moved.",
                 "targetAbi": "10.11.0.0",
@@ -502,6 +518,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.33",
+                "changelog": "33: recognizes episodes already on disk in differently-named series folders (no more duplicates - new episodes are added to your existing folders); titles without a TMDB id are resolved by name and the no-TMDB message is now accurate; queue removals are instant; season loading is much faster (parallel lanes, TMDB caching, parallel file checks).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v33/MediaDownloader.10.10.0.33.zip",
+                "checksum": "aa32ab798dc4cd159c99b41403883978",
+                "timestamp": "2026-10-26T12:45:31.854Z"
             },
             {
                 "version": "10.10.0.32",
