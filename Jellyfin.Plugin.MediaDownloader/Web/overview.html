@@ -1138,8 +1138,33 @@
                 function loadTitle(t) {
                     const stale = () => S.t !== t;
                     if (!t.tmdb) {
+                        // The result has no TMDB id (AniList-only card, a catalog
+                        // entry without a provider id, ...): the engine can still
+                        // resolve one by TITLE - try that before giving up.
+                        if (t.title && !t.noTmdbTried) {
+                            t.noTmdbTried = true;
+                            get('MediaDownloader/Search?q=' + encodeURIComponent(t.title) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv'))
+                                .then((resp) => {
+                                    if (stale()) return;
+                                    const list = (resp && resp.results) || [];
+                                    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                                    const want = norm(t.title);
+                                    const hit = list.find((x) => x.tmdb && want && norm(x.title) === want)
+                                        || list.find((x) => x.tmdb) || null;
+                                    if (!hit) return; // the noTmdb message stays
+                                    t.tmdb = hit.tmdb;
+                                    t.noTmdb = false;
+                                    t.infoError = null;
+                                    if (t.r) {
+                                        t.r.tmdb = hit.tmdb;
+                                        if (hit.imdb) t.r.imdb = hit.imdb;
+                                    }
+                                    loadTitle(t);
+                                })
+                                .catch(() => { /* the noTmdb message stays visible */ });
+                        }
                         t.noTmdb = true;
-                        t.infoError = 'This result has no TMDB id, so the engine has no way to find a source for it. Give the engine a TMDB key (engine.json "tmdbApiKey") and search again.';
+                        t.infoError = 'This title has no TMDB id and a search by name did not return one either. The engine uses TMDB ids to find sources, so this one may fail. Check the title spelling (it must exist on TMDB) and that the engine has a TMDB key (engine.json "tmdbApiKey"), then try again.';
                         renderTitle();
                         if (t.kind === 'movie') checkMovie(t);
                         return;
@@ -1851,26 +1876,9 @@
                         year: ''
                     };
                     openTitle(r);
-                    // AniList-only cards have no TMDB id, but the download
-                    // pipeline needs one: resolve it via TMDB search and
-                    // re-load the title once found.
-                    if (!r.tmdb && r.title && S.t && S.t.r === r) {
-                        get('MediaDownloader/Search?q=' + encodeURIComponent(r.title) + '&type=tv')
-                            .then((resp) => {
-                                const list = (resp && resp.results) || [];
-                                const hit = list.find((x) => x.tmdb) || null;
-                                if (!hit || !S.t || S.t.r !== r) return;
-                                r.tmdb = hit.tmdb;
-                                if (hit.imdb) r.imdb = hit.imdb;
-                                if (hit.poster) r.poster = hit.poster;
-                                if (hit.year) r.year = hit.year;
-                                S.t.tmdb = hit.tmdb;
-                                S.t.noTmdb = false;
-                                S.t.infoError = null;
-                                loadTitle(S.t);
-                            })
-                            .catch(() => { /* the noTmdb message stays visible */ });
-                    }
+                    // AniList-only cards have no TMDB id - loadTitle() resolves
+                    // one by title via the engine's search before showing the
+                    // "no TMDB id" message.
                 }
 
                 root.addEventListener('click', (ev) => {

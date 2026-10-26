@@ -215,6 +215,59 @@ async function main() {
     organizer.existingEpisodeFile(libRoot, { series: 'ShowJ', season: 1, episode: 1 }, null, 'The Beginning Part 2') === files.partTrap
   );
 
+  console.log('\n[1b] fuzzy series-folder matching (name variants, add-only)');
+  const timid = 'Even Though Im a Super Timid Noble Girl I Accepted The Cunning Fiance (2026)';
+  const timidTitle = "Even Though I'm a Super Timid Noble Girl, I Accepted the Cunning Fianc\u00e9";
+  const mk = (rel, content = 'x'.repeat(2048)) => {
+    const p = path.join(libRoot, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+    return p;
+  };
+  const fuzzyEp1 = mk(timid + '/Season 1/' + timidTitle.replace(/[,\u00e9]/g, ' ') + ' S1E1.mkv');
+  check(
+    'accent/comma/apostrophe variant folder: episode is recognized',
+    organizer.existingEpisodeFile(libRoot, { series: timidTitle, season: 1, episode: 1 }) === fuzzyEp1,
+    F(organizer.existingEpisodeFile(libRoot, { series: timidTitle, season: 1, episode: 1 }))
+  );
+  check(
+    '...and ep 2 is NOT invented from that folder',
+    organizer.existingEpisodeFile(libRoot, { series: timidTitle, season: 1, episode: 2 }) === null
+  );
+  const fuzzyExpected = organizer.expectedPath(libRoot, { series: timidTitle, season: 1, episode: 2 }, '.mp4');
+  check(
+    'new episodes land INSIDE the existing variant folder (add, not duplicate)',
+    fuzzyExpected.startsWith(path.join(libRoot, timid) + path.sep),
+    fuzzyExpected
+  );
+  check(
+    'listSeriesVideoFiles sees the variant folder',
+    organizer.listSeriesVideoFiles(libRoot, timidTitle).includes(fuzzyEp1)
+  );
+  check(
+    'titleOnDisk is true for the variant-named series',
+    organizer.titleOnDisk(libRoot, timidTitle) === true
+  );
+  // Guards: short titles and unrelated shows must never claim a foreign folder.
+  const rival = 'One Piece Pirate Warriors Of The World';
+  mk(rival + '/Season 1/' + rival + ' S1E1.mp4');
+  check(
+    'short title "One Piece" does NOT claim "One Piece Pirate Warriors Of The World"',
+    organizer.existingEpisodeFile(libRoot, { series: 'One Piece', season: 1, episode: 1 }) === null
+  );
+  check(
+    '...but the full name still matches its own folder',
+    organizer.existingEpisodeFile(libRoot, { series: 'One Piece: Pirate Warriors of the World', season: 1, episode: 1 }) !== null
+  );
+  check('unrelated series does not match the variant folder',
+    organizer.existingEpisodeFile(libRoot, { series: 'Totally Unknown Show', season: 1, episode: 1 }) === null);
+  check('fuzzySeriesMatch: identical normalized names match',
+    organizer.fuzzySeriesMatch('The Show With Accents (2020)', 'the show with accents') === true);
+  check('fuzzySeriesMatch: short phrase is not enough',
+    organizer.fuzzySeriesMatch('Star Trek Lower Decks', 'Star Trek') === false);
+  check('fuzzySeriesMatch: empty input never matches',
+    organizer.fuzzySeriesMatch('Anything Long Enough Here', '') === false);
+
   console.log('\n[2] safePlace: new file, overwrite refusal, ledger, trash');
   const lib = createLibrary({ dataDir });
 

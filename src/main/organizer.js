@@ -54,6 +54,46 @@ function seriesKey(name) {
     .trim();
 }
 
+// Fuzzy series matching - an ADDITIVE fallback used only when the exact
+// seriesKey comparison misses, so nothing that matched before can stop
+// matching.
+//
+// normSeries folds two names of the same series into the same string:
+// lowercase, accents folded (Fiancé -> fiance), apostrophes dropped (I'm ->
+// im), every remaining punctuation collapsed to single spaces, and the
+// "(2013)" / "[tmdb-60761]" tokens the strict key already strips.
+function normSeries(name) {
+  return String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[\u2019']/g, '')
+    .replace(/\s*\(\s*\[?\s*tmdbid[-\s]*\d+\s*\]?\s*\)/gi, ' ')
+    .replace(/\s*\[\s*tmdbid[-\s]*\d+\s*\]/gi, ' ')
+    .replace(/\s*\(\s*\[?\s*(?:tmdb|tvdb|imdb)[-\s]*[A-Za-z0-9]+\s*\]?\s*\)/gi, ' ')
+    .replace(/\s*\(\d{4}\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+// Does a folder that does NOT exact-match the series still clearly refer to
+// it? The shorter normalized name must be a substantial phrase (>= 12 chars)
+// contained in the longer one, so short titles ("One Piece", 9 chars) can
+// never claim a differently-named folder, and a title cannot claim "The
+// Beginning Part 2" when it is "The Beginning". Combined with the
+// episode-number match that must still succeed INSIDE the folder (or, for
+// movies, the phrase being long and specific), a false positive is
+// effectively impossible.
+function fuzzySeriesMatch(folderName, seriesName) {
+  const a = normSeries(folderName);
+  const b = normSeries(seriesName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  return short.length >= 12 && long.indexOf(short) >= 0;
+}
+
 // Containers the engine recognizes as video in a library. The engine still
 // WRITES .mp4; it must also SEE .mkv/.avi/.m4v/.ts so a Jellyfin-style
 // library counts as "in library".
@@ -82,8 +122,39 @@ function buildBaseName({ series, season, episode }) {
   return `${seriesPart} S${se != null ? se : 1}E${ep}`;
 }
 
-// The series folder inside the chosen download root: <root>/<Series>.
+// The series folder the library ALREADY uses inside this root, if any: an
+// exact seriesKey folder first, else the first strong fuzzy variant. This is
+// what makes a re-run ADD to the existing folder (keeping the user's naming)
+// instead of starting a second, differently-named series folder next to it.
+// Returns null when the root does not hold this series yet.
+function existingSeriesFolder(outputRoot, meta) {
+  const seriesName = meta && meta.series;
+  if (!outputRoot || !seriesName) return null;
+  const want = seriesKey(seriesName);
+  let ents = [];
+  try {
+    ents = fs.readdirSync(outputRoot, { withFileTypes: true });
+  } catch (e) {
+    return null; // unreadable root: no existing folder
+  }
+  ents.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+  let fuzzy = null;
+  for (const ent of ents) {
+    if (!ent.isDirectory()) continue;
+    if (want && seriesKey(ent.name) === want) return path.join(outputRoot, ent.name);
+    if (!fuzzy && fuzzySeriesMatch(ent.name, seriesName)) fuzzy = path.join(outputRoot, ent.name);
+  }
+  return fuzzy;
+}
+
+// The series folder inside the chosen download root: <root>/<Series> - or the
+// EXISTING series folder when the library already files this series under a
+// slightly different name (accents, apostrophes, shortened title). Additive
+// only: existing files are never touched, new ones land where the library
+// already has them.
 function seriesRoot(outputRoot, meta) {
+  const found = existingSeriesFolder(outputRoot, meta);
+  if (found) return found;
   return path.join(outputRoot, sanitize(meta.series) || 'Video');
 }
 
@@ -144,11 +215,20 @@ function seriesDirs(outputRoot, meta) {
   addDir(seriesRoot(outputRoot, meta));
   addSeasonDirs(seriesRoot(outputRoot, meta));
   const want = seriesKey(meta && meta.series);
-  if (want) {
+  const seriesName = meta && meta.series;
+  if (want || seriesName) {
     try {
       for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
         if (!ent.isDirectory()) continue;
-        if (seriesKey(ent.name) !== want) continue;
+        // Exact key first (unchanged behavior); a strong fuzzy variant is an
+        // additive extra, so recognition only ever grows.
+        if (want && seriesKey(ent.name) === want) {
+          const dir = path.join(outputRoot, ent.name);
+          addDir(dir);
+          addSeasonDirs(dir);
+          continue;
+        }
+        if (!fuzzySeriesMatch(ent.name, seriesName)) continue;
         const dir = path.join(outputRoot, ent.name);
         addDir(dir);
         addSeasonDirs(dir);
@@ -248,10 +328,12 @@ function seriesHasSeasonFolders(outputRoot, meta) {
   const roots = new Set();
   roots.add(seriesRoot(outputRoot, meta));
   const want = seriesKey(meta && meta.series);
-  if (want) {
+  const seriesName = meta && meta.series;
+  if (want || seriesName) {
     try {
       for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
-        if (ent.isDirectory() && seriesKey(ent.name) === want) {
+        if (!ent.isDirectory()) continue;
+        if ((want && seriesKey(ent.name) === want) || fuzzySeriesMatch(ent.name, seriesName)) {
           roots.add(path.join(outputRoot, ent.name));
         }
       }
@@ -477,6 +559,9 @@ module.exports = {
   parseSeasonFromUrl,
   seasonFromName,
   seriesHasSeasonFolders,
+  normSeries,
+  fuzzySeriesMatch,
+  existingSeriesFolder,
   titleMatches,
   buildBaseName,
   seriesRoot,
