@@ -59,10 +59,20 @@ const TV = {
     ]
   }
 };
+const WATCH_PROVIDERS = {
+  '218038': [{ provider_name: 'Netflix' }],
+  '555': [{ provider_name: 'Netflix' }, { provider_name: 'Apple TV+' }]
+};
 global.fetch = async (url) => {
   const u = String(url);
   const m = u.match(/\/tv\/(\d+)/);
-  if (!m || !TV[m[1]]) return { ok: false, status: 404 };
+  if (!m) return { ok: false, status: 404 };
+  if (u.includes('watch/providers')) {
+    const wp = WATCH_PROVIDERS[m[1]];
+    if (!wp) return { ok: false, status: 404 };
+    return { ok: true, json: async () => ({ results: [wp], flatrate: wp }) };
+  }
+  if (!TV[m[1]]) return { ok: false, status: 404 };
   if (u.includes('external_ids')) {
     return {
       ok: true,
@@ -129,6 +139,19 @@ animelayout._internals.cacheSet('aniwave:789', null);
   } catch (e) {
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }
+
+  console.log('\n[5] Total-failure diagnostic (licensed-exclusive explanation)');
+  const provs = await tmdb.watchProviders('218038', 'tv');
+  check('watchProviders reads the TMDB flatrate list', JSON.stringify(provs) === JSON.stringify(['Netflix']), JSON.stringify(provs));
+  const multi = await tmdb.watchProviders('555', 'tv');
+  check('watchProviders handles multiple providers', JSON.stringify(multi) === JSON.stringify(['Netflix', 'Apple TV+']), JSON.stringify(multi));
+  const none = await tmdb.watchProviders('789', 'tv');
+  check('watchProviders returns null when TMDB has no data', none === null, JSON.stringify(none));
+  const hint = tmdb.exclusiveHint(provs);
+  check('hint names the exclusive', /Netflix exclusive/.test(hint), hint);
+  check('hint points at the solver unlock', /Cloudflare solver/i.test(hint), hint);
+  check('hint is empty with no providers', tmdb.exclusiveHint(none) === '', tmdb.exclusiveHint(none));
+  check('multi-provider hint uses licensed-on wording', /licensed on Netflix, Apple TV\+/.test(tmdb.exclusiveHint(multi)), tmdb.exclusiveHint(multi));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

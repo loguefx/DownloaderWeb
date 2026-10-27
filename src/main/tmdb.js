@@ -250,10 +250,49 @@ async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   };
 }
 
+// Best-effort: licensed providers for a title (TMDB /watch/providers).
+// Used to EXPLAIN a total discovery failure: a Netflix exclusive is simply
+// not on the CF-free catalogs, and that is the answer the user needs instead
+// of six retries of "No video sources found on the page".
+async function watchProviders(tmdbId, type) {
+  const key = getTmdbKey();
+  if (!key || !tmdbId) return null;
+  const t = type === 'movie' ? 'movie' : 'tv';
+  const cacheKey = 'wp|' + t + '|' + tmdbId;
+  const cached = tmdbCacheGet(cacheKey);
+  if (cached !== undefined) return cached;
+  const body = await tmdbFetch(`/${t}/${tmdbId}/watch/providers?language=en-US`, key);
+  const flat = body && Array.isArray(body.flatrate) ? body.flatrate : null;
+  const names = (flat || [])
+    .map((p) => (p && (p.provider_name || p.name) || ''))
+    .filter(Boolean);
+  const out = names.length ? names : null;
+  if (out) tmdbCacheSet(cacheKey, out);
+  return out;
+}
+
+// An actionable, single-clause explanation of a total source failure when TMDB
+// says the title is a licensed exclusive. '' when TMDB knows nothing useful,
+// so the failure message never invents a reason.
+function exclusiveHint(providerNames) {
+  const names = (providerNames || [])
+    .map((n) => String(n || '').trim())
+    .filter(Boolean);
+  if (!names.length) return '';
+  const list = names.slice(0, 4).join(', ');
+  const kind = names.length === 1 ? `a ${list} exclusive` : `licensed on ${list}`;
+  return (
+    `${kind} per TMDB - such titles are rarely on the CF-free catalogs. ` +
+    'The Cloudflare-gated fallbacks are the best remaining chance; set a Cloudflare solver (Settings) to unlock them without the checkbox.'
+  );
+}
+
 module.exports = {
   getTmdbKey,
   tmdbFetch,
   tmdbInfo,
   tmdbSeason,
+  watchProviders,
+  exclusiveHint,
   TMDB_CACHE_MS
 };

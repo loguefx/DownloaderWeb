@@ -18,6 +18,7 @@ const pending = require('./pending');
 const sites = require('./sites');
 const { episodeRefFromUrl, lookupMediaId, rememberMediaId } = require('./sites/findtitle');
 const resolveid = require('./sites/resolveid');
+const tmdb = require('./tmdb');
 const hlscheck = require('./hlscheck');
 const { verifyFile, belowMinHeight } = require('./verify');
 
@@ -298,11 +299,6 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                 log('id resolve failed: ' + ((e && e.message) || e));
               }
             }
-            const hooks = {
-              wc: win.webContents,
-              load: (page) => loadWithTimeout(win, page, 30000),
-              cloudflare: (page) => passCloudflare(win, page, log)
-            };
             // Order the fallbacks by fallbackRank (non-Cloudflare first) so the
             // common 1080p path avoids a CF challenge. Sites without a rank are
             // tried last (anime/region adapters). This was alphabetical before,
@@ -321,9 +317,18 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             for (const cand of cands) {
               if (controller.signal.aborted) break;
               if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
+              // Name this candidate on every line it produces (search, Cloudflare
+              // waits) so the log shows WHICH site is blocked, not just that a
+              // challenge is waiting.
+              const namedLog = (m) => log(`${cand.name || cand.id}: ${m}`);
+              const hooks = {
+                wc: win.webContents,
+                load: (page) => loadWithTimeout(win, page, 30000),
+                cloudflare: (page) => passCloudflare(win, page, namedLog)
+              };
               let pageUrl = null;
               try {
-                pageUrl = await cand.findTitle(ref, hooks, log);
+                pageUrl = await cand.findTitle(ref, hooks, namedLog);
               } catch (e) {
                 pageUrl = null;
                 log(`Search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
@@ -343,7 +348,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                 log(`Could not load ${pageUrl}: ${(e && e.message) || e}`);
                 continue;
               }
-              if (!(await passCloudflare(win, pageUrl, log))) {
+              if (!(await passCloudflare(win, pageUrl, namedLog))) {
                 outcome = { status: 'failed', reason: 'Cloudflare check did not clear' };
                 continue;
               }
@@ -435,6 +440,31 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           }
         }
         if (!outcome) outcome = { status: 'failed', reason: 'No 1080p stream on any source' };
+        // A total failure deserves a reason the user can act on. When every
+        // source was exhausted and TMDB says the title is a licensed exclusive
+        // (the Vivant case: a Netflix exclusive), that is the answer: CF-free
+        // catalogs do not carry licensed exclusives, and the CF-gated
+        // fallbacks need a solver. Best-effort - never blocks the queue.
+        if (outcome && outcome.status === 'failed' && extra && extra.series) {
+          try {
+            let tmdbId = ((lookupMediaId(extra.series) || {}).tmdb) || '';
+            if (!tmdbId) {
+              const m = String(url).match(/embed\/(?:tv|movie)\/(\d{4,8})/);
+              if (m) tmdbId = m[1];
+            }
+            if (tmdbId) {
+              const t = /\/embed\/movie\//.test(String(url)) ? 'movie' : 'tv';
+              const provs = await tmdb.watchProviders(tmdbId, t);
+              const hint = tmdb.exclusiveHint(provs);
+              if (hint) {
+                outcome.reason = hint;
+                log(hint);
+              }
+            }
+          } catch (e) {
+            /* the diagnostic must never break discovery */
+          }
+        }
         // Token CDNs (vidfast/peakstorm/embedmaster) only serve segments while
         // the player page is still open. Destroying it here made download fail
         // in ~1s with an empty playlist / net::ERR_FAILED. Token CDNs behind a
