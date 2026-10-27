@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.35",
+                "changelog": "Version 12.1.0.35",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v35/MediaDownloader.12.1.0.35.zip",
+                "checksum": "9a45a9be103a57a7d225483600fd50df",
+                "timestamp": "2026-10-27T10:43:56.926Z"
+            },
+            {
                 "version": "12.1.0.34",
                 "changelog": "Watching tab in the plugin (see, manage, and run the watcher); report-only watcher mode by default - verify the scanner's per-title reports before auto-download can start; seamless queue/season loads",
                 "targetAbi": "12.1.0.0",
@@ -272,6 +280,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.35",
+                "changelog": "Version 10.11.0.35",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v35/MediaDownloader.10.11.0.35.zip",
+                "checksum": "b321fdac8b4a87b75106937cb39b176e",
+                "timestamp": "2026-10-27T10:43:56.926Z"
+            },
+            {
                 "version": "10.11.0.34",
                 "changelog": "Watching tab in the plugin (see, manage, and run the watcher); report-only watcher mode by default - verify the scanner's per-title reports before auto-download can start; seamless queue/season loads",
                 "targetAbi": "10.11.0.0",
@@ -534,6 +550,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.35",
+                "changelog": "Version 10.10.0.35",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v35/MediaDownloader.10.10.0.35.zip",
+                "checksum": "b3e25603771f7e2fb3314d6896d14f35",
+                "timestamp": "2026-10-27T10:43:56.926Z"
             },
             {
                 "version": "10.10.0.34",
