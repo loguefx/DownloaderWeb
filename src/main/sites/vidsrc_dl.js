@@ -54,27 +54,38 @@ const UA =
 const API_BASE = 'https://data.vidsrc.sh/api.php';
 const RELAY_HOSTS = ['https://vidsrc.sh', 'https://vidsrcme.ru'];
 
-// Simple throttle: minimum interval between Vidsrc API calls to avoid 429.
-// Vidsrc's data API is IP-rate-limited; when a season's worth resolves at
-// once the whole batch gets 429'd. Keep a conservative global spacing on top
-// of the per-site serialization (see vidsrc.js download.concurrency=1).
+// Reuse the TLS connection per host (master -> variant index -> first segment
+// all hit the same CDN). Over a VPN a fresh handshake per hop costs 100-500ms.
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, keepAliveMsecs: 1500 });
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, keepAliveMsecs: 1500 });
+
+// Throttle ONLY the Vidsrc data API (data.vidsrc.sh/api.php), which is
+// IP-rate-limited and 429s bursts. The per-source CDN calls (generate.php,
+// playlists, segments) run on different hosts with separate limits - the old
+// global 1.2s spacing between EVERY call added ~4s of pure sleep per episode
+// for no protection. (See vidsrc.js download.concurrency=1 for the rest of
+// the rate-limit defence.)
 let _lastApiCall = 0;
 const API_MIN_INTERVAL_MS = 1200;
 function throttleApi() {
   const now = Date.now();
   const wait = Math.max(0, _lastApiCall + API_MIN_INTERVAL_MS - now);
+  _lastApiCall = now + wait;
   if (wait > 0) return new Promise((r) => setTimeout(r, wait));
   return Promise.resolve();
 }
 
 function request(url, headers, timeoutMs) {
-  _lastApiCall = Date.now();
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const lib = u.protocol === 'http:' ? http : https;
     const req = lib.get(
       url,
-      { headers: Object.assign({ 'User-Agent': UA }, headers || {}), timeout: timeoutMs || 30000 },
+      {
+        headers: Object.assign({ 'User-Agent': UA }, headers || {}),
+        timeout: timeoutMs || 30000,
+        agent: u.protocol === 'http:' ? httpAgent : httpsAgent
+      },
       (res) => {
         const chunks = [];
         res.on('data', (d) => chunks.push(d));
@@ -101,38 +112,67 @@ function request(url, headers, timeoutMs) {
 // (~10 min), so it is fetched just-in-time per episode, here. Verified live
 // for movie/tv, tmdb/imdb (Runner tt31349844, 2026-10). Returns '' on any
 // failure so the caller can still try the token-less API (older deployments).
-async function acquireApiToken(ref) {
+// One relay chain: vs_src.php -> landing page -> player page -> apiToken.
+async function tokenChain(relay, ref) {
   const id = ref.imdb ? ref.imdb : ref.tmdb;
   if (!id) return '';
   const isTv = ref.type === 'tv';
   const params =
     `type=${isTv ? 'tv' : 'movie'}&id=${encodeURIComponent(id)}` +
     (isTv ? `&season=${encodeURIComponent(ref.season)}&episode=${encodeURIComponent(ref.episode)}` : '');
-  for (const relay of RELAY_HOSTS) {
-    try {
-      const r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 20000);
-      if (r.status !== 200) continue;
-      let j;
-      try {
-        j = JSON.parse(r.body.toString('utf8'));
-      } catch (e) {
-        continue;
-      }
-      if (!j || !j.src) continue;
-      const base = String(j.src).match(/^https?:\/\/[^/]+/);
-      if (!base) continue;
-      const lr = await request(j.src, { Referer: relay + '/' }, 20000);
-      if (lr.status !== 200) continue;
-      const pm = lr.body.toString('utf8').match(/playerUrl":"([^"]+)"/);
-      if (!pm) continue;
-      const pr = await request(base[0] + pm[1], { Referer: j.src }, 20000);
-      if (pr.status !== 200) continue;
-      const tm = pr.body.toString('utf8').match(/apiToken":"([^"]+)"/);
-      if (!tm) continue;
-      return tm[1];
-    } catch (e) {
-      /* try the next relay host */
-    }
+  // 10s per hop: a healthy host answers in <2s; the old 20s meant a slow host
+  // ate a third of the whole discovery budget before the next one was tried.
+  const r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 10000);
+  if (r.status !== 200) return '';
+  let j;
+  try {
+    j = JSON.parse(r.body.toString('utf8'));
+  } catch (e) {
+    return '';
+  }
+  if (!j || !j.src) return '';
+  const base = String(j.src).match(/^https?:\/\/[^/]+/);
+  if (!base) return '';
+  const lr = await request(j.src, { Referer: relay + '/' }, 10000);
+  if (lr.status !== 200) return '';
+  const pm = lr.body.toString('utf8').match(/playerUrl":"([^"]+)"/);
+  if (!pm) return '';
+  const pr = await request(base[0] + pm[1], { Referer: j.src }, 10000);
+  if (pr.status !== 200) return '';
+  const tm = pr.body.toString('utf8').match(/apiToken":"([^"]+)"/);
+  return tm ? tm[1] : '';
+}
+
+// Race a set of promises and resolve with { value, index } of the FIRST one
+// to settle (success OR failure), so the caller can drop exactly that one and
+// keep racing the rest. (A naive `attempts.indexOf(r)` cannot work: r is the
+// resolved VALUE, not the promise, so indexOf is always -1 and splice(-1, 1)
+// silently discards a still-pending winner. Promise.allSettled would not work
+// either - it waits for the slow loser, which is exactly what we are racing.)
+function firstSettled(promises) {
+  return new Promise((resolve) => {
+    promises.forEach((p, index) =>
+      Promise.resolve(p).then(
+        (value) => resolve({ value, index }),
+        () => resolve({ value: null, index })
+      )
+    );
+  });
+}
+
+async function acquireApiToken(ref) {
+  // Race BOTH relay hosts in parallel. The old sequential loop waited out a
+  // slow/dead first host (3 hops x up to 20s) before trying the healthy one.
+  // Now the FIRST settled chain decides: a success returns immediately (the
+  // loser dies on its own hop timeout and is ignored); a failure just means
+  // the other chain still has a chance.
+  const attempts = RELAY_HOSTS.map((relay) =>
+    tokenChain(relay, ref).then((tok) => ({ ok: !!tok, tok }), () => ({ ok: false, tok: '' }))
+  );
+  while (attempts.length) {
+    const { value: r, index } = await firstSettled(attempts);
+    attempts.splice(index, 1);
+    if (r && r.ok) return r.tok;
   }
   return '';
 }
@@ -299,80 +339,104 @@ function probeResolution(bufPath) {
 // Return a verified variant playlist URL at or above `minH` (default 1080),
 // or null if none found. Anime passes minH 0 to accept the source's own
 // resolution (often 720p) instead of requiring 1080p.
+// Verify ONE source: token -> master -> top floor-passing variant -> first
+// segment -> real probe. Returns a passing detection or null. Each source is
+// on its own CDN host (separate rate limits), so the sources can be raced in
+// parallel by the caller.
+async function verifySource(raw, i, meta, min, onLog) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch (e) {
+    return null;
+  }
+  let token;
+  try {
+    token = parseToken((await request(u.origin + '/generate.php', {}, 10000)).body.toString('utf8'));
+  } catch (e) {
+    onLog && onLog(`Vidsrc: source[${i}] ${u.host} — generate.php failed (${e.message}).`);
+    return null;
+  }
+  if (!token) {
+    onLog && onLog(`Vidsrc: source[${i}] ${u.host} — empty token.`);
+    return null;
+  }
+  let master;
+  try {
+    master = (await request(raw + '?token=' + encodeURIComponent(token), {}, 15000)).body.toString('utf8');
+  } catch (e) {
+    onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master failed (${e.message}).`);
+    return null;
+  }
+  const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+  for (const v of variants) {
+    if (!meetsFloor(v.width, v.height, min)) break;
+    try {
+      const idx = (await request(v.url, {}, 15000)).body.toString('utf8');
+      const segLine = idx
+        .split('\n')
+        .map((s) => s.trim())
+        .find((l) => l && !l.startsWith('#'));
+      if (!segLine) continue;
+      const segUrl = segLine.startsWith('http') ? segLine : u.origin + (segLine.startsWith('/') ? '' : '/') + segLine;
+      const segPath = path.join(os.tmpdir(), `vs_verify_${i}_${v.height}_${process.pid}.bin`);
+      await new Promise((res, rej) => {
+        const rq = (segUrl.startsWith('http:') ? http : https).get(
+          segUrl,
+          { headers: { 'User-Agent': UA } },
+          (rs) => {
+            const c = [];
+            rs.on('data', (d) => c.push(d));
+            rs.on('end', () => {
+              fs.writeFileSync(segPath, Buffer.concat(c));
+              res();
+            });
+          }
+        );
+        rq.on('error', rej);
+        rq.setTimeout(15000, () => { rq.destroy(); rej(new Error('timeout')); });
+      });
+      const pr = await probeResolution(segPath);
+      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
+      if (pr.ok && meetsFloor(pr.width, pr.height, min)) {
+        return { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta, order: i };
+      }
+    } catch (e) {
+      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} verify failed (${e.message}).`);
+    }
+  }
+  return null;
+}
+
+// Return a verified variant playlist URL at or above `minH` (default 1080),
+// or null if none found. Anime passes minH 0 to accept the source's own
+// resolution (often 720p) instead of requiring 1080p.
 async function pick1080(ref, onLog, minH = 1080) {
   const min = Math.max(0, Number(minH) || 0);
   const { urls, meta } = await fetchStreamUrls(ref);
   onLog && onLog(`Vidsrc: ${meta.title} — ${urls.length} source(s) available.`);
-  let best = null;
-  for (let i = 0; i < urls.length; i++) {
-    let u;
-    try {
-      u = new URL(urls[i]);
-    } catch (e) {
-      continue;
+  // Verify sources in parallel; the FIRST one to pass the floor wins (the
+  // original sequential code also stopped at the first passing source - same
+  // semantics, but a slow/dead source[0] no longer delays source[1], and a
+  // dead source never dictates the total wait). A source that FAILS first
+  // does not stop the race - the remaining sources keep verifying and the
+  // first passing one still wins. Losers keep running briefly in the
+  // background (bounded: one segment + one ffprobe) and are ignored.
+  const attempts = urls.map((raw, i) =>
+    verifySource(raw, i, meta, min, onLog).catch((e) => {
+      onLog && onLog(`Vidsrc: source[${i}] verify failed (${(e && e.message) || e}).`);
+      return null;
+    })
+  );
+  while (attempts.length) {
+    const { value: r, index } = await firstSettled(attempts);
+    attempts.splice(index, 1);
+    if (r) {
+      delete r.order;
+      return r;
     }
-    let token;
-    try {
-      await throttleApi();
-      token = parseToken((await request(u.origin + '/generate.php', {}, 20000)).body.toString('utf8'));
-    } catch (e) {
-      onLog && onLog(`Vidsrc: source[${i}] ${u.host} — generate.php failed (${e.message}).`);
-      continue;
-    }
-    if (!token) {
-      onLog && onLog(`Vidsrc: source[${i}] ${u.host} — empty token.`);
-      continue;
-    }
-    let master;
-    try {
-      await throttleApi();
-      master = (await request(urls[i] + '?token=' + encodeURIComponent(token), {}, 25000)).body.toString('utf8');
-    } catch (e) {
-      onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master failed (${e.message}).`);
-      continue;
-    }
-    const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
-    if (!variants.length) continue;
-    for (const v of variants) {
-      if (!meetsFloor(v.width, v.height, min)) break;
-      try {
-        const idx = (await request(v.url, {}, 20000)).body.toString('utf8');
-        const segLine = idx
-          .split('\n')
-          .map((s) => s.trim())
-          .find((l) => l && !l.startsWith('#'));
-        if (!segLine) continue;
-        const segUrl = segLine.startsWith('http') ? segLine : u.origin + (segLine.startsWith('/') ? '' : '/') + segLine;
-        const segPath = path.join(os.tmpdir(), `vs_verify_${i}_${v.height}.bin`);
-        await new Promise((res, rej) => {
-          const rq = (segUrl.startsWith('http:') ? http : https).get(
-            segUrl,
-            { headers: { 'User-Agent': UA } },
-            (rs) => {
-              const c = [];
-              rs.on('data', (d) => c.push(d));
-              rs.on('end', () => {
-                fs.writeFileSync(segPath, Buffer.concat(c));
-                res();
-              });
-            }
-          );
-          rq.on('error', rej);
-          rq.setTimeout(20000, () => { rq.destroy(); rej(new Error('timeout')); });
-        });
-        const pr = await probeResolution(segPath);
-        onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
-        if (pr.ok && meetsFloor(pr.width, pr.height, min)) {
-          best = { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta };
-          break;
-        }
-      } catch (e) {
-        onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} verify failed (${e.message}).`);
-      }
-    }
-    if (best) break;
   }
-  return best;
+  return null;
 }
 
 function spawnFfmpeg(inputUrl, outPath, ua, opts) {
