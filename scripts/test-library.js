@@ -64,7 +64,11 @@ function makeFakeLibrary(dir) {
     seasonDigit: mk('ShowG/Season 1/ShowG S1E2.mp4'), // S1E2: the "1" is a SEASON, not ep 1
     dotSep: mk('ShowH/ShowH.18.mp4'), // dot-separated anime naming
     titleOnly: mk('ShowI/ShowI - Pilot.mp4'), // named by TITLE only, no number
-    partTrap: mk('ShowJ/ShowJ - The Beginning Part 2.mp4') // must not match "The Beginning"
+    partTrap: mk('ShowJ/ShowJ - The Beginning Part 2.mp4'), // must not match "The Beginning"
+    // --- real-library season folder styles (found in the user's NAS audit) ---
+    sxxFolder: mk('ShowK/S02/ShowK - S02E05.mp4'), // "S02" season folder style
+    suffixedSeason: mk('ShowL/ShowL - Season 2/ShowL - S02E03.mp4'), // "<Show> - Season 2" folder
+    nestedPart: mk('ShowM/Part 1/Season 01/ShowM - S01E03.mp4') // nested "Part 1/Season 01"
   };
   return files;
 }
@@ -191,6 +195,31 @@ async function main() {
   check(
     'dot-separated anime "ShowH.18.mp4" counts as S1E18',
     organizer.existingEpisodeFile(libRoot, { series: 'ShowH', season: 1, episode: 18 }) === files.dotSep
+  );
+
+  // --- season-folder naming styles the real library uses (NAS audit, 2026-10) ---
+  check(
+    '"S02" season folder: S02E05 counts as S2E5',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowK', season: 2, episode: 5 }) === files.sxxFolder,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowK', season: 2, episode: 5 }))
+  );
+  check(
+    '"S02" season folder: S02E05 does NOT count as S1E5',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowK', season: 1, episode: 5 }) === null
+  );
+  check(
+    '"ShowL - Season 2" folder counts as season 2 (S02E03 -> S2E3)',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowL', season: 2, episode: 3 }) === files.suffixedSeason,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowL', season: 2, episode: 3 }))
+  );
+  check(
+    'nested "Part 1/Season 01": S01E03 counts as S1E3',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowM', season: 1, episode: 3 }) === files.nestedPart,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowM', season: 1, episode: 3 }))
+  );
+  check(
+    'nested "Part 1/Season 01": S01E03 does NOT count as S2E3',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowM', season: 2, episode: 3 }) === null
   );
 
   // --- title-only files (no episode number at all) ---

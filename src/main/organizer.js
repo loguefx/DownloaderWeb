@@ -202,13 +202,28 @@ function seriesDirs(outputRoot, meta) {
   // Season folder first, then the series folder itself: libraries downloaded
   // before season folders existed keep their episodes directly in there, and
   // those files must still count as present.
-  const addSeasonDirs = (dir) => {
+  //
+  // Every season naming style the library uses must be recognized - "Season 2",
+  // "S02", "Bakuman - Season 2", "Eng Subbed S01", "S02 Kyoto Saga". The
+  // predicate is seasonFromName (the SAME one seriesHasSeasonFolders uses);
+  // the old /^season\b/i test silently skipped every "Sxx"-style folder, so
+  // 110 library titles (4,461 files) were invisible to the matcher and would
+  // have been re-downloaded. Grouping folders that are NOT season names
+  // ("Part 1") are descended into (depth-limited) because some libraries nest
+  // the season folder inside them ("7 Seeds/Part 1/Season 01/...").
+  const addSeasonDirs = (dir, depth = 0) => {
+    if (depth > 2) return;
+    let ents = [];
     try {
-      for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (ent.isDirectory() && /^season\b/i.test(ent.name)) addDir(path.join(dir, ent.name));
-      }
+      ents = fs.readdirSync(dir, { withFileTypes: true });
     } catch (e) {
-      // ignore
+      return;
+    }
+    for (const ent of ents) {
+      if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
+      const sub = path.join(dir, ent.name);
+      if (seasonFromName(ent.name) != null) addDir(sub);
+      else addSeasonDirs(sub, depth + 1);
     }
   };
   addDir(seriesDir(outputRoot, meta));
