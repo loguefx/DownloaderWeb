@@ -79,10 +79,14 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
       runtime: body.runtime || null
     };
   }
-  // TV series: return seasons with episode counts
+  // TV series: return seasons with episode counts.
+  // NOTE: `seasons` MUST be `let` - the anime-layout merge below replaces it
+  // (Aniwave wins wholesale / AniList adds missing seasons). A `const` here
+  // was a runtime "Assignment to constant variable" that broke every anime
+  // title while TV (resolved = null) skipped the merge and kept working.
   const body = await tmdbFetch(`/tv/${tmdbId}?language=en-US`, key);
   if (!body) return null;
-  const seasons = (body.seasons || [])
+  let seasons = (body.seasons || [])
     .filter((s) => s.season_number > 0)
     .map((s) => ({
       season: s.season_number,
