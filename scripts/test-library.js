@@ -68,7 +68,14 @@ function makeFakeLibrary(dir) {
     // --- real-library season folder styles (found in the user's NAS audit) ---
     sxxFolder: mk('ShowK/S02/ShowK - S02E05.mp4'), // "S02" season folder style
     suffixedSeason: mk('ShowL/ShowL - Season 2/ShowL - S02E03.mp4'), // "<Show> - Season 2" folder
-    nestedPart: mk('ShowM/Part 1/Season 01/ShowM - S01E03.mp4') // nested "Part 1/Season 01"
+    nestedPart: mk('ShowM/Part 1/Season 01/ShowM - S01E03.mp4'), // nested "Part 1/Season 01"
+    // --- nested real-library layouts (1,530 NAS files were invisible before) ---
+    seasonInSeason: mk('ShowN/Season 01 - Season 1/Season 01/ShowN - S01E03.mp4'), // season folder INSIDE a season folder
+    doubledSeries: mk('ShowO/ShowO/ShowO_S01E01_1001 - Bricks.mp4'), // doubled series folder, flat files
+    variantSeason: mk('ShowP/ShowP - Season 2/Season 01/ShowP - S01E26.mp4'), // season-qualified variant wraps the season folder
+    groupingDir: mk('ShowQ/Series 5/ShowQ - S05E01.mp4'), // "Series 5" grouping folder holding files directly
+    guardSubdirLoose: mk('ShowR/Extras/ShowR 5.mp4'), // bare number in a non-season subfolder...
+    guardSubdirLooseSeason: mk('ShowR/Season 1/placeholder-S01E99.mp4') // ...while a season folder exists: must NOT count as S1E5
   };
   return files;
 }
@@ -220,6 +227,36 @@ async function main() {
   check(
     'nested "Part 1/Season 01": S01E03 does NOT count as S2E3',
     organizer.existingEpisodeFile(libRoot, { series: 'ShowM', season: 2, episode: 3 }) === null
+  );
+
+  // --- nested real-library layouts (each mirrors a folder chain found on the NAS) ---
+  check(
+    'season folder inside a season folder: S01E03 counts as S1E3',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowN', season: 1, episode: 3 }) === files.seasonInSeason,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowN', season: 1, episode: 3 }))
+  );
+  check(
+    'season folder inside a season folder: S01E03 does NOT count as S2E3',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowN', season: 2, episode: 3 }) === null
+  );
+  check(
+    'doubled series folder (Show/Show/): strict S01E01 counts as S1E1',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowO', season: 1, episode: 1 }) === files.doubledSeries,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowO', season: 1, episode: 1 }))
+  );
+  check(
+    'season-qualified variant wrapping Season 01: S01E26 counts as S1E26',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowP', season: 1, episode: 26 }) === files.variantSeason,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowP', season: 1, episode: 26 }))
+  );
+  check(
+    '"Series 5" grouping folder holding files directly: strict S05E01 counts as S5E1',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowQ', season: 5, episode: 1 }) === files.groupingDir,
+    F(organizer.existingEpisodeFile(libRoot, { series: 'ShowQ', season: 5, episode: 1 }))
+  );
+  check(
+    'bare number in a non-season subfolder does NOT count while season folders exist',
+    organizer.existingEpisodeFile(libRoot, { series: 'ShowR', season: 1, episode: 5 }) === null
   );
 
   // --- title-only files (no episode number at all) ---

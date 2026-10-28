@@ -40,7 +40,25 @@ function parseSeasonFromUrl(url) {
   return null;
 }
 
-function seriesKey(name) {
+// Tiny bounded memo for the pure name-normalizers below. They are called in
+// tight loops over EVERY folder of a category root (a big Anime category has
+// 900+ folders) for every episode the matcher checks, so without the memo a
+// single season scan of a large library costs millions of redundant NFKD/
+// regex passes. Names are short and finite per session, so a capped Map is
+// safe.
+function memoize(fn, limit = 8192) {
+  const m = new Map();
+  return (name) => {
+    const hit = m.get(name);
+    if (hit !== undefined) return hit;
+    const v = fn(name);
+    if (m.size >= limit) m.clear();
+    m.set(name, v);
+    return v;
+  };
+}
+
+const seriesKey = memoize(function seriesKey(name) {
   return sanitize(name)
     // Jellyfin layouts: "Show (2019)" and "[tmdbid-123456] Show" are the same
     // series as "Show", so those tokens never take part in the match.
@@ -52,7 +70,7 @@ function seriesKey(name) {
     .replace(/\s+season\s*\d+\s*$/i, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
+});
 
 // Fuzzy series matching - an ADDITIVE fallback used only when the exact
 // seriesKey comparison misses, so nothing that matched before can stop
@@ -62,7 +80,7 @@ function seriesKey(name) {
 // lowercase, accents folded (Fiancé -> fiance), apostrophes dropped (I'm ->
 // im), every remaining punctuation collapsed to single spaces, and the
 // "(2013)" / "[tmdb-60761]" tokens the strict key already strips.
-function normSeries(name) {
+const normSeries = memoize(function normSeries(name) {
   return String(name || '')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -74,7 +92,7 @@ function normSeries(name) {
     .replace(/\s*\(\d{4}\)/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
-}
+});
 
 // Does a folder that does NOT exact-match the series still clearly refer to
 // it? The shorter normalized name must be a substantial phrase (>= 12 chars)
@@ -203,14 +221,24 @@ function seriesDirs(outputRoot, meta) {
   // before season folders existed keep their episodes directly in there, and
   // those files must still count as present.
   //
-  // Every season naming style the library uses must be recognized - "Season 2",
-  // "S02", "Bakuman - Season 2", "Eng Subbed S01", "S02 Kyoto Saga". The
-  // predicate is seasonFromName (the SAME one seriesHasSeasonFolders uses);
-  // the old /^season\b/i test silently skipped every "Sxx"-style folder, so
-  // 110 library titles (4,461 files) were invisible to the matcher and would
-  // have been re-downloaded. Grouping folders that are NOT season names
-  // ("Part 1") are descended into (depth-limited) because some libraries nest
-  // the season folder inside them ("7 Seeds/Part 1/Season 01/...").
+  // Every subfolder of the series (depth-limited) is a candidate episode
+  // directory. Real library layouts this must recognize - each one exists on
+  // the NAS and each one was previously invisible to the matcher (those files
+  // would have been re-downloaded):
+  //   "Season 01/Season 01/...", "Season 01 - Season 1/Season 01/..."
+  //       (a season folder wrapping the real season folder)
+  //   "Bakuman - Season 2/Season 01/...", "Eng Subbed S01/Season 01/..."
+  //       (a season-qualified series variant wrapping a season folder)
+  //   "Show/Show/...", "American Horror Story Season 8/...", "... Volume 4/..."
+  //       (a doubled or variant series folder holding the files directly)
+  //   "Series 5/...", "Part 1/...", "Book 2/...", "Holiday Specials/..."
+  //       (a season-style grouping folder holding the files directly)
+  //
+  // Adding every subfolder is safe because the episode matcher still only
+  // honors a STRICT S/E marker in the file name for non-season folders, and a
+  // bare episode number only in a season-anchored folder (matching season)
+  // or a flat single-season series - so recognition only grows, it can never
+  // attribute the wrong file to an episode.
   const addSeasonDirs = (dir, depth = 0) => {
     if (depth > 2) return;
     let ents = [];
@@ -222,8 +250,8 @@ function seriesDirs(outputRoot, meta) {
     for (const ent of ents) {
       if (!ent.isDirectory() || ent.name.startsWith('.')) continue;
       const sub = path.join(dir, ent.name);
-      if (seasonFromName(ent.name) != null) addDir(sub);
-      else addSeasonDirs(sub, depth + 1);
+      addDir(sub);
+      addSeasonDirs(sub, depth + 1);
     }
   };
   addDir(seriesDir(outputRoot, meta));
