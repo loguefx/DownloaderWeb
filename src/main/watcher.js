@@ -165,6 +165,42 @@ class Watcher {
     }
   }
 
+  // Flat-library floor. For a series whose files form a single continuous 1..N
+  // axis ("Kingdom: S01E01..S01E142"), the highest episode number on disk is a
+  // safe "you have up to here" floor - and it is ONLY trusted when the on-disk
+  // library is a SUPERSET of everything the source claims (flatFloor >=
+  // sourceTotal). Then every source episode is already owned, so we never
+  // re-queue one and never miss a new one (there is none beyond the floor).
+  // Non-flat (arc-based) series return null and keep their existing behavior.
+  _flatFloorCache() {
+    if (!this.__flatFloorCache) this.__flatFloorCache = new Map();
+    return this.__flatFloorCache;
+  }
+  flatFloor(seriesDir) {
+    if (!seriesDir) return null;
+    const cache = this._flatFloorCache();
+    if (cache.has(seriesDir)) return cache.get(seriesDir);
+    let floor = null;
+    try {
+      const ext = organizer.seriesExtent(seriesDir);
+      if (ext.flat && ext.maxEpisode) floor = ext.maxEpisode;
+    } catch (e) { floor = null; }
+    cache.set(seriesDir, floor);
+    return floor;
+  }
+  seriesFlatFloor(roots, series) {
+    let floor = null;
+    for (const root of roots || []) {
+      if (!root) continue;
+      let dir = null;
+      try { dir = organizer.seriesRoot(root, { series }); } catch (e) { dir = null; }
+      if (!dir) continue;
+      const f = this.flatFloor(dir);
+      if (f != null) floor = (floor == null || f > floor) ? f : floor;
+    }
+    return floor;
+  }
+
   // Movie watch: the daily check is "is the file still there?". Present in
   // staging or any library drive -> done (silent, nothing to do). Missing ->
   // re-queue the ONE movie (queueOne dedupes if it is already in the queue),
@@ -230,6 +266,9 @@ class Watcher {
       .filter((x) => x && x.season > 0)
       .map((x) => x.season)
       .sort((a, b) => a - b);
+    // Total episode count the source claims across all seasons - used by the
+    // flat-library floor guard (only active when the disk holds at least this).
+    const sourceTotal = info.seasons.reduce((a, x) => a + ((x && x.episodes) || 0), 0);
     let season = s.season != null && String(s.season).trim() !== '' ? Number(s.season) : null;
     if (!season || !seasonNums.includes(season)) {
       const fallback = seasonNums[seasonNums.length - 1];
@@ -264,7 +303,7 @@ class Watcher {
       return 0;
     }
 
-    const { queued, present, missing } = await this.queueMissingEps(s, season, aired, urlMap, template, roots, dryRun);
+    const { queued, present, missing } = await this.queueMissingEps(s, season, aired, urlMap, template, roots, dryRun, sourceTotal);
     const fresh = aired.length - present;
     this.onLog(
       `"${s.series}" season ${season}: ${aired.length} aired, ${present} already on disk, ${queued} new queued` +
@@ -284,7 +323,7 @@ class Watcher {
         const nextAired = nextEps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
         if (nextAired.length) {
           if (dryRun) {
-            const r = await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, true);
+            const r = await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, true, sourceTotal);
             this.onLog(
               `"${s.series}" season ${next} (new): ${nextAired.length} aired, ${r.present} on disk, ${r.missing.length} missing` +
                 (r.missing.length ? ` (${r.missing.map((n) => `E${n}`).join(', ')})` : '') +
@@ -292,7 +331,7 @@ class Watcher {
             );
           } else {
             this.onLog(`New season detected: "${s.series}" season ${next} - queueing its new episodes.`);
-            await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, dryRun);
+            await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, dryRun, sourceTotal);
             schedule.bumpSeason(s.key, next);
             return 1;
           }
@@ -306,11 +345,20 @@ class Watcher {
   // (staging or any library drive) and not already in the queue. Additive
   // only: nothing existing is touched, replaced, or re-downloaded.
   // dryRun: missing episodes are collected and reported, never queued.
-  async queueMissingEps(s, season, eps, urlMap, template, roots, dryRun) {
+  async queueMissingEps(s, season, eps, urlMap, template, roots, dryRun, sourceTotal) {
     let queued = 0;
     let present = 0;
     const missing = [];
+    // Flat 1..N library floor: active ONLY when the on-disk library is a
+    // superset of the source (flatFloor >= sourceTotal). Then every source
+    // episode is already owned, so none may be re-queued and none is missed.
+    const floor = this.seriesFlatFloor(roots, s.series);
+    const floorActive = floor != null && sourceTotal != null && floor >= sourceTotal;
     for (const e of eps) {
+      if (floorActive && e.episode != null && Number(e.episode) <= floor) {
+        present++;
+        continue;
+      }
       const meta = { series: s.series, season, episode: e.episode };
       let onDisk = false;
       for (const root of roots) {

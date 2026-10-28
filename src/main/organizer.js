@@ -596,6 +596,66 @@ function cleanupCaptureJunk(dir) {
   return n;
 }
 
+// Extract an EPISODE number (the E## value) from a file name, using the same
+// guards as existingEpisodeFile: it never reads a season token, a resolution
+// ("1920x1080"), or the " (n)" collision suffix. Returns an int or null.
+function episodeNumberFromName(name) {
+  const base = String(name || '')
+    .replace(/\s*\(\d+\)\s*\.[A-Za-z0-9]+$/, '') // " (n).ext"
+    .replace(/\.[A-Za-z0-9]+$/, ''); // ".ext"
+  let m = base.match(/s0*(\d{1,3})[eE](\d{1,3})(?!\d)/i);
+  if (m) return parseInt(m[2], 10);
+  m = base.match(/(?<!\d)(\d{1,3})[xX](\d{1,3})(?!\d)/i);
+  if (m) return parseInt(m[2], 10);
+  m = base.match(/(?:episode|ep)\b\.?\s*0*(\d{1,3})(?!\d)/i);
+  if (m) return parseInt(m[1], 10);
+  m = base.match(/(?<![\dxXsSeE])(\d{1,3})(?![\dxXpPeE])/);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+
+// Characterize a series' on-disk episode layout by reading the EPISODE number
+// off every video file (depth-limited walk). Returns:
+//   totalFiles  number of video files
+//   numbered    how many carried an extractable episode number
+//   maxEpisode  the highest episode number present (null if none)
+//   flat        TRUE only when the files form a single continuous 1..N axis
+//               (N files, each uniquely numbered, exactly 1..N).
+//
+// "Flat" is the "Kingdom: S01E01..S01E142" shape - ONE global episode axis -
+// and is the only layout for which a "you have up to N" floor is safe. Arc-based
+// shows (One Piece: S00E406, S01E01, ...) repeat low episode numbers across
+// arcs, so they are NOT flat and must be baselined per-title instead.
+function seriesExtent(seriesDir) {
+  const out = { totalFiles: 0, numbered: 0, maxEpisode: null, flat: false };
+  if (!seriesDir) return out;
+  const VIDEO = /\.(mp4|mkv|avi|m4v|ts)$/i;
+  const numbers = [];
+  const walk = (dir, depth) => {
+    if (depth > 4) return;
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of ents) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(p, depth + 1);
+      else if (VIDEO.test(ent.name)) {
+        out.totalFiles++;
+        const ep = episodeNumberFromName(ent.name);
+        if (ep != null && ep > 0) { out.numbered++; numbers.push(ep); }
+      }
+    }
+  };
+  walk(seriesDir, 0);
+  if (numbers.length) {
+    out.maxEpisode = Math.max.apply(null, numbers);
+    const min = Math.min.apply(null, numbers);
+    out.flat = new Set(numbers).size === numbers.length
+      && numbers.length === out.maxEpisode
+      && min === 1;
+  }
+  return out;
+}
+
 module.exports = {
   sanitize,
   pad,
@@ -616,6 +676,8 @@ module.exports = {
   buildOutputPath,
   expectedPath,
   existingEpisodeFile,
+  episodeNumberFromName,
+  seriesExtent,
   ensureDir,
   cleanupCaptureJunk,
   VIDEO_EXTS

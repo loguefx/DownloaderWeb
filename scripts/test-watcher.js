@@ -415,6 +415,39 @@ async function main() {
   service.watcherModeSet({ dryRun: true });
   check('shipped default is still report-only', service.watcherMode().dryRun === true);
 
+  // ---- 11. Flat-library floor: a 1..N superset is never re-queued -------------
+  console.log('\n[11] Flat-library floor: a 1..N superset is never re-queued; new eps not missed');
+  service.watcherModeSet({ dryRun: false });
+  const past11 = (d) => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+  tmdb.tmdbInfo = async (id) => {
+    if (id === '222') return { tmdb: '222', title: 'Flat Superset', seasons: [{ season: 1, episodes: 6 }, { season: 2, episodes: 4 }] };
+    if (id === '333') return { tmdb: '333', title: 'Flat Partial', seasons: [{ season: 1, episodes: 3 }, { season: 2, episodes: 5 }] };
+    return null;
+  };
+  tmdb.tmdbSeason = async (id, season) => {
+    const mk = (n) => Array.from({ length: n }, (_, k) => ({ episode: k + 1, airDate: past11(30), name: 'Ep ' + (k + 1), runtime: 1000 }));
+    if (id === '222') return { tmdb: '222', season, episodes: mk(season === 1 ? 6 : 4) };
+    if (id === '333') return { tmdb: '333', season, episodes: mk(season === 1 ? 3 : 5) };
+    return null;
+  };
+  {
+    for (let i = 1; i <= 10; i++) mkEp(`Flat Superset/S01/Flat Superset S01E${String(i).padStart(2, '0')}.mp4`);
+    schedule.add({ series: 'Flat Superset', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('222', 1, 1)).template, baseUrl: vid('222', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '222', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    check('flat superset (disk 1..10, source 10): NOTHING re-queued', queueCalls.filter((c) => c.series === 'Flat Superset').length === 0, JSON.stringify(queueCalls.filter((c) => c.series === 'Flat Superset').map((c) => [c.season, c.episode])));
+  }
+  {
+    for (let i = 1; i <= 5; i++) mkEp(`Flat Partial/S01/Flat Partial S01E${String(i).padStart(2, '0')}.mp4`);
+    schedule.add({ series: 'Flat Partial', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('333', 1, 1)).template, baseUrl: vid('333', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '333', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    const pp = queueCalls.filter((c) => c.series === 'Flat Partial');
+    check('flat partial (disk 1..5, source 8): only the new SEASON-2 eps are queued', pp.length === 5 && pp.every((c) => c.season === 2), JSON.stringify(pp.map((c) => [c.season, c.episode])));
+    check('...the 5 owned S1 eps were NOT re-queued', pp.every((c) => c.season !== 1));
+  }
+  service.watcherModeSet({ dryRun: true });
+
   // ---- summary ----------------------------------------------------------------
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

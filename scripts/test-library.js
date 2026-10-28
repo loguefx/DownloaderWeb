@@ -487,6 +487,27 @@ async function main() {
     'missing: ' + originalGone.map(F).join(', ')
   );
 
+  // [7] seriesExtent: flat 1..N vs arc/duplicate detection (the floor guard's basis)
+  console.log('\n[7] seriesExtent: flat 1..N vs arc/duplicate detection');
+  {
+    const base = path.join(work, 'extent');
+    const mk = (rel) => { const p = path.join(base, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'.repeat(2048)); };
+    for (let i = 1; i <= 5; i++) mk(`FlatShow/S01/FlatShow S01E${String(i).padStart(2, '0')}.mp4`);
+    const flatExt = organizer.seriesExtent(path.join(base, 'FlatShow'));
+    check('flat 1..5: flat=true, max=5', flatExt.flat === true && flatExt.maxEpisode === 5 && flatExt.totalFiles === 5, JSON.stringify(flatExt));
+    for (let i = 1; i <= 3; i++) { mk(`ArcShow/Season 01 - A/ArcShow S01E${String(i).padStart(2, '0')}.mp4`); mk(`ArcShow/Season 02 - B/ArcShow S02E${String(i).padStart(2, '0')}.mp4`); }
+    const arcExt = organizer.seriesExtent(path.join(base, 'ArcShow'));
+    check('arc-based (duplicate numbers): flat=false', arcExt.flat === false && arcExt.totalFiles === 6, JSON.stringify(arcExt));
+    mk('GapShow/GapShow S01E01.mp4'); mk('GapShow/GapShow S01E03.mp4');
+    const gapExt = organizer.seriesExtent(path.join(base, 'GapShow'));
+    check('gapped (missing E2): flat=false', gapExt.flat === false && gapExt.maxEpisode === 3, JSON.stringify(gapExt));
+    check('episodeNumberFromName "S02E05" -> 5', organizer.episodeNumberFromName('Show S02E05.mp4') === 5);
+    check('episodeNumberFromName "EP 18" -> 18', organizer.episodeNumberFromName('Show - EP 18.mp4') === 18);
+    check('episodeNumberFromName "2018" (year) -> null', organizer.episodeNumberFromName('Show 2018.mp4') === null);
+    check('episodeNumberFromName "720p" (res) -> null', organizer.episodeNumberFromName('Show 720p.mp4') === null);
+    check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) {
     console.log('Failures:\n  ' + failures.join('\n  '));
