@@ -62,6 +62,10 @@ class ScheduleStore extends EventEmitter {
       if (spec.tmdb) existing.tmdb = String(spec.tmdb);
       if (spec.imdb) existing.imdb = String(spec.imdb);
       if (spec.movie != null) existing.movie = !!spec.movie;
+      // Opt-out override: only a deliberate spec (frozen true/false) changes
+      // it; a plain re-submission leaves the user's earlier decision intact so
+      // an already-unfrozen at-risk title stays unfrozen across re-adds.
+      if (spec.frozen !== undefined) existing.frozen = !!spec.frozen;
       this._save();
       return false;
     }
@@ -85,6 +89,10 @@ class ScheduleStore extends EventEmitter {
       imdb: spec.imdb ? String(spec.imdb) : null,
       // A movie watch is just "is the file still there?" - no episodes.
       movie: !!spec.movie,
+      // Opt-out: leave UNSET unless the caller set it explicitly. Unset means
+      // "follow the engine risk-series policy" (watcher.isFrozen), which keeps
+      // a freshly-queued at-risk title safe out of the box.
+      ...(spec.frozen !== undefined ? { frozen: !!spec.frozen } : {}),
       addedAt: Date.now(),
       lastChecked: null
     });
@@ -131,6 +139,30 @@ class ScheduleStore extends EventEmitter {
     if (tmdb) it.tmdb = String(tmdb);
     if (imdb) it.imdb = String(imdb);
     this._save();
+  }
+
+  // Opt-out override for ONE entry. true = frozen (skip auto-download);
+  // false = cleared (layout aligned / user verified - watch it again).
+  setFrozen(key, value) {
+    this.load();
+    const it = this.items.find((x) => x.key === key);
+    if (!it) return false;
+    it.frozen = !!value;
+    this._save();
+    return true;
+  }
+
+  // Set the opt-out override on EVERY entry that carries this TMDB id (a
+  // series can hold several season entries). Returns how many were touched.
+  setFrozenByTmdb(tmdb, value) {
+    this.load();
+    const id = String(tmdb || '');
+    let n = 0;
+    for (const it of this.items) {
+      if (it.tmdb && String(it.tmdb) === id) { it.frozen = !!value; n += 1; }
+    }
+    if (n) this._save();
+    return n;
   }
 
   list() {

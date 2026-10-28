@@ -93,6 +93,13 @@ class Watcher {
     let newSeasons = 0;
     for (const s of items) {
       schedule.markChecked(s.key);
+      // Opt-out: a frozen series is never auto-downloaded (in either mode).
+      // It is reported and skipped - the layout for these titles is being
+      // aligned before it is allowed to grab new episodes/seasons.
+      if (this.isFrozen(s)) {
+        this.onLog(`"${s.series}" is frozen (opt-out) - skipped, no downloads.`);
+        continue;
+      }
       // Backfill: entries created before TMDB-id storage. Vidsrc-style source
       // URLs carry the id in the path - recover it once so the TMDB-aware
       // check runs instead of the guess-the-range legacy path.
@@ -137,6 +144,24 @@ class Watcher {
       return { dryRun: c.watchDryRun !== false };
     } catch (e) {
       return { dryRun: true };
+    }
+  }
+
+  // Opt-out ("frozen") decision for one scheduled entry. Precedence:
+  //   1. explicit per-entry flag  (frozen true -> frozen; frozen false -> cleared)
+  //   2. engine risk-series policy (the title's TMDB id is in riskSeries)
+  // A cleared entry (frozen:false) always wins over the policy, so once a
+  // series' layout is aligned and the user unfreezes it, it watches again even
+  // though its id is still in the risk list.
+  isFrozen(s) {
+    try {
+      if (!s) return false;
+      if (s.frozen === true) return true;
+      if (s.frozen === false) return false;
+      const risk = (engineconfig.get() || {}).riskSeries || [];
+      return risk.map((x) => String(x)).includes(String(s.tmdb));
+    } catch (e) {
+      return false;
     }
   }
 

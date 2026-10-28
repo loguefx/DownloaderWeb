@@ -375,6 +375,46 @@ async function main() {
     }
   }
 
+  // ---- 10. Opt-out (frozen): at-risk titles never auto-download --------------
+  console.log('\n[10] Opt-out: at-risk (frozen) titles never auto-download');
+  service.watcherModeSet({ dryRun: false }); // prove it blocks even when ENABLED
+
+  // 999 (Fast Show) is in the watch list from [1] and is missing S1E9-12.
+  engineconfig.set({ riskSeries: ['999'] });
+  queueCalls.length = 0;
+  await watcher.checkSchedules();
+  check('policy-frozen: Fast Show (riskSeries 999) queued NOTHING', queueCalls.filter((c) => c.series === 'Fast Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  check('...while a non-frozen title still queues (Anime Show eps 2-3)', queueCalls.some((c) => c.series === 'Anime Show'), JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+
+  // Clear Fast Show (layout "aligned") -> it watches again, id still in the list.
+  service.schedulesFreeze({ tmdb: '999', frozen: false });
+  queueCalls.length = 0;
+  await watcher.checkSchedules();
+  check('cleared (frozen:false) overrides the policy: Fast Show queues its missing eps again', queueCalls.filter((c) => c.series === 'Fast Show').length === 4, JSON.stringify(queueCalls.filter((c) => c.series === 'Fast Show').map((c) => c.episode)));
+
+  // Freeze a NON-risk title explicitly (frozen:true) -> also blocked.
+  engineconfig.set({ riskSeries: [] });
+  const animeKey = (schedule.list().find((x) => x.series === 'Anime Show') || {}).key;
+  service.schedulesFreeze({ key: animeKey, frozen: true });
+  queueCalls.length = 0;
+  await watcher.checkSchedules();
+  check('explicit frozen:true on a non-risk title blocks it too', queueCalls.filter((c) => c.series === 'Anime Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  const frozenRow = service.frozenReport().watched.find((w) => w.series === 'Anime Show');
+  check('frozenReport: Anime Show marked frozen (explicit)', !!(frozenRow && frozenRow.frozen === true && frozenRow.frozenBy === 'explicit'));
+  service.schedulesFreeze({ key: animeKey, frozen: false }); // restore
+
+  // Store/unit-level: isFrozen precedence.
+  engineconfig.set({ riskSeries: ['999'] });
+  check('isFrozen: policy applies to an UNSET entry', watcher.isFrozen({ tmdb: '999' }) === true);
+  check('isFrozen: explicit false clears a risk-listed entry', watcher.isFrozen({ tmdb: '999', frozen: false }) === false);
+  check('isFrozen: explicit true freezes a non-risk entry', watcher.isFrozen({ tmdb: '88888', frozen: true }) === true);
+  check('isFrozen: non-risk + unset is not frozen', watcher.isFrozen({ tmdb: '88888' }) === false);
+
+  // Restore shipped defaults for any later assertion.
+  engineconfig.set({ riskSeries: [] });
+  service.watcherModeSet({ dryRun: true });
+  check('shipped default is still report-only', service.watcherMode().dryRun === true);
+
   // ---- summary ----------------------------------------------------------------
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

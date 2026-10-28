@@ -581,8 +581,15 @@ async function handle(req, res, u) {
     if (seg === 'schedules') {
       const key = parts[2];
       if (req.method === 'GET' && !key) {
-        // dryRun: watcher mode, so the UI can show the report-only banner.
-        json(res, 200, { items: service.schedulesList(), dryRun: service.watcherMode().dryRun });
+        // dryRun: watcher mode (report-only banner). riskSeries + frozen show
+        // the opt-out safety net: which at-risk ids are set, and which of the
+        // watched series are frozen and why (explicit vs policy).
+        json(res, 200, {
+          items: service.schedulesList(),
+          dryRun: service.watcherMode().dryRun,
+          riskSeries: service.riskSeriesGet(),
+          frozen: service.frozenReport()
+        });
         return;
       }
       if (req.method === 'POST' && !key) {
@@ -612,6 +619,24 @@ async function handle(req, res, u) {
           p.catch((e) => { /* per-series errors are already logged */ });
         }
         json(res, 200, { started: true });
+        return;
+      }
+      if (req.method === 'POST' && key === 'risk') {
+        // Set the at-risk (frozen-by-policy) list of TMDB ids: { riskSeries: [] }.
+        const body = await readBody(req);
+        json(res, 200, service.riskSeriesSet(body && body.riskSeries));
+        return;
+      }
+      if (req.method === 'POST' && key === 'freeze') {
+        // Explicit per-entry opt-out override: { key?, tmdb?, frozen: bool }.
+        // frozen:false clears a title so it can be watched once its layout is
+        // aligned (overrides the riskSeries policy for that entry).
+        const body = await readBody(req);
+        if (!body || (body.key == null && body.tmdb == null)) {
+          json(res, 400, { error: 'key or tmdb is required' });
+          return;
+        }
+        json(res, 200, service.schedulesFreeze(body));
         return;
       }
       if (req.method === 'DELETE' && key) {

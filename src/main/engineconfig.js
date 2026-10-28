@@ -66,7 +66,15 @@ function defaults() {
     // exactly what it would queue, but queues NOTHING (no movie re-pulls,
     // no pending-dub retries, no season bumps). The user verifies the
     // reports before turning auto-download on (set to false).
-    watchDryRun: true
+    watchDryRun: true,
+    // Opt-out safety net: TMDB ids of series whose disk layout does NOT match
+    // the source's season split (arc-organized long anime, e.g. One Piece /
+    // Kingdom / Naruto Shippuden). While a series' TMDB id is in this list the
+    // watcher reports it as "frozen" and downloads NOTHING for it, until the
+    // layout is aligned and the entry is explicitly cleared (frozen:false).
+    // This stops the season-scoped matcher from re-downloading episodes the
+    // library already holds under a different season/arc numbering.
+    riskSeries: []
   };
 }
 
@@ -88,6 +96,7 @@ const engineconfig = {
       this._data.jellyfin = Object.assign({ baseUrl: '', apiKey: '' }, (raw || {}).jellyfin || {});
       this._data.cloudflare = Object.assign({ solverUrl: '' }, (raw || {}).cloudflare || {});
       this._data.pathMappings = Array.isArray(this._data.pathMappings) ? this._data.pathMappings : [];
+      this._data.riskSeries = Array.isArray(this._data.riskSeries) ? this._data.riskSeries.map((x) => String(x)) : [];
     } catch (e) {
       this._data = defaults();
       this._persist(); // first run: create the file with a generated key
@@ -103,6 +112,8 @@ const engineconfig = {
       next.cloudflare = Object.assign(this.get().cloudflare || { solverUrl: '' }, patch.cloudflare);
     }
     if (!Array.isArray(next.pathMappings)) next.pathMappings = [];
+    if (patch && patch.riskSeries !== undefined) next.riskSeries = Array.isArray(patch.riskSeries) ? patch.riskSeries.map((x) => String(x)) : [];
+    if (!Array.isArray(next.riskSeries)) next.riskSeries = [];
     this._data = next;
     this._persist();
     return next;

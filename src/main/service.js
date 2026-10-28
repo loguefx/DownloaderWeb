@@ -526,6 +526,35 @@ function schedulesRemove(key) {
   schedule.remove(key);
   return { removed: true };
 }
+
+// Opt-out ("frozen") safety net. riskSeries is a set of TMDB ids whose disk
+// layout does not match the source's season split (arc-organized long anime).
+// While a title's id is in the list the watcher reports it as frozen and
+// downloads nothing for it. Clearing a specific title (frozen:false) overrides
+// the list once its layout is aligned - so alignment is a per-title decision.
+function riskSeriesGet() {
+  try { return (engineconfig.get() || {}).riskSeries || []; } catch (e) { return []; }
+}
+function riskSeriesSet(ids) {
+  const list = Array.isArray(ids) ? ids.map((x) => String(x)).filter(Boolean) : [];
+  engineconfig.set({ riskSeries: list });
+  return { riskSeries: riskSeriesGet() };
+}
+function schedulesFreeze(spec) {
+  const frozen = !!(spec && spec.frozen);
+  let n = 0;
+  if (spec && spec.key != null) n += schedule.setFrozen(String(spec.key), frozen) ? 1 : 0;
+  if (spec && spec.tmdb != null) n += schedule.setFrozenByTmdb(spec.tmdb, frozen);
+  return { frozen, updated: n };
+}
+function frozenReport() {
+  const risk = riskSeriesGet();
+  const watched = schedule.list().map((s) => {
+    const by = s.frozen === true ? 'explicit' : s.frozen === false ? null : (risk.includes(String(s.tmdb)) ? 'policy' : null);
+    return { key: s.key, series: s.series, tmdb: s.tmdb || '', frozen: by != null, frozenBy: by };
+  });
+  return { riskSeries: risk, watched };
+}
 function schedulesCheckNow() {
   return watcher.checkSchedules();
 }
@@ -863,6 +892,11 @@ module.exports = {
   schedulesAdd,
   schedulesRemove,
   schedulesCheckNow,
+  riskSeriesGet,
+  riskSeriesSet,
+  schedulesFreeze,
+  frozenReport,
+  isFrozen: (s) => watcher.isFrozen(s),
   settingsGet,
   settingsGetAsync,
   settingsPut,
