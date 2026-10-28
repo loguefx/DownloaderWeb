@@ -448,6 +448,40 @@ async function main() {
   }
   service.watcherModeSet({ dryRun: true });
 
+  // ---- 12. Global no-duplicate gate: ambiguous titles are HELD end-to-end -----
+  console.log('\n[12] Global gate: an ambiguous (arc) layout is HELD; a clean one still queues');
+  service.watcherModeSet({ dryRun: false }); // prove the gate blocks even when ENABLED
+  tmdb.tmdbInfo = async (id) => {
+    if (id === '555') return { tmdb: '555', title: 'Ambig Show', seasons: [{ season: 1, episodes: 3 }] };
+    if (id === '666') return { tmdb: '666', title: 'Safe Show', seasons: [{ season: 1, episodes: 8 }] };
+    return null;
+  };
+  tmdb.tmdbSeason = async (id, season) => {
+    const mk = (n) => Array.from({ length: n }, (_, k) => ({ episode: k + 1, airDate: past(30), name: 'Ep ' + (k + 1), runtime: 1000 }));
+    if (id === '555') return { tmdb: '555', season: 1, episodes: mk(3) };
+    if (id === '666') return { tmdb: '666', season: 1, episodes: mk(8) };
+    return null;
+  };
+  {
+    // Ambig Show: the SAME S01E01..03 in two arc folders (same number = different episodes).
+    for (let i = 1; i <= 3; i++) { const n = String(i).padStart(2, '0'); mkEp(`Ambig Show/Season 01 - East/Ambig S01E${n}.mp4`); mkEp(`Ambig Show/Season 01 - Logue/Ambig S01E${n}.mp4`); }
+    schedule.add({ series: 'Ambig Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('555', 1, 1)).template, baseUrl: vid('555', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '555', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    check('ambiguous (arc) title is HELD: queued NOTHING', queueCalls.filter((c) => c.series === 'Ambig Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  }
+  {
+    // Safe Show: clean per-season, has S1E01..05, source claims 8 -> queue 6..8.
+    for (let i = 1; i <= 5; i++) mkEp(`Safe Show/Season 1/Safe Show S01E${String(i).padStart(2, '0')}.mp4`);
+    schedule.add({ series: 'Safe Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('666', 1, 1)).template, baseUrl: vid('666', 1, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '666', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    const ss = queueCalls.filter((c) => c.series === 'Safe Show');
+    check('clean per-season title still queues its 3 missing eps (6..8)', ss.length === 3 && JSON.stringify(ss.map((c) => c.episode).sort((a, b) => a - b)) === JSON.stringify([6, 7, 8]), JSON.stringify(ss.map((c) => [c.season, c.episode])));
+    check('...and did NOT re-queue the 5 it already has', ss.every((c) => c.episode >= 6));
+  }
+  service.watcherModeSet({ dryRun: true });
+
   // ---- summary ----------------------------------------------------------------
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

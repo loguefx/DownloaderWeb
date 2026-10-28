@@ -656,6 +656,123 @@ function seriesExtent(seriesDir) {
   return out;
 }
 
+// The GLOBAL no-duplicate guard. Classifies how SAFE the on-disk layout is for
+// the "already have it / queue the rest" logic, so the watcher never queues an
+// episode it cannot unambiguously place without re-downloading one that is
+// already there.
+//
+// The recognition logic is SEASON-SCOPED: it counts a bare episode number only
+// inside the matching season folder, and it honors a strict S#E# in any folder.
+// So the one thing that breaks it is a (season, episode) COLLISION - the SAME
+// number naming two DIFFERENT episodes (arc layouts, a season folder that is
+// mislabeled, or a disk that holds more distinct episodes than the source
+// claims). When that exists we cannot tell episodes apart by label, so the
+// correct, non-destructive choice is to HOLD (queue nothing), NOT to guess.
+//
+// Returns one of:
+//   { mode: 'flat',       floor: <maxEp>, reason } - a single continuous 1..N
+//                                                    axis; recognizing by
+//                                                    episode number is safe (the
+//                                                    flat floor guard then
+//                                                    decides what is new).
+//   { mode: 'per-season', floor: null,     reason } - a clean per-season
+//                                                    layout; the season-scoped
+//                                                    matcher is safe to use.
+//   { mode: 'hold',       floor: null,     reason } - ambiguous or the disk
+//                                                    overflows the source model;
+//                                                    queue NOTHING for it.
+function seriesLayoutRisk(seriesDir, sourceTotal) {
+  if (!seriesDir) return { mode: 'per-season', floor: null, reason: 'not-on-disk' };
+  const VIDEO = /\.(mp4|mkv|avi|m4v|ts)$/i;
+  let ext;
+  try { ext = seriesExtent(seriesDir); } catch (e) { ext = { flat: false, maxEpisode: null }; }
+  if (ext.flat && ext.maxEpisode) return { mode: 'flat', floor: ext.maxEpisode, reason: 'flat 1..N axis' };
+
+  // Non-flat. Collect, per (season,episode) label, the set of DISTINCT folders
+  // that carry it, plus each season folder (name says "Season N") with the
+  // season token its own files carry.
+  const labelFolders = new Map(); // "S:E" -> Set(folderName)
+  const seasonFolders = [];       // { name, anchor, files: [name,...] }
+  const walk = (dir, depth) => {
+    if (depth > 4) return;
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    const videoFiles = [];
+    for (const ent of ents) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(p, depth + 1);
+      else if (VIDEO.test(ent.name)) videoFiles.push(ent.name);
+    }
+    if (!videoFiles.length) return;
+    const name = path.basename(dir);
+    const anchor = seasonFromName(name);
+    if (anchor != null) seasonFolders.push({ name, anchor, files: videoFiles });
+    for (const fn of videoFiles) {
+      const m = String(fn).match(/s0*(\d{1,3})[eE]0*(\d{1,3})(?!\d)/i);
+      if (!m) continue;
+      const key = parseInt(m[1], 10) + ':' + parseInt(m[2], 10);
+      if (!labelFolders.has(key)) labelFolders.set(key, new Set());
+      labelFolders.get(key).add(name);
+    }
+  };
+  walk(seriesDir, 0);
+
+  // A label carried by more than one folder: the same S#E# names 2+ episodes.
+  let ambiguous = 0;
+  for (const folders of labelFolders.values()) if (folders.size > 1) ambiguous += 1;
+  if (ambiguous > 0) {
+    return { mode: 'hold', floor: null, reason: ambiguous + ' episode number(s) appear in 2+ different folders (same number = different episodes)' };
+  }
+
+  // A season folder whose files predominantly carry a DIFFERENT season token.
+  let mislabeled = 0;
+  for (const sf of seasonFolders) {
+    let mismatch = 0;
+    for (const fn of sf.files) {
+      const m = String(fn).match(/s0*(\d{1,3})[eE]0*\d{1,3}(?!\d)/i);
+      if (m && parseInt(m[1], 10) !== sf.anchor) mismatch += 1;
+    }
+    if (sf.files.length && mismatch >= Math.ceil(sf.files.length * 0.6)) mislabeled += 1;
+  }
+  if (mislabeled > 0) {
+    return { mode: 'hold', floor: null, reason: mislabeled + ' season folder(s) are mislabeled (folder says one season, files carry another)' };
+  }
+
+  // The disk holds far MORE distinct episodes than the source claims, so the
+  // source model does not describe this show (e.g. TMDB lists 40, disk has 142).
+  const distinct = labelFolders.size;
+  if (sourceTotal && distinct > sourceTotal * 1.5) {
+    return { mode: 'hold', floor: null, reason: 'disk holds ' + distinct + ' distinct episodes but the source lists only ' + sourceTotal + ' (source model does not describe this show)' };
+  }
+
+  return { mode: 'per-season', floor: null, reason: 'clean' };
+}
+
+// Multi-root version: a title may live on more than one drive. Conservative -
+// any root that is ambiguous/overflowing HOLDS the whole series, and a flat
+// root contributes its floor (highest wins). A series not found on disk is
+// safe to queue (there is nothing to collide with).
+function seriesLayoutRiskFor(roots, series, sourceTotal) {
+  let result = { mode: 'per-season', floor: null, reason: 'not-on-disk' };
+  let found = false;
+  for (const root of roots || []) {
+    if (!root) continue;
+    let dir = null;
+    try { dir = seriesRoot(root, { series }); } catch (e) { dir = null; }
+    if (!dir) continue;
+    let exists = false;
+    try { exists = fs.existsSync(dir) && fs.readdirSync(dir).length > 0; } catch (e) { exists = false; }
+    if (!exists) continue;
+    found = true;
+    const r = seriesLayoutRisk(dir, sourceTotal);
+    if (r.mode === 'hold') return r;
+    if (r.mode === 'flat') {
+      if (result.mode !== 'flat' || (r.floor != null && (result.floor == null || r.floor > result.floor))) result = r;
+    }
+  }
+  return result;
+}
+
 module.exports = {
   sanitize,
   pad,
@@ -678,6 +795,8 @@ module.exports = {
   existingEpisodeFile,
   episodeNumberFromName,
   seriesExtent,
+  seriesLayoutRisk,
+  seriesLayoutRiskFor,
   ensureDir,
   cleanupCaptureJunk,
   VIDEO_EXTS

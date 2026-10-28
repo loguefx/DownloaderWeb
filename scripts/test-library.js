@@ -508,6 +508,58 @@ async function main() {
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
   }
 
+  // [8] seriesLayoutRisk: the GLOBAL no-duplicate guard, pinned on real layouts
+  console.log('\n[8] seriesLayoutRisk: hold ambiguous/source-broken, pass clean layouts');
+  {
+    const base = path.join(work, 'risk');
+    const mk = (rel) => { const p = path.join(base, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'.repeat(2048)); };
+
+    // Flat 1..N axis -> safe (flat mode, floor = max).
+    for (let i = 1; i <= 8; i++) mk(`FlatOk/S01/FlatOk S01E${String(i).padStart(2, '0')}.mp4`);
+    const flatRisk = organizer.seriesLayoutRisk(path.join(base, 'FlatOk'), 8);
+    check('flat 1..8 -> mode=flat, floor=8', flatRisk.mode === 'flat' && flatRisk.floor === 8, JSON.stringify(flatRisk));
+
+    // Clean per-season (Season 1 / Season 2, each with proper S#E#) -> safe.
+    for (let i = 1; i <= 4; i++) { mk(`CleanShow/Season 1/CleanShow S01E${String(i).padStart(2, '0')}.mp4`); mk(`CleanShow/Season 2/CleanShow S02E${String(i).padStart(2, '0')}.mp4`); }
+    const cleanRisk = organizer.seriesLayoutRisk(path.join(base, 'CleanShow'), 8);
+    check('clean per-season -> mode=per-season', cleanRisk.mode === 'per-season', JSON.stringify(cleanRisk));
+
+    // Dub/sub: SAME episode, 2 copies in ONE folder -> NOT ambiguous, still safe.
+    for (let i = 1; i <= 6; i++) { const n = String(i).padStart(2, '0'); mk(`DubShow/Season 1/DubShow S01E${n} - Sub.mp4`); mk(`DubShow/Season 1/DubShow S01E${n} - Dub.mp4`); }
+    const dubRisk = organizer.seriesLayoutRisk(path.join(base, 'DubShow'), 6);
+    check('dub+sub (same ep, 2 copies, 1 folder) -> NOT held', dubRisk.mode !== 'hold', JSON.stringify(dubRisk));
+
+    // ARC: the SAME S#E# in two arc folders = two different episodes -> HOLD.
+    for (let i = 1; i <= 3; i++) { const n = String(i).padStart(2, '0'); mk(`ArcShow/Season 01 - East/ArcShow S01E${n}.mp4`); mk(`ArcShow/Season 01 - Logue/ArcShow S01E${n}.mp4`); }
+    const arcRisk = organizer.seriesLayoutRisk(path.join(base, 'ArcShow'), 6);
+    check('arc (S01E01..03 in 2 arc folders) -> HOLD (ambiguous)', arcRisk.mode === 'hold' && /episode number/.test(arcRisk.reason), JSON.stringify(arcRisk));
+
+    // MISLABELED (non-flat, single folder, not source-broken): a "Season 2" folder
+    // whose files all carry S01 -> the only unsafe signal is the mislabel -> HOLD.
+    mk('Mislabeled/Season 2/Mislabeled S01E01.mp4');
+    mk('Mislabeled/Season 2/Mislabeled S01E05.mp4');
+    const misl = organizer.seriesLayoutRisk(path.join(base, 'Mislabeled'), 2);
+    check('mislabeled season folder (S01 files in a Season 2 folder) -> HOLD', misl.mode === 'hold' && /mislabeled/.test(misl.reason), JSON.stringify(misl));
+
+    // SOURCE-BROKEN: clean per-season labels (2 seasons x 10), but the disk holds
+    // far more distinct episodes than the source claims -> HOLD.
+    for (let i = 1; i <= 10; i++) { const n = String(i).padStart(2, '0'); mk(`Overflow/Season 1/Overflow S01E${n}.mp4`); mk(`Overflow/Season 2/Overflow S02E${n}.mp4`); }
+    const overflow = organizer.seriesLayoutRisk(path.join(base, 'Overflow'), 5);
+    check('disk 20 eps vs source 5 -> HOLD (source-broken)', overflow.mode === 'hold' && /source/.test(overflow.reason), JSON.stringify(overflow));
+    // ...but the SAME disk is fine when the source agrees with it.
+    const overflowOk = organizer.seriesLayoutRisk(path.join(base, 'Overflow'), 20);
+    check('disk 20 eps vs source 20 -> NOT source-broken', overflowOk.mode !== 'hold' && !/source/.test(overflowOk.reason), JSON.stringify(overflowOk));
+
+    // Not on disk -> safe to queue (nothing to collide with).
+    const none = organizer.seriesLayoutRisk(path.join(base, 'DoesNotExist'), 10);
+    check('not-on-disk -> per-season (safe to queue)', none.mode === 'per-season', JSON.stringify(none));
+
+    // Multi-root: the series dir is resolved under the root by name; an ambiguous
+    // one HOLDS, a clean one passes.
+    check('multi-root: ambiguous series -> HOLD', organizer.seriesLayoutRiskFor([base], 'ArcShow', 12).mode === 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'ArcShow', 12)));
+    check('multi-root: clean series -> not held', organizer.seriesLayoutRiskFor([base], 'CleanShow', 8).mode !== 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'CleanShow', 8)));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) {
     console.log('Failures:\n  ' + failures.join('\n  '));

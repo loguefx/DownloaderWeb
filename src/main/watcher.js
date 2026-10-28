@@ -295,6 +295,19 @@ class Watcher {
     const template = s.template || (s.baseUrl ? urltemplate.toTemplate(s.baseUrl).template : null);
     const roots = this.rootsFor(s);
 
+    // GLOBAL no-duplicate guard (runs in BOTH dry-run and live): if the on-disk
+    // layout is ambiguous (the same S#E# names different episodes), mislabeled,
+    // or overflows the source model, we CANNOT tell episodes apart by label - so
+    // we HOLD (queue nothing) instead of risking a re-download of something we
+    // already have under another label. Clean layouts proceed exactly as before.
+    const layoutRisk = organizer.seriesLayoutRiskFor(roots, s.series, sourceTotal);
+    if (layoutRisk.mode === 'hold') {
+      this.onLog(
+        `"${s.series}" layout is unsafe to auto-download (${layoutRisk.reason}) - HELD, nothing queued to avoid duplicates. Add a per-title baseline to watch it.`
+      );
+      return 0;
+    }
+
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const aired = eps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
     const notAired = eps.length - aired.length;
