@@ -351,6 +351,30 @@ async function main() {
   service.watcherModeSet({ dryRun: true });
   check('shipped default is report-only', service.watcherMode().dryRun === true);
 
+  // ---- [9] engine mode: watcher activity must reach the /api/log buffer --------
+  // The /api/log buffer (service.js) listens to the queue manager's 'log' event.
+  // In engine mode there is no Electron window, and the watcher's injected onLog
+  // is the Electron sink - which does NOT feed that buffer. withManagerLog is the
+  // bridge that makes the watcher's pass visible through the API. Pin it.
+  {
+    const seen = [];
+    const handler = (m) => seen.push(m);
+    manager.on('log', handler);
+    try {
+      const primary = [];
+      const log = watcher.withManagerLog((m) => primary.push(m));
+      log('hello via watcher');
+      check('withManagerLog forwards to the primary sink', primary.includes('hello via watcher'));
+      check('withManagerLog also emits on the manager log event (engine /api/log)', seen.includes('hello via watcher'));
+      let threw = false;
+      const log2 = watcher.withManagerLog(() => { throw new Error('sink down'); });
+      try { log2('still emitted'); } catch (e) { threw = true; }
+      check('a throwing primary sink does not stop the manager emit', !threw && seen.includes('still emitted'));
+    } finally {
+      manager.off('log', handler);
+    }
+  }
+
   // ---- summary ----------------------------------------------------------------
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

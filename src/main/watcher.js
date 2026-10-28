@@ -14,6 +14,21 @@ const placer = require('./placer');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Wraps an injected log sink so every line is ALSO emitted on the queue
+// manager's 'log' event. In engine mode there is no Electron window to push
+// to, and the /api/log activity buffer listens to exactly that event (it is
+// what the queue's own _log feeds) - so without this the watcher's pass
+// ("Checking N scheduled series...", per-title results, "Schedule check
+// complete.") ran fine but was INVISIBLE through the API and the plugin.
+// Additive: the desktop UI reads main.js's own logLines buffer, so no line is
+// duplicated for it.
+function withManagerLog(onLog = () => {}) {
+  return (msg) => {
+    try { onLog(msg); } catch (e) { /* the primary sink is best-effort */ }
+    try { manager.emit('log', msg); } catch (e) { /* no listener / not an emitter */ }
+  };
+}
+
 // Re-checks the "waiting for dub" list. New episodes release weekly, so a daily
 // pass is plenty. Each pending episode is (re)queued as a non-fatal item: if the
 // dub is now available it downloads and leaves the list; otherwise it stays.
@@ -24,7 +39,7 @@ class Watcher {
   }
 
   start(onLog = () => {}) {
-    this.onLog = onLog;
+    this.onLog = withManagerLog(onLog);
     if (this.timer) return;
     this.tick();
     this.timer = setInterval(() => this.tick(), DAY_MS);
@@ -468,3 +483,4 @@ class Watcher {
 }
 
 module.exports = new Watcher();
+module.exports.withManagerLog = withManagerLog; // exposed for tests
