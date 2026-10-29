@@ -532,7 +532,31 @@ async function main() {
     // ARC: the SAME S#E# in two arc folders = two different episodes -> HOLD.
     for (let i = 1; i <= 3; i++) { const n = String(i).padStart(2, '0'); mk(`ArcShow/Season 01 - East/ArcShow S01E${n}.mp4`); mk(`ArcShow/Season 01 - Logue/ArcShow S01E${n}.mp4`); }
     const arcRisk = organizer.seriesLayoutRisk(path.join(base, 'ArcShow'), 6);
-    check('arc (S01E01..03 in 2 arc folders) -> HOLD (ambiguous)', arcRisk.mode === 'hold' && /episode number/.test(arcRisk.reason), JSON.stringify(arcRisk));
+    check('arc (S01E01..03 in 2 season folders) -> NOT held, but WARNED (no dup risk)', arcRisk.mode !== 'hold' && !!arcRisk.warning && /season folders/.test(arcRisk.warning), JSON.stringify(arcRisk));
+
+    // Kämpfer-style: the SAME episodes as dub+sub in "Season 01" and "Season 1"
+    // (two season folders). Harmless - recognized, no re-download; just a note.
+    for (let i = 1; i <= 12; i++) { const n = String(i).padStart(2, '0'); mk(`Kampfer/Season 01/S01E${n} - Sub.mp4`); mk(`Kampfer/Season 1/S01E${n} - Dub.mp4`); }
+    const kampfer = organizer.seriesLayoutRisk(path.join(base, 'Kampfer'), 12);
+    check('dub+sub in two season folders (Kämpfer) -> NOT held (recognized, no dup)', kampfer.mode !== 'hold', JSON.stringify(kampfer));
+
+    // HARMLESS duplicate: the SAME S#E# in a season folder + a DATE folder
+    // (Carrie's real layout). Not ambiguous - the recognizer still finds it.
+    for (let i = 1; i <= 8; i++) { const n = String(i); mk(`Carrie/Season 1/Carrie S1E${n}.mp4`); mk(`Carrie/2026-10-26/Carrie S1E${n}.mp4`); }
+    const carrie = organizer.seriesLayoutRisk(path.join(base, 'Carrie'), 8);
+    check('season folder + date folder (Carrie) -> NOT held (harmless dup)', carrie.mode !== 'hold', JSON.stringify(carrie));
+
+    // HARMLESS duplicate: S#E# at the series ROOT + in Season 1 (Percy).
+    for (let i = 1; i <= 8; i++) { const n = String(i); mk(`Percy/Percy S1E${n}.mp4`); mk(`Percy/Season 1/Percy S1E${n}.mp4`); }
+    const percy = organizer.seriesLayoutRisk(path.join(base, 'Percy'), 8);
+    check('root + season folder (Percy) -> NOT held (harmless dup)', percy.mode !== 'hold', JSON.stringify(percy));
+
+    // HARMLESS: a reboot/side folder with its own S1E## next to clean seasons
+    // (Wipeout: Season 1/2 + "Wipeout 2023"). The original is clean per-season.
+    for (let i = 1; i <= 11; i++) { const n = String(i); mk(`Wipeout/Season 1/Wipeout S1E${n}.mp4`); mk(`Wipeout/Wipeout 2023/Wipeout S1E${n}.mp4`); }
+    for (let i = 1; i <= 17; i++) { const n = String(i); mk(`Wipeout/Season 2/Wipeout S2E${n}.mp4`); }
+    const wipeout = organizer.seriesLayoutRisk(path.join(base, 'Wipeout'), 45);
+    check('seasons + reboot folder (Wipeout) -> NOT held (original is clean)', wipeout.mode !== 'hold', JSON.stringify(wipeout));
 
     // MISLABELED (non-flat, single folder, not source-broken): a "Season 2" folder
     // whose files all carry S01 -> the only unsafe signal is the mislabel -> HOLD.
@@ -556,8 +580,9 @@ async function main() {
 
     // Multi-root: the series dir is resolved under the root by name; an ambiguous
     // one HOLDS, a clean one passes.
-    check('multi-root: ambiguous series -> HOLD', organizer.seriesLayoutRiskFor([base], 'ArcShow', 12).mode === 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'ArcShow', 12)));
+    check('multi-root: arc series -> NOT held (warned)', organizer.seriesLayoutRiskFor([base], 'ArcShow', 12).mode !== 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'ArcShow', 12)));
     check('multi-root: clean series -> not held', organizer.seriesLayoutRiskFor([base], 'CleanShow', 8).mode !== 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'CleanShow', 8)));
+    check('multi-root: mislabeled series -> still HELD', organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2).mode === 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2)));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

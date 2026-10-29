@@ -448,27 +448,61 @@ async function main() {
   }
   service.watcherModeSet({ dryRun: true });
 
-  // ---- 12. Global no-duplicate gate: ambiguous titles are HELD end-to-end -----
-  console.log('\n[12] Global gate: an ambiguous (arc) layout is HELD; a clean one still queues');
-  service.watcherModeSet({ dryRun: false }); // prove the gate blocks even when ENABLED
+  // ---- 12. Global no-duplicate gate, end-to-end --------------------------------
+  // The gate now splits two very different cases (this is the Carrie fix):
+  //   * ARC / dub-sub (same S#E# in 2+ season folders): the recognizer still
+  //     dedupes by label, so there is NO re-download risk -> it is NOT held; a
+  //     genuinely-missing episode is still queued, the ones we have are not.
+  //   * MISLABELED / SOURCE-BROKEN: the label no longer identifies the episode
+  //     -> it CAN cause a duplicate -> it IS held (queue nothing).
+  console.log('\n[12] Global gate: arc/dub-sub NOT held (missing eps still queue); mislabeled + source-broken HELD');
+  service.watcherModeSet({ dryRun: false }); // prove the behavior even when ENABLED
   tmdb.tmdbInfo = async (id) => {
-    if (id === '555') return { tmdb: '555', title: 'Ambig Show', seasons: [{ season: 1, episodes: 3 }] };
+    if (id === '555') return { tmdb: '555', title: 'Arc Show', seasons: [{ season: 1, episodes: 5 }] };
+    if (id === '788') return { tmdb: '788', title: 'Mislabeled Show', seasons: [{ season: 1, episodes: 3 }] };
+    if (id === '899') return { tmdb: '899', title: 'Overflow Show', seasons: [{ season: 1, episodes: 5 }] };
     if (id === '666') return { tmdb: '666', title: 'Safe Show', seasons: [{ season: 1, episodes: 8 }] };
     return null;
   };
   tmdb.tmdbSeason = async (id, season) => {
     const mk = (n) => Array.from({ length: n }, (_, k) => ({ episode: k + 1, airDate: past(30), name: 'Ep ' + (k + 1), runtime: 1000 }));
-    if (id === '555') return { tmdb: '555', season: 1, episodes: mk(3) };
+    if (id === '555') return { tmdb: '555', season: 1, episodes: mk(5) };
+    if (id === '788') return { tmdb: '788', season: 1, episodes: mk(3) };
+    if (id === '899') return { tmdb: '899', season: 1, episodes: mk(5) };
     if (id === '666') return { tmdb: '666', season: 1, episodes: mk(8) };
     return null;
   };
   {
-    // Ambig Show: the SAME S01E01..03 in two arc folders (same number = different episodes).
-    for (let i = 1; i <= 3; i++) { const n = String(i).padStart(2, '0'); mkEp(`Ambig Show/Season 01 - East/Ambig S01E${n}.mp4`); mkEp(`Ambig Show/Season 01 - Logue/Ambig S01E${n}.mp4`); }
-    schedule.add({ series: 'Ambig Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('555', 1, 1)).template, baseUrl: vid('555', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '555', imdb: '', movie: false });
+    // Arc Show: the SAME S01E01..03 in two arc folders (same number = different
+    // episodes). Source lists 5; we have 1..3, so 4..5 are genuinely missing.
+    // If the arc were still HARD-HELD this would queue 0; because it is now only
+    // WARNED it queues exactly the 2 missing eps and leaves the 3 we have alone.
+    for (let i = 1; i <= 3; i++) { const n = String(i).padStart(2, '0'); mkEp(`Arc Show/Season 01 - East/Arc S01E${n}.mp4`); mkEp(`Arc Show/Season 01 - Logue/Arc S01E${n}.mp4`); }
+    schedule.add({ series: 'Arc Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('555', 1, 1)).template, baseUrl: vid('555', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '555', imdb: '', movie: false });
     queueCalls.length = 0;
     await watcher.checkSchedules();
-    check('ambiguous (arc) title is HELD: queued NOTHING', queueCalls.filter((c) => c.series === 'Ambig Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+    const arc = queueCalls.filter((c) => c.series === 'Arc Show');
+    check('arc title is NOT held: its 2 missing eps (4,5) are still queued', arc.length === 2 && JSON.stringify(arc.map((c) => c.episode).sort((a, b) => a - b)) === JSON.stringify([4, 5]), JSON.stringify(arc.map((c) => [c.series, c.episode])));
+    check('...and the 3 it already has (1..3) were NOT re-queued', arc.every((c) => c.episode >= 4));
+  }
+  {
+    // Mislabeled Show: a "Season 2" folder full of S01Exx files - the label no
+    // longer identifies the episode, so this CAN duplicate -> HELD (queue 0).
+    mkEp('Mislabeled Show/Season 2/Mislabeled Show S01E01.mp4');
+    mkEp('Mislabeled Show/Season 2/Mislabeled Show S01E05.mp4');
+    schedule.add({ series: 'Mislabeled Show', season: 2, mode: 'dub', template: urltemplate.toTemplate(vid('788', 2, 1)).template, baseUrl: vid('788', 2, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '788', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    check('mislabeled season folder is HELD: queued NOTHING', queueCalls.filter((c) => c.series === 'Mislabeled Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+  }
+  {
+    // Overflow Show: disk holds 20 distinct episodes but the source claims 5 -
+    // the source model does not describe this show -> HELD (queue 0).
+    for (let i = 1; i <= 10; i++) { const n = String(i).padStart(2, '0'); mkEp(`Overflow Show/Season 1/Overflow S01E${n}.mp4`); mkEp(`Overflow Show/Season 2/Overflow S02E${n}.mp4`); }
+    schedule.add({ series: 'Overflow Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('899', 1, 1)).template, baseUrl: vid('899', 1, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '899', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    check('source-broken (disk 20 vs source 5) is HELD: queued NOTHING', queueCalls.filter((c) => c.series === 'Overflow Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
   }
   {
     // Safe Show: clean per-season, has S1E01..05, source claims 8 -> queue 6..8.

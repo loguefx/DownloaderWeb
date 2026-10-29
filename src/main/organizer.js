@@ -678,9 +678,17 @@ function seriesExtent(seriesDir) {
 //   { mode: 'per-season', floor: null,     reason } - a clean per-season
 //                                                    layout; the season-scoped
 //                                                    matcher is safe to use.
-//   { mode: 'hold',       floor: null,     reason } - ambiguous or the disk
-//                                                    overflows the source model;
-//                                                    queue NOTHING for it.
+//   { mode: 'hold',       floor: null,     reason } - a mislabeled folder or a
+//                                                    disk that overflows the
+//                                                    source model (both CAN
+//                                                    cause a duplicate); queue
+//                                                    NOTHING for it.
+//   warning (optional): a non-blocking note - an arc or dub/sub duplicate.
+//                                                    The recognizer still
+//                                                    dedupes by label so there
+//                                                    is NO re-download risk;
+//                                                    only a brand-new arc
+//                                                    episode could be missed.
 function seriesLayoutRisk(seriesDir, sourceTotal) {
   if (!seriesDir) return { mode: 'per-season', floor: null, reason: 'not-on-disk' };
   const VIDEO = /\.(mp4|mkv|avi|m4v|ts)$/i;
@@ -717,23 +725,35 @@ function seriesLayoutRisk(seriesDir, sourceTotal) {
   };
   walk(seriesDir, 0);
 
-  // A label carried by more than one folder: the same S#E# names 2+ episodes.
+  // A NON-BLOCKING warning (not a hold). When the same S#E# is carried by TWO
+  // OR MORE real SEASON folders, it is either a genuine arc (One Piece "Season
+  // 01 - East Blue" + "Season 01 - Loguetown") or a dub/sub duplicate (Kämpfer:
+  // the same 12 episodes in "Season 01" and "Season 1"). These are
+  // indistinguishable from disk structure alone. Crucially, NEITHER can
+  // cause a DUPLICATE: the recognizer matches by the label it finds, so an
+  // episode already on disk is always seen as present and never re-downloaded.
+  // The only downside is that a brand-new arc episode may be missed (recoverable
+  // by re-running). So we NOTE it instead of holding the whole title - holding
+  // was false-blocking clean, actively-watched shows (Carrie, Kämpfer, ...).
   let ambiguous = 0;
   const ambiguousExamples = [];
   for (const [label, folders] of labelFolders.entries()) {
-    if (folders.size > 1) {
+    const anchored = [...folders].filter((f) => seasonFromName(f) != null);
+    if (anchored.length >= 2) {
       ambiguous += 1;
-      if (ambiguousExamples.length < 3) {
+      if (ambiguousExamples.length < 2) {
         const [s, e] = String(label).split(':');
-        ambiguousExamples.push(`S${s}E${e} in [${[...folders].join(', ')}]`);
+        ambiguousExamples.push(`S${s}E${e} in [${anchored.join(', ')}]`);
       }
     }
   }
-  if (ambiguous > 0) {
-    return { mode: 'hold', floor: null, reason: ambiguous + ' episode number(s) appear in 2+ different folders (same number = different episodes) - e.g. ' + ambiguousExamples.join('; ') };
-  }
+  const arcWarning = ambiguous > 0
+    ? ambiguous + ' episode number(s) sit in 2+ season folders (arc or dub/sub) - no re-download risk, but a new arc episode could be missed - e.g. ' + ambiguousExamples.join('; ')
+    : null;
 
   // A season folder whose files predominantly carry a DIFFERENT season token.
+  // This one CAN cause a duplicate (the episode is on disk but the recognizer
+  // attributes it to the wrong season), so it HOLDS.
   let mislabeled = 0;
   for (const sf of seasonFolders) {
     let mismatch = 0;
@@ -744,17 +764,19 @@ function seriesLayoutRisk(seriesDir, sourceTotal) {
     if (sf.files.length && mismatch >= Math.ceil(sf.files.length * 0.6)) mislabeled += 1;
   }
   if (mislabeled > 0) {
-    return { mode: 'hold', floor: null, reason: mislabeled + ' season folder(s) are mislabeled (folder says one season, files carry another)' };
+    return { mode: 'hold', floor: null, reason: mislabeled + ' season folder(s) are mislabeled (folder says one season, files carry another)', warning: arcWarning };
   }
 
   // The disk holds far MORE distinct episodes than the source claims, so the
   // source model does not describe this show (e.g. TMDB lists 40, disk has 142).
+  // The source can then number/season things the recognizer won't match, which
+  // CAN cause a duplicate, so it HOLDS.
   const distinct = labelFolders.size;
   if (sourceTotal && distinct > sourceTotal * 1.5) {
-    return { mode: 'hold', floor: null, reason: 'disk holds ' + distinct + ' distinct episodes but the source lists only ' + sourceTotal + ' (source model does not describe this show)' };
+    return { mode: 'hold', floor: null, reason: 'disk holds ' + distinct + ' distinct episodes but the source lists only ' + sourceTotal + ' (source model does not describe this show)', warning: arcWarning };
   }
 
-  return { mode: 'per-season', floor: null, reason: 'clean' };
+  return { mode: 'per-season', floor: null, reason: 'clean', warning: arcWarning };
 }
 
 // Multi-root version: a title may live on more than one drive. Conservative -
@@ -774,7 +796,8 @@ function seriesLayoutRiskFor(roots, series, sourceTotal) {
     if (!exists) continue;
     found = true;
     const r = seriesLayoutRisk(dir, sourceTotal);
-    if (r.mode === 'hold') return { mode: 'hold', floor: null, reason: r.reason + '  [root: ' + root + ']' };
+    if (r.mode === 'hold') return { mode: 'hold', floor: null, reason: r.reason + '  [root: ' + root + ']', warning: r.warning };
+    if (r.warning && !result.warning) result.warning = r.warning + '  [root: ' + root + ']';
     if (r.mode === 'flat') {
       if (result.mode !== 'flat' || (r.floor != null && (result.floor == null || r.floor > result.floor))) result = r;
     }

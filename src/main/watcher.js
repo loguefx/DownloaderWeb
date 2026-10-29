@@ -307,6 +307,12 @@ class Watcher {
       );
       return 0;
     }
+    // Non-blocking note: an arc or dub/sub duplicate. The recognizer still
+    // dedupes by label (so nothing already on disk is ever re-downloaded); a
+    // brand-new arc episode is the only thing that could be missed. Proceed.
+    if (layoutRisk.warning) {
+      this.onLog(`"${s.series}" note: ${layoutRisk.warning}`);
+    }
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const aired = eps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
