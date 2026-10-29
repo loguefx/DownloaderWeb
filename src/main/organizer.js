@@ -719,9 +719,18 @@ function seriesLayoutRisk(seriesDir, sourceTotal) {
 
   // A label carried by more than one folder: the same S#E# names 2+ episodes.
   let ambiguous = 0;
-  for (const folders of labelFolders.values()) if (folders.size > 1) ambiguous += 1;
+  const ambiguousExamples = [];
+  for (const [label, folders] of labelFolders.entries()) {
+    if (folders.size > 1) {
+      ambiguous += 1;
+      if (ambiguousExamples.length < 3) {
+        const [s, e] = String(label).split(':');
+        ambiguousExamples.push(`S${s}E${e} in [${[...folders].join(', ')}]`);
+      }
+    }
+  }
   if (ambiguous > 0) {
-    return { mode: 'hold', floor: null, reason: ambiguous + ' episode number(s) appear in 2+ different folders (same number = different episodes)' };
+    return { mode: 'hold', floor: null, reason: ambiguous + ' episode number(s) appear in 2+ different folders (same number = different episodes) - e.g. ' + ambiguousExamples.join('; ') };
   }
 
   // A season folder whose files predominantly carry a DIFFERENT season token.
@@ -765,7 +774,7 @@ function seriesLayoutRiskFor(roots, series, sourceTotal) {
     if (!exists) continue;
     found = true;
     const r = seriesLayoutRisk(dir, sourceTotal);
-    if (r.mode === 'hold') return r;
+    if (r.mode === 'hold') return { mode: 'hold', floor: null, reason: r.reason + '  [root: ' + root + ']' };
     if (r.mode === 'flat') {
       if (result.mode !== 'flat' || (r.floor != null && (result.floor == null || r.floor > result.floor))) result = r;
     }
