@@ -9,7 +9,7 @@ const vpn = require('./vpn');
 const organizer = require('./organizer');
 const library = require('./library');
 const placer = require('./placer');
-const { download } = require('./downloader');
+const { download, lastFfmpegStderr } = require('./downloader');
 const { verifyFile, belowMinHeight } = require('./verify');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
@@ -303,6 +303,25 @@ class DownloadManager extends EventEmitter {
       this._log(
         `"${item.label}" was stuck in "${item.status}" for ${mins} min - killing it so the queue can move on (it will retry).`
       );
+      // A stuck download: surface what ffmpeg was actually doing (segment 403s,
+      // reconnect loops, a slow drip) so the next log tells us the root cause
+      // instead of only the phase name.
+      if (item.status === 'downloading') {
+        try {
+          const snap = lastFfmpegStderr();
+          if (snap && snap.tail && Date.now() - (snap.at || 0) < 15 * 60000) {
+            const lines = String(snap.tail)
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter(Boolean)
+              .slice(-8)
+              .join(' | ');
+            this._log(`ffmpeg (last output before kill): ${lines.slice(-700)}`);
+          }
+        } catch (e) {
+          /* diagnostics only */
+        }
+      }
       item._watchdogKilled = true;
       item._watchdogReason = `stuck in "${item.status}" for ${mins} min`;
       try {

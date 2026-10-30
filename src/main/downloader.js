@@ -335,6 +335,179 @@ function hlsWorkDir(partPath) {
   return path.join(os.tmpdir(), `wvd-hls-${id}`);
 }
 
+// ---- Plain-HTTP segment localizer (Vidsrc headless path) --------------------
+// Vidsrc's CDNs reject Electron session traffic (403 on cookies/Referer), so
+// their segments must be pulled with bare Node HTTP. Doing it here (instead of
+// letting ffmpeg pull remote segments) buys the future-proofing:
+//   - RESUME: parts are written to the (preserved) work dir as segNNNNN.ts,
+//     so a killed/retried download skips every part already on disk;
+//   - FAIL-FAST on a 403: the CDN's signed segment URLs are short-lived and a
+//     long download can outlive its own token. A 403 aborts the run quickly
+//     (instead of ffmpeg churning for 30 minutes); the queue re-resolves a
+//     FRESH token and the next pass resumes from the last saved part;
+//   - per-segment timeouts, so a wedged socket errors in ~60s, not forever.
+function plainHttpBuffer(url, ua, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const lib = String(url).startsWith('http:') ? require('http') : require('https');
+    const rq = lib.get(url, { headers: { 'User-Agent': ua || 'webvideodownloader' }, timeout: timeoutMs }, (rs) => {
+      const code = rs.statusCode || 0;
+      if (code >= 400) {
+        const e = new Error('HTTP ' + code);
+        e.status = code;
+        rs.resume();
+        return reject(e);
+      }
+      const c = [];
+      rs.on('data', (d) => c.push(d));
+      rs.on('end', () => resolve(Buffer.concat(c)));
+    });
+    rq.on('error', reject);
+    rq.setTimeout(timeoutMs, () => {
+      rq.destroy();
+      reject(new Error('timeout'));
+    });
+  });
+}
+
+async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, onLog } = {}) {
+  const lines = String(text || '').split(/\r?\n/);
+  const jobs = [];
+  let segN = 0;
+  let keyN = 0;
+  const out = lines.slice();
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    if (t.startsWith('#')) {
+      const m = t.match(/URI=(["'])([^"']+)\1/i);
+      if (!m) continue;
+      let abs;
+      try {
+        abs = new URL(m[2], base).toString();
+      } catch (e) {
+        continue;
+      }
+      jobs.push({ i, abs, name: `key${keyN++}.bin`, quote: m[1] });
+      continue;
+    }
+    let abs;
+    try {
+      abs = new URL(t, base).toString();
+    } catch (e) {
+      continue;
+    }
+    jobs.push({ i, abs, name: `seg${String(segN++).padStart(5, '0')}.ts` });
+  }
+  if (!jobs.length) throw new Error('HLS playlist has no segments');
+  fs.mkdirSync(dir, { recursive: true });
+
+  // Resume: parts saved by a previous (killed) attempt stay valid.
+  let have = 0;
+  for (const job of jobs) {
+    const p = path.join(dir, job.name);
+    if (fs.existsSync(p) && fs.statSync(p).size > 0) have += 1;
+  }
+  let done = 0;
+  const report = () => {
+    if (onProgress) {
+      onProgress({
+        received: have + done,
+        total: jobs.length,
+        percent: Math.min(0.999, (have + done) / Math.max(1, jobs.length))
+      });
+    }
+  };
+  if (onLog) {
+    onLog(
+      have
+        ? `Resuming download: ${have}/${jobs.length} part(s) already on disk.`
+        : `Downloading ${jobs.length} part(s) through plain HTTP...`
+    );
+  }
+
+  const SEG_TIMEOUT_MS = 60000;
+  const SEG_RETRIES = 3;
+  let first403 = null;
+  const fetchOne = async (job) => {
+    if (signal && signal.aborted) {
+      const e = new Error('Aborted');
+      e.name = 'AbortError';
+      throw e;
+    }
+    const p = path.join(dir, job.name);
+    if (fs.existsSync(p) && fs.statSync(p).size > 0) {
+      done += 1;
+      report();
+      return;
+    }
+    let lastErr = null;
+    for (let a = 0; a < SEG_RETRIES; a++) {
+      if (signal && signal.aborted) {
+        const e = new Error('Aborted');
+        e.name = 'AbortError';
+        throw e;
+      }
+      try {
+        const buf = await plainHttpBuffer(job.abs, ua, SEG_TIMEOUT_MS);
+        if (!buf || !buf.length) throw new Error('empty part');
+        const tmp = p + '.tmp';
+        fs.writeFileSync(tmp, buf);
+        fs.renameSync(tmp, p);
+        done += 1;
+        report();
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        lastErr = e;
+        if (e && e.status === 403) {
+          // Signed token expired mid-download. Hammering it with retries just
+          // burns time; fail fast so the queue re-resolves a fresh token and
+          // this run's saved parts are resumed.
+          first403 = first403 || job;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 1000 * (a + 1)));
+      }
+    }
+    if (first403) {
+      const err = new Error(
+        `CDN rejected ${first403.name} with 403 - its signed token expired mid-download. ` +
+          `The retry will get a fresh token and resume from ${have + done}/${jobs.length} part(s).`
+      );
+      err.tokenExpired = true;
+      throw err;
+    }
+    throw lastErr || new Error('segment fetch failed');
+  };
+
+  // Bounded concurrency (the CDN answers ffmpeg's default 10 fine; 4 keeps a
+  // burst gentler while staying fast on big episodes).
+  const CONC = 4;
+  let idx = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(CONC, jobs.length)) }, async () => {
+    for (;;) {
+      if (signal && signal.aborted) break;
+      const i = idx;
+      idx += 1;
+      if (i >= jobs.length) break;
+      await fetchOne(jobs[i]);
+    }
+  });
+  await Promise.all(workers);
+
+  for (const job of jobs) {
+    const t = out[job.i].trim();
+    if (t.startsWith('#')) {
+      out[job.i] = t.replace(/URI=(["'])([^"']+)\1/i, `URI=${job.quote}${job.name}${job.quote}`);
+    } else {
+      out[job.i] = job.name;
+    }
+  }
+  const playlistPath = path.join(dir, 'index.m3u8');
+  fs.writeFileSync(playlistPath, out.join('\n'), 'utf8');
+  return playlistPath;
+}
+
 function ffmpegFileArg(p) {
   const norm = String(p).replace(/\\/g, '/');
   if (/^[a-zA-Z]:\//.test(norm)) return `file:${norm}`;
@@ -691,6 +864,18 @@ async function downloadHls(detection, partPath, opts = {}) {
           onLog,
           playerWebContentsId: viaPlayer ? detection.playerWebContentsId : undefined
         });
+      } else if (detection.plainHttp) {
+        // Vidsrc headless: the CDN 403s Electron session traffic, so pull the
+        // parts ourselves with plain HTTP into the (preserved) work dir and
+        // remux locally. Resume-safe and fail-fast on an expired CDN token -
+        // see localizePlainSegments.
+        allLocal = true;
+        fs.mkdirSync(dir, { recursive: true });
+        localPlaylist = await localizePlainSegments(loaded.text, loaded.base, dir, ua, {
+          signal,
+          onProgress,
+          onLog
+        });
       } else {
         fs.mkdirSync(dir, { recursive: true });
         localPlaylist = path.join(dir, 'playlist.m3u8');
@@ -726,6 +911,19 @@ async function downloadHls(detection, partPath, opts = {}) {
   }
 }
 
+// Most recent ffmpeg stderr output (shared by the copy + HLS spawns), kept so
+// an upstream watchdog kill can log WHY the download was stuck (403s? segment
+// retries? a slow drip?) instead of only "stuck in downloading for 30 min".
+let lastFfmpegTail = '';
+let lastFfmpegAt = 0;
+function noteFfmpegTail(tail) {
+  lastFfmpegTail = String(tail || '');
+  lastFfmpegAt = Date.now();
+}
+function lastFfmpegStderr() {
+  return { tail: lastFfmpegTail, at: lastFfmpegAt };
+}
+
 function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
   return new Promise((resolve, reject) => {
     const args = [
@@ -756,6 +954,7 @@ function spawnFfmpegCopy(inputPath, partPath, { signal, onProgress } = {}) {
     proc.stderr.on('data', (buf) => {
       const text = buf.toString();
       stderrTail = (stderrTail + text).slice(-4000);
+      noteFfmpegTail(stderrTail);
       st.lastActivity = Date.now();
       if (!durationSec) {
         const d = text.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
@@ -872,6 +1071,7 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
     proc.stderr.on('data', (buf) => {
       const text = buf.toString();
       stderrTail = (stderrTail + text).slice(-4000);
+      noteFfmpegTail(stderrTail);
       st.lastActivity = Date.now();
 
       if (!durationSec) {
@@ -1019,5 +1219,10 @@ module.exports = {
   // Exported for the stall-watchdog tests (and engine diagnostics).
   watchForStall,
   STALL_MS,
-  WATCH_TICK_MS
+  WATCH_TICK_MS,
+  // Engine diagnostics: what ffmpeg was saying when a download got stuck.
+  lastFfmpegStderr,
+  // Exported for the Vidsrc resume tests.
+  localizePlainSegments,
+  plainHttpBuffer
 };
