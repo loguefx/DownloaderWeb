@@ -109,6 +109,12 @@ module.exports = {
     // connections fine, so 8 is a safe speed-up with no extra rate-limit
     // profile (same host, same IP - only the in-flight part count changes).
     segmentConcurrency: 8,
+    // Per-part socket-idle timeout (wire goes fully silent).
+    segmentIdleMs: 60000,
+    // Per-part ABSOLUTE deadline: fires even if bytes keep trickling, so a CDN
+    // that holds a connection open forever can never pin a worker (and make a
+    // download un-killable) again.
+    segmentDeadlineMs: 120000,
     // When true (the default) the engine never parks a "Just a moment…"
     // window on your screen waiting for a checkbox click. It STILL tries the
     // Cloudflare-gated catalogs (FMovies/movienow, Flixtor, …) as a last

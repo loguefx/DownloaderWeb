@@ -346,26 +346,98 @@ function hlsWorkDir(partPath) {
 //     (instead of ffmpeg churning for 30 minutes); the queue re-resolves a
 //     FRESH token and the next pass resumes from the last saved part;
 //   - per-segment timeouts, so a wedged socket errors in ~60s, not forever.
-function plainHttpBuffer(url, ua, timeoutMs) {
+function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } = {}) {
+  // timeoutMs  - socket-IDLE timeout (fires when the wire goes fully silent).
+  // deadlineMs - ABSOLUTE cap for the whole fetch: it fires even if bytes keep
+  //              trickling. Without it, a CDN that holds the connection open
+  //              but never finishes (or a VPN path that drips) pins this
+  //              worker forever - which made a killed download un-killable
+  //              (the 12:53-01:13 "killed every 30s, never retries" loop).
+  const abs = deadlineMs || timeoutMs * 2;
   return new Promise((resolve, reject) => {
     const lib = String(url).startsWith('http:') ? require('http') : require('https');
+    let settled = false;
+    let idleTimer = null;
+    let deadlineTimer = null;
+    const cleanup = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (signal && signal.removeEventListener) signal.removeEventListener('abort', onAbort);
+    };
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+    const ok = (buf) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(buf);
+    };
+    const onAbort = () => {
+      const e = new Error('Aborted');
+      e.name = 'AbortError';
+      try {
+        rq.destroy();
+      } catch (err) {
+        /* already gone */
+      }
+      fail(e);
+    };
     const rq = lib.get(url, { headers: { 'User-Agent': ua || 'webvideodownloader' }, timeout: timeoutMs }, (rs) => {
       const code = rs.statusCode || 0;
       if (code >= 400) {
         const e = new Error('HTTP ' + code);
         e.status = code;
         rs.resume();
-        return reject(e);
+        return fail(e);
       }
       const c = [];
-      rs.on('data', (d) => c.push(d));
-      rs.on('end', () => resolve(Buffer.concat(c)));
+      rs.on('data', (d) => {
+        c.push(d);
+        // Any byte resets the idle timer; the absolute deadline still bounds it.
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          try {
+            rq.destroy();
+          } catch (err) {
+            /* ignore */
+          }
+          fail(new Error('timeout'));
+        }, timeoutMs);
+      });
+      rs.on('error', (e) => fail(e));
+      rs.on('end', () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        ok(Buffer.concat(c));
+      });
     });
-    rq.on('error', reject);
+    rq.on('error', (e) => fail(e));
     rq.setTimeout(timeoutMs, () => {
-      rq.destroy();
-      reject(new Error('timeout'));
+      try {
+        rq.destroy();
+      } catch (err) {
+        /* ignore */
+      }
+      fail(new Error('timeout'));
     });
+    deadlineTimer = setTimeout(() => {
+      try {
+        rq.destroy();
+      } catch (err) {
+        /* ignore */
+      }
+      fail(new Error('segment deadline exceeded'));
+    }, abs);
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -409,12 +481,18 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
   }
   let done = 0;
   const report = () => {
+    const n = have + done;
     if (onProgress) {
       onProgress({
-        received: have + done,
+        received: n,
         total: jobs.length,
-        percent: Math.min(0.999, (have + done) / Math.max(1, jobs.length))
+        percent: Math.min(0.999, n / Math.max(1, jobs.length))
       });
+    }
+    // Visible progress: a long download must show life in the log, and a HUNG
+    // one must be obvious from where the counting stopped.
+    if (onLog && (n % 10 === 0 || n === jobs.length)) {
+      onLog(`Downloaded ${n}/${jobs.length} part(s)...`);
     }
   };
   if (onLog) {
@@ -425,7 +503,8 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     );
   }
 
-  const SEG_TIMEOUT_MS = 60000;
+  const SEG_IDLE_MS = Number(config.download.segmentIdleMs) || 60000;
+  const SEG_DEADLINE_MS = Number(config.download.segmentDeadlineMs) || 120000;
   const SEG_RETRIES = 3;
   let first403 = null;
   const fetchOne = async (job) => {
@@ -448,7 +527,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
         throw e;
       }
       try {
-        const buf = await plainHttpBuffer(job.abs, ua, SEG_TIMEOUT_MS);
+        const buf = await plainHttpBuffer(job.abs, ua, SEG_IDLE_MS, { signal, deadlineMs: SEG_DEADLINE_MS });
         if (!buf || !buf.length) throw new Error('empty part');
         const tmp = p + '.tmp';
         fs.writeFileSync(tmp, buf);

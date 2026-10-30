@@ -223,6 +223,110 @@ async function main() {
     check('returns { tail, at }', snap && typeof snap.tail === 'string' && typeof snap.at === 'number', JSON.stringify(snap));
   }
 
+  // ---- [5] abort must KILL an in-flight fetch (the 12:53-01:13 regression) ---
+  // A segment that never ends used to pin its worker forever: the watchdog's
+  // abort could not reach it, so a killed download was un-killable and the
+  // queue looped "killing every 30s" for hours. Now abort tears down the
+  // in-flight request immediately.
+  console.log('\n[5] Abort kills an in-flight fetch instantly');
+  {
+    const state = { done: [] };
+    const srv = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      if (u.pathname === '/stall.ts') {
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        res.write('partial-bytes-');
+        // connection stays open, response never ends
+        return;
+      }
+      const m = u.pathname.match(/^\/seg(\d+)\.ts$/);
+      if (m) {
+        state.done.push(m[1]);
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        return res.end(SEG_BODY(Number(m[1])));
+      }
+      res.writeHead(404);
+      res.end('nope');
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, 'abort-'));
+    // 1 fast segment + 1 stalling segment
+    const text = ['#EXTM3U', '#EXTINF:5,', `${base}/seg1.ts`, '#EXTINF:5,', `${base}/stall.ts`, '#EXT-X-ENDLIST', ''].join('\n');
+    const ctrl = new AbortController();
+    let err = null;
+    const t0 = Date.now();
+    const run = localizePlainSegments(text, base, dir, 'test-ua', { signal: ctrl.signal });
+    await new Promise((r) => setTimeout(r, 150));
+    ctrl.abort();
+    try {
+      await run;
+    } catch (e) {
+      err = e;
+    }
+    const elapsed = Date.now() - t0;
+    srv.close();
+    check('rejected (did not hang forever)', !!err, 'no error - hung?');
+    check('...as an AbortError', err && err.name === 'AbortError', err && `${err.name}: ${err.message}`);
+    check('...promptly (< 2s after abort)', elapsed < 2500, elapsed + 'ms');
+    check('the healthy part was still saved for resume', fs.existsSync(path.join(dir, 'seg00000.ts')),
+      fs.readdirSync(dir).join(','));
+  }
+
+  // ---- [6] a drip-forever segment is bounded by the ABSOLUTE deadline -------
+  // The idle timeout only fires on a fully silent socket; a connection that
+  // keeps sending (or keep-alive noise) must still be cut off. Without the
+  // deadline this pinned the worker indefinitely (the kill-loop regression).
+  console.log('\n[6] Drip-forever segment hits the absolute deadline');
+  {
+    const config = M('config');
+    const origIdle = config.download.segmentIdleMs;
+    const origDeadline = config.download.segmentDeadlineMs;
+    config.download.segmentIdleMs = 150;
+    config.download.segmentDeadlineMs = 250;
+    const srv = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      const m = u.pathname.match(/^\/seg(\d+)\.ts$/);
+      if (m) {
+        res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+        // Trickle: a byte every 50ms keeps the idle timer from ever firing,
+        // but the response NEVER ends.
+        res.write('x');
+        const t = setInterval(() => {
+          try {
+            res.write('x');
+          } catch (e) {
+            clearInterval(t);
+          }
+        }, 50);
+        req.on('close', () => clearInterval(t));
+        return;
+      }
+      res.writeHead(404);
+      res.end('nope');
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    const text = ['#EXTM3U', '#EXTINF:5,', `${base}/seg1.ts`, '#EXT-X-ENDLIST', ''].join('\n');
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, 'drip-'));
+    let err = null;
+    const t0 = Date.now();
+    try {
+      await localizePlainSegments(text, base, dir, 'test-ua', {});
+    } catch (e) {
+      err = e;
+    }
+    const elapsed = Date.now() - t0;
+    srv.close();
+    config.download.segmentIdleMs = origIdle;
+    config.download.segmentDeadlineMs = origDeadline;
+    check('rejected (not pinned forever)', !!err, 'no error - hung?');
+    check('deadline named in the error', err && /deadline|timeout/i.test(err.message), err && err.message);
+    check('bounded (finished in < 15s despite the endless drip)', elapsed < 15000, elapsed + 'ms');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
