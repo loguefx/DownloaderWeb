@@ -234,7 +234,10 @@ async function fetchStreamUrls(ref) {
   // those than on a hard 403. The browser relay's player calls this same API,
   // so letting the rate limit clear here also helps the fallback path.
   const RETRYABLE = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
-  const RATE_LIMITED = new Set([429, 503]);
+  // 403 ("invalid api token") is the token being stale or IP-mismatched, or a
+  // rate-limit dressed up as a rejection - either way 1.5s retries just make
+  // it worse. Use the longer scale.
+  const RATE_LIMITED = new Set([403, 429, 503]);
   let lastErr = null;
   let lastStatus = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -244,10 +247,12 @@ async function fetchStreamUrls(ref) {
         (limited ? 4000 : 1500) * attempt + Math.floor(Math.random() * (limited ? 2000 : 800));
       await new Promise((rs) => setTimeout(rs, backoff));
     }
-    // A 403 with no token in hand is Vidsrc's "invalid api token" - acquire
-    // one mid-retry (the relay chain may have been briefly unavailable on the
-    // first pass) and retry with it.
-    if (!apiToken && lastStatus === 403) {
+    // A 403 is Vidsrc rejecting the token in hand (or no token at all). The
+    // token is IP-bound and short-lived: it goes stale when the egress IP
+    // rotates (VPN) or the relay was briefly down on the first pass. Re-acquire
+    // a FRESH token every 403 - retrying with the stale one just burns the
+    // whole budget on 403s and then dumps the episode on the slow browser path.
+    if (lastStatus === 403) {
       try {
         apiToken = await acquireApiToken(ref);
         if (apiToken) url = API_BASE + '?' + qs + '&stream_urls&api_token=' + encodeURIComponent(apiToken);

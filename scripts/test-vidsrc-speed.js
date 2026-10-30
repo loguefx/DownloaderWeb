@@ -80,6 +80,9 @@ const SLOW_MS = 2500; // slow relay + slow source delays
 // produce a winner.
 let mode = 'winner-first';
 const LATE_MS = 400; // how late the winner answers in 'loser-first' mode
+let staleTokenOnce = false; // scenario: first data-API call 403s (stale token)
+let dataApiCalls = 0;
+let playerTokenHits = 0;
 
 function routeFor(u) {
   if (u.includes('vidsrc.sh/vs_src.php')) {
@@ -102,9 +105,17 @@ function routeFor(u) {
   }
   if (u.includes('cdn-good.example/embed/player/9')) {
     mark('player-token');
+    playerTokenHits += 1;
     return { status: 200, body: () => Buffer.from('window.CONFIG = {"apiToken":"tokB"};') };
   }
   if (u.includes('data.vidsrc.sh/api.php')) {
+    dataApiCalls += 1;
+    if (staleTokenOnce && dataApiCalls === 1) {
+      mark('data-api-403-stale');
+      // First call carries the STALE token: rejected, exactly like the real
+      // API does for a rotated egress IP.
+      return { status: 403, body: () => Buffer.from(JSON.stringify({ status_code: 403, error: 'invalid api token' })) };
+    }
     // The real API rejects token-less calls (403 "invalid api token").
     // Enforcing that here keeps the relay-race test honest: if the race loop
     // drops the winning token, this route 403s and the scenario fails.
@@ -276,6 +287,33 @@ const at = (name) => {
   check('good source still won', !!best2 && best2.host === 'cdn-good2.example', best2 && best2.host);
   check('real 1080p', best2 && best2.realHeight === 1080, best2 && `${best2.realWidth}x${best2.realHeight}`);
   check(`finished in ${total2}ms (< 3000ms)`, total2 < 3000, `${total2}ms (includes the 1.2s data-API throttle)`);
+
+  // ---- Scenario 3: a STALE token 403s the first API call ------------------
+  // The token is IP-bound: a VPN egress rotation between token issue and use
+  // (or a briefly-dead relay chain on the first pass) makes the API answer
+  // 403 "invalid api token". Old code kept retrying the SAME stale token and
+  // then dumped the episode on the slow browser path. New code re-acquires a
+  // FRESH token on every 403 and recovers.
+  staleTokenOnce = true;
+  dataApiCalls = 0;
+  playerTokenHits = 0;
+  mode = 'winner-first';
+
+  console.log('\n[7] Stale-token 403 is recovered by re-acquiring a fresh token');
+  let best3 = null;
+  let err3 = null;
+  const start3 = Date.now();
+  try {
+    best3 = await vs.pick1080(ref, () => {}, 1080);
+  } catch (e) {
+    err3 = e;
+  }
+  const total3 = Date.now() - start3;
+  check('no error', !err3, err3 && err3.message);
+  check('the first data-API call was 403ed', dataApiCalls >= 2, 'data-api calls: ' + dataApiCalls);
+  check('a FRESH token was re-acquired (player chain walked again)', playerTokenHits >= 2, 'player-token hits: ' + playerTokenHits);
+  check('resolved to verified 1080p despite the stale token', !!best3 && best3.realHeight === 1080, best3 && `${best3.host} ${best3.realWidth}x${best3.realHeight}`);
+  check(`finished in ${total3}ms (< 15000ms)`, total3 < 15000, total3 + 'ms');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

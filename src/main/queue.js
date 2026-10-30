@@ -13,6 +13,8 @@ const { download } = require('./downloader');
 const { verifyFile, belowMinHeight } = require('./verify');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
+const cfsolve = require('./cfsolve');
+const tmdb = require('./tmdb');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
@@ -400,6 +402,31 @@ class DownloadManager extends EventEmitter {
       });
   }
 
+  // TMDB "licensed exclusive" hint for this item's title, when the source URL
+  // carries a TMDB id. '' when unknown - this must NEVER block a download on a
+  // guess, so any lookup failure degrades to "not exclusive" (old behaviour).
+  // The answer is cached on the item: it is per-title and stable within a run.
+  async _exclusiveHint(item) {
+    if (item._exclusiveHintChecked) return item._exclusiveHint || '';
+    item._exclusiveHintChecked = true;
+    try {
+      const src = String(item.url || item.baseUrl || '');
+      let tmdbId = String(item.tmdb || '');
+      if (!tmdbId) {
+        const m = src.match(/embed\/(?:tv|movie)\/(\d{4,8})/);
+        if (m) tmdbId = m[1];
+      }
+      if (!tmdbId) return '';
+      const isMovie = /\/embed\/movie\//.test(src);
+      const provs = await tmdb.watchProviders(tmdbId, isMovie ? 'movie' : 'tv');
+      const hint = tmdb.exclusiveHint(provs) || '';
+      item._exclusiveHint = hint;
+      return hint;
+    } catch (e) {
+      return '';
+    }
+  }
+
   // Blocks while paused, VPN is down, or the library is in read-only mode, but
   // bails immediately if the queue was stopped or this item was removed (so
   // Stop/Clear can tear a parked worker down instead of leaving it stuck
@@ -648,11 +675,31 @@ class DownloadManager extends EventEmitter {
             }
           }
         }
+        // Licensed-exclusive titles (Netflix/HBO/Prime originals, ...) are not
+        // on the CF-free catalogs, and the only places they show up are the
+        // Cloudflare-gated fallbacks - which need a solver to use. Without one,
+        // every attempt burns ~4 minutes on "Still waiting for Cloudflare" and
+        // then fails. Detect it once from TMDB and stop with an explanation
+        // instead of 6 pointless retries. With a solver configured the normal
+        // path runs unchanged (the gated sites ARE the user's best chance).
+        if (!item._exclusive && !cfsolve.enabled()) {
+          const hint = await this._exclusiveHint(item);
+          if (hint) {
+            item._exclusive = true;
+            item._exclusiveHint = hint;
+          }
+        }
         // The headless path checked every Vidsrc source and found no 1080p.
         // Still try the browser path (other sites might have it), but cap
         // retries to 2 — the fallback sites are usually Cloudflare-gated,
         // so 6 retries just burns hours on "Still waiting for Cloudflare".
-        if (outcome && outcome.status === 'no_quality') {
+        if (item._exclusive) {
+          this._log(
+            `"${item.label}" — ${item._exclusiveHint || 'a licensed exclusive'}. ` +
+              'The free catalogs will not have it and no Cloudflare solver is configured, so the gated fallbacks are unusable. Not retrying.'
+          );
+          outcome = { status: 'failed', reason: item._exclusiveHint || 'licensed exclusive' };
+        } else if (outcome && outcome.status === 'no_quality') {
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
@@ -696,8 +743,9 @@ class DownloadManager extends EventEmitter {
           item.error = reason;
           // No-1080p episodes: the fallback sites are Cloudflare-gated, so extra
           // retries just burn time on "Still waiting for Cloudflare". Cap at 2.
-          const max = item._noQuality
-            ? Math.max(1, Math.min(2, config.download.maxRetries || 6))
+          // Licensed exclusives: nothing will ever find it; cap at 1.
+          const max = item._noQuality || item._exclusive
+            ? Math.max(1, Math.min(item._exclusive ? 1 : 2, config.download.maxRetries || 6))
             : Math.max(1, config.download.maxRetries || 6);
           if (item.attempts >= max) {
             // Endless retries on one dead episode (S2E03 at 190+ tries) held the
@@ -709,7 +757,12 @@ class DownloadManager extends EventEmitter {
             }
             item.status = 'failed';
             this._emit();
-            if (item._noQuality) {
+            if (item._exclusive) {
+              this._log(
+                `"${item.label}" — ${item._exclusiveHint || 'a licensed exclusive per TMDB'}. ` +
+                  'It is not on the free sources; set a Cloudflare solver (Settings) if you still want to try the gated sites.'
+              );
+            } else if (item._noQuality) {
               this._log(
                 `"${item.label}" — no 1080p source found (Vidsrc + fallback). ` +
                   'This show does not have a 1080p encode available right now.'

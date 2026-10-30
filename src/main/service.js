@@ -515,7 +515,14 @@ function schedulesAdd(spec) {
     template: template || spec.template,
     baseUrl: spec.baseUrl,
     library: spec.library || null,
-    minHeight: Number(spec.minHeight) || 0
+    minHeight: Number(spec.minHeight) || 0,
+    // schedule.add() stores these; dropping them here forced the watcher to
+    // re-derive the TMDB id from the URL on the first pass. Forward them so an
+    // API add lands fully specified.
+    tmdb: spec.tmdb ? String(spec.tmdb) : null,
+    imdb: spec.imdb ? String(spec.imdb) : null,
+    anime: spec.anime != null ? !!spec.anime : null,
+    movie: spec.movie != null ? !!spec.movie : null
   };
   const added = schedule.add(Object.assign({}, specKey, {
     outputRoot: spec.outputRoot || engineconfig.stagingPath()

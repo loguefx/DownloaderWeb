@@ -189,6 +189,89 @@ async function main() {
   check('waiting has no cap (dub not out yet)', manager._phaseCap({ status: 'waiting' }) == null);
   check('placing cap exceeds the 90-min placement timeout', manager._phaseCap({ status: 'placing' }) > 90 * 60000, manager._phaseCap({ status: 'placing' }) + 'ms');
 
+  // ---- 4. Licensed-exclusive titles stop after ONE attempt ------------------
+  // Netflix/HBO originals are not on the CF-free catalogs; the gated fallbacks
+  // need a solver. Old behaviour: 6 retries x ~4 min of "Still waiting for
+  // Cloudflare" per episode. New: TMDB says licensed-only -> explain + stop.
+  console.log('\n[4] Licensed exclusive stops retrying (no Cloudflare burn)');
+  const tmdbMod = M('tmdb');
+  const cfsolve = M('cfsolve');
+  const origWatch = tmdbMod.watchProviders;
+  const origEnabled = cfsolve.enabled;
+  tmdbMod.watchProviders = async () => ['Netflix']; // Vivant-style original
+  cfsolve.enabled = () => false; // no solver configured
+  const xlogs = [];
+  const realLog2 = manager._log.bind(manager);
+  manager._log = (m) => {
+    xlogs.push(m);
+    realLog2(m);
+  };
+  let discovers = 0;
+  const failDiscover = () => {
+    discovers += 1;
+    return Promise.resolve({ status: 'failed', reason: 'no sources' });
+  };
+  const xid = manager.add({
+    label: 'Exclusive Show S1E1',
+    series: 'Exclusive Show',
+    season: 1,
+    episode: 1,
+    url: 'https://example.invalid/exclusive',
+    tmdb: '218038',
+    outputRoot: path.join(DATA_DIR, 'staging'),
+    discover: failDiscover
+  });
+  const xitem = manager.items.find((x) => x.id === xid);
+  for (let i = 0; i < 80 && !(xitem && xitem.status === 'failed'); i++) await sleep(100);
+  check(
+    'exclusive title failed after exactly 1 attempt',
+    xitem && xitem.attempts === 1 && xitem.status === 'failed',
+    JSON.stringify(xitem && [xitem.attempts, xitem.status, xitem.error])
+  );
+  check('the browser fallback was SKIPPED (discover never called)', discovers === 0, 'discovers=' + discovers);
+  check(
+    'log explains the licensed exclusive',
+    xlogs.some((m) => /exclusive (per TMDB|and no Cloudflare solver)/i.test(m)),
+    xlogs.slice(-6).join(' | ').slice(0, 400)
+  );
+  tmdbMod.watchProviders = origWatch;
+  cfsolve.enabled = origEnabled;
+  manager._log = realLog2;
+  manager.removeByIds([xid]);
+  await sleep(150);
+
+  // Non-exclusive failure keeps the normal retry behaviour (regression guard).
+  const origWatch2 = tmdbMod.watchProviders;
+  tmdbMod.watchProviders = async () => null; // TMDB knows no exclusive
+  let discovers2 = 0;
+  const yid = manager.add({
+    label: 'Normal Show S1E1',
+    series: 'Normal Show',
+    season: 1,
+    episode: 1,
+    url: 'https://example.invalid/normal',
+    outputRoot: path.join(DATA_DIR, 'staging'),
+    discover: () => {
+      discovers2 += 1;
+      return Promise.resolve({ status: 'failed', reason: 'no sources' });
+    }
+  });
+  const yitem = manager.items.find((x) => x.id === yid);
+  let tries = 0;
+  for (let i = 0; i < 120 && !(yitem && yitem.attempts >= 3); i++) {
+    await sleep(100);
+    tries = i;
+  }
+  check(
+    'non-exclusive title still retries (3 attempts reached)',
+    yitem && yitem.attempts >= 3,
+    JSON.stringify(yitem && [yitem.attempts, yitem.status])
+  );
+  check('...and the browser fallback ran each time', discovers2 >= 3, 'discovers=' + discovers2);
+  tmdbMod.watchProviders = origWatch2;
+  manager.removeByIds([yid]);
+  await sleep(150);
+
   if (manager._watchdogTimer) clearInterval(manager._watchdogTimer);
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
