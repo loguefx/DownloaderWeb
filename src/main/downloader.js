@@ -479,9 +479,9 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     const p = path.join(dir, job.name);
     if (fs.existsSync(p) && fs.statSync(p).size > 0) have += 1;
   }
-  let done = 0;
+  let done = 0; // parts fetched THIS run (resumed parts are already in `have`)
   const report = () => {
-    const n = have + done;
+    const n = Math.min(have + done, jobs.length);
     if (onProgress) {
       onProgress({
         received: n,
@@ -495,6 +495,17 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       onLog(`Downloaded ${n}/${jobs.length} part(s)...`);
     }
   };
+
+  // Run-scoped cancellation: when one part fails (or the queue aborts), EVERY
+  // other in-flight part is torn down too. Without this the sibling workers
+  // keep fetching after the run is already dead - double bandwidth, two runs
+  // writing the same dir with interleaved progress, and extra 429 pressure
+  // exactly while the CDN is cooling down.
+  const runCtrl = new AbortController();
+  if (signal) {
+    if (signal.aborted) runCtrl.abort();
+    else signal.addEventListener('abort', () => runCtrl.abort(), { once: true });
+  }
   if (onLog) {
     onLog(
       have
@@ -507,27 +518,27 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
   const SEG_DEADLINE_MS = Number(config.download.segmentDeadlineMs) || 120000;
   const SEG_RETRIES = 3;
   let first403 = null;
+  const abortErr = () => {
+    const e = new Error('Aborted');
+    e.name = 'AbortError';
+    return e;
+  };
   const fetchOne = async (job) => {
-    if (signal && signal.aborted) {
-      const e = new Error('Aborted');
-      e.name = 'AbortError';
-      throw e;
-    }
+    if (runCtrl.signal.aborted) throw abortErr();
     const p = path.join(dir, job.name);
     if (fs.existsSync(p) && fs.statSync(p).size > 0) {
-      done += 1;
+      // Already counted in `have` - do NOT double-count it in `done`.
       report();
       return;
     }
     let lastErr = null;
     for (let a = 0; a < SEG_RETRIES; a++) {
-      if (signal && signal.aborted) {
-        const e = new Error('Aborted');
-        e.name = 'AbortError';
-        throw e;
-      }
+      if (runCtrl.signal.aborted) throw abortErr();
       try {
-        const buf = await plainHttpBuffer(job.abs, ua, SEG_IDLE_MS, { signal, deadlineMs: SEG_DEADLINE_MS });
+        const buf = await plainHttpBuffer(job.abs, ua, SEG_IDLE_MS, {
+          signal: runCtrl.signal,
+          deadlineMs: SEG_DEADLINE_MS
+        });
         if (!buf || !buf.length) throw new Error('empty part');
         const tmp = p + '.tmp';
         fs.writeFileSync(tmp, buf);
@@ -538,11 +549,12 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       } catch (e) {
         if (e && e.name === 'AbortError') throw e;
         lastErr = e;
-        if (e && e.status === 403) {
-          // Signed token expired mid-download. Hammering it with retries just
-          // burns time; fail fast so the queue re-resolves a fresh token and
-          // this run's saved parts are resumed.
-          first403 = first403 || job;
+        if (e && (e.status === 403 || e.status === 429)) {
+          // 403 = signed token expired mid-download: fail fast so the queue
+          // re-resolves a fresh token and resumes from the saved parts.
+          // 429 = rate-limited: the queue's cooldown waits it out; hammering
+          // the same part 3x (x8 workers) just deepens the limit.
+          if (e.status === 403) first403 = first403 || job;
           break;
         }
         await new Promise((r) => setTimeout(r, 1000 * (a + 1)));
@@ -551,7 +563,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     if (first403) {
       const err = new Error(
         `CDN rejected ${first403.name} with 403 - its signed token expired mid-download. ` +
-          `The retry will get a fresh token and resume from ${have + done}/${jobs.length} part(s).`
+          `The retry will get a fresh token and resume from ${Math.min(have + done, jobs.length)}/${jobs.length} part(s).`
       );
       err.tokenExpired = true;
       throw err;
@@ -563,16 +575,37 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
   // default of 8 stays under that while keeping bursts gentle).
   const CONC = Math.max(1, Number(config.download.segmentConcurrency) || 8);
   let idx = 0;
+  let firstErr = null;
   const workers = Array.from({ length: Math.max(1, Math.min(CONC, jobs.length)) }, async () => {
     for (;;) {
-      if (signal && signal.aborted) break;
+      if (runCtrl.signal.aborted) break;
       const i = idx;
       idx += 1;
       if (i >= jobs.length) break;
-      await fetchOne(jobs[i]);
+      try {
+        await fetchOne(jobs[i]);
+      } catch (e) {
+        // This part failed: tear the WHOLE run down (siblings included) so no
+        // orphan workers keep fetching after the run is dead.
+        if (!firstErr) firstErr = e;
+        runCtrl.abort();
+        throw e;
+      }
     }
   });
-  await Promise.all(workers);
+  let runErr = null;
+  try {
+    await Promise.all(workers);
+  } catch (e) {
+    runErr = e;
+  }
+  if (runErr) {
+    // Prefer the first REAL error over a sibling's AbortError (that one is
+    // just the teardown signal, not the cause - unless the QUEUE aborted us).
+    const queueAborted = !!(signal && signal.aborted);
+    const real = firstErr && !queueAborted && firstErr.name !== 'AbortError' ? firstErr : runErr;
+    throw real;
+  }
 
   for (const job of jobs) {
     const t = out[job.i].trim();

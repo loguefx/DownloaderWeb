@@ -327,6 +327,69 @@ async function main() {
     check('bounded (finished in < 15s despite the endless drip)', elapsed < 15000, elapsed + 'ms');
   }
 
+  // ---- [7] 429: fail fast, no orphan siblings, counter never exceeds total ---
+  // 02:40 PM incident: one part got a 429, but the other 7 workers kept
+  // fetching (a second run then stacked on top), and the per-part retry
+  // loop hammered the same 429 3x. Now: a 429 fails the run immediately,
+  // tears down every in-flight sibling, and progress stays <= total.
+  console.log('\n[7] 429 fails fast; no orphan workers; progress never exceeds total');
+  {
+    const TEN = 10; // more parts than workers (8): parts 9,10 are ONLY reachable
+    // by a worker that loops back to the queue after the 429 already killed
+    // the run - the exact orphan behavior the fix removes.
+    const state = { segRequests: [] };
+    const srv = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://127.0.0.1');
+      const m = u.pathname.match(/^\/seg(\d+)\.ts$/);
+      if (m) {
+        const i = Number(m[1]);
+        state.segRequests.push(i);
+        if (i === 2) {
+          res.writeHead(429, { 'Content-Type': 'text/plain' });
+          return res.end('rate limited');
+        }
+        // Healthy segments land well AFTER the instant 429, so any worker
+        // that finishes one and loops back must see the run already aborted.
+        const t = setTimeout(() => {
+          try {
+            res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+            res.end(SEG_BODY(i));
+          } catch (e) { /* aborted */ }
+        }, 50);
+        req.on('close', () => clearTimeout(t));
+        return;
+      }
+      res.writeHead(404);
+      res.end('nope');
+    });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const base = `http://127.0.0.1:${port}`;
+    let text = '#EXTM3U\n';
+    for (let i = 1; i <= TEN; i++) text += `#EXTINF:5.0,\n${base}/seg${i}.ts\n`;
+    text += '#EXT-X-ENDLIST\n';
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, '429-'));
+    let maxReceived = 0;
+    let err = null;
+    try {
+      await localizePlainSegments(text, base, dir, 'test-ua', {
+        onProgress: (p) => {
+          if (p.received > maxReceived) maxReceived = p.received;
+        }
+      });
+    } catch (e) {
+      err = e;
+    }
+    check('rejected', !!err, 'no error - hung?');
+    check('...with the 429, not a token-expiry error', err && err.status === 429 && !err.tokenExpired, err && `${err.status}: ${err.message}`);
+    const hits = (i) => state.segRequests.filter((r) => r === i).length;
+    check('the 429 part was NOT retried per-segment (exactly 1 hit)', hits(2) === 1, 'hits=' + hits(2));
+    check('no orphan worker looped back to new parts (9,10 untouched)', hits(9) === 0 && hits(10) === 0, JSON.stringify(state.segRequests));
+    check('total requests bounded (no stacked double-run)', state.segRequests.length <= 8, 'total=' + state.segRequests.length + ' ' + JSON.stringify(state.segRequests));
+    check('progress never exceeded the total', maxReceived <= TEN, `max=${maxReceived}/${TEN}`);
+    srv.close();
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
