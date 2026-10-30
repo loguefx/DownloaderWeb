@@ -480,9 +480,9 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     throw lastErr || new Error('segment fetch failed');
   };
 
-  // Bounded concurrency (the CDN answers ffmpeg's default 10 fine; 4 keeps a
-  // burst gentler while staying fast on big episodes).
-  const CONC = 4;
+  // Bounded concurrency (the CDN answers ffmpeg's default 10 fine; the config
+  // default of 8 stays under that while keeping bursts gentle).
+  const CONC = Math.max(1, Number(config.download.segmentConcurrency) || 8);
   let idx = 0;
   const workers = Array.from({ length: Math.max(1, Math.min(CONC, jobs.length)) }, async () => {
     for (;;) {

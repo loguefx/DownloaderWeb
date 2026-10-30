@@ -104,6 +104,11 @@ module.exports = {
     // Remuxes in parallel. If the CDN 429s, tripRateLimit pauses new HLS starts
     // and the queue retries with backoff (see downloader/queue).
     hlsConcurrency: 5,
+    // How many HLS parts of ONE episode to fetch at once (plain-HTTP localizer,
+    // Vidsrc path). The Vidsrc CDNs have handled ffmpeg's default 10 concurrent
+    // connections fine, so 8 is a safe speed-up with no extra rate-limit
+    // profile (same host, same IP - only the in-flight part count changes).
+    segmentConcurrency: 8,
     // When true (the default) the engine never parks a "Just a moment…"
     // window on your screen waiting for a checkbox click. It STILL tries the
     // Cloudflare-gated catalogs (FMovies/movienow, Flixtor, …) as a last
