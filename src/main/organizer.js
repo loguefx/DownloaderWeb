@@ -603,11 +603,15 @@ function episodeNumberFromName(name) {
   const base = String(name || '')
     .replace(/\s*\(\d+\)\s*\.[A-Za-z0-9]+$/, '') // " (n).ext"
     .replace(/\.[A-Za-z0-9]+$/, ''); // ".ext"
-  let m = base.match(/s0*(\d{1,3})[eE](\d{1,3})(?!\d)/i);
+  // Episode numbers can be 4 digits (One Piece Wano arc: S14E1000+). The
+  // unambiguous S#E# / #x# / EP# markers are allowed up to 4 digits; the
+  // bare-number fallback stays at 3 so a year ("2018") or resolution ("1080p")
+  // is never mistaken for an episode. Season stays 1-3 digits.
+  let m = base.match(/s0*(\d{1,3})[eE](\d{1,4})(?!\d)/i);
   if (m) return parseInt(m[2], 10);
-  m = base.match(/(?<!\d)(\d{1,3})[xX](\d{1,3})(?!\d)/i);
+  m = base.match(/(?<!\d)(\d{1,3})[xX](\d{1,4})(?!\d)/i);
   if (m) return parseInt(m[2], 10);
-  m = base.match(/(?:episode|ep)\b\.?\s*0*(\d{1,3})(?!\d)/i);
+  m = base.match(/(?:episode|ep)\b\.?\s*0*(\d{1,4})(?!\d)/i);
   if (m) return parseInt(m[1], 10);
   m = base.match(/(?<![\dxXsSeE])(\d{1,3})(?![\dxXpPeE])/);
   if (m) return parseInt(m[1], 10);

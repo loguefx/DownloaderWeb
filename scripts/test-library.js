@@ -506,6 +506,25 @@ async function main() {
     check('episodeNumberFromName "2018" (year) -> null', organizer.episodeNumberFromName('Show 2018.mp4') === null);
     check('episodeNumberFromName "720p" (res) -> null', organizer.episodeNumberFromName('Show 720p.mp4') === null);
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
+    // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
+    // via the unambiguous S#E# / #x# / EP# markers...
+    check('episodeNumberFromName "S14E1000" -> 1000', organizer.episodeNumberFromName('One Piece - S14E1000 - Overwhelming.mp4') === 1000);
+    check('episodeNumberFromName "S01E1122" -> 1122', organizer.episodeNumberFromName('Show S01E1122.mp4') === 1122);
+    check('episodeNumberFromName "14x1000" -> 1000', organizer.episodeNumberFromName('Show 14x1000.mp4') === 1000);
+    check('episodeNumberFromName "Episode 1000" -> 1000', organizer.episodeNumberFromName('Show - Episode 1000.mp4') === 1000);
+    // ...but the bare-number fallback stays 3 digits, so years/resolutions/bare
+    // 4-digit numbers are STILL rejected (no false positives).
+    check('episodeNumberFromName "2018" (year) -> null (4-digit fix)', organizer.episodeNumberFromName('Show 2018.mp4') === null);
+    check('episodeNumberFromName "1080" (bare, res-like) -> null', organizer.episodeNumberFromName('Show 1080.mp4') === null);
+    check('episodeNumberFromName "1080p" (res) -> null', organizer.episodeNumberFromName('Show 1080p.mp4') === null);
+    // The real duplicate-guard agrees: a 4-digit episode is still found on disk.
+    {
+      const d = path.join(base, 'op4');
+      const p = path.join(d, 'One Piece/Season 14 - Wano/One Piece - S14E1000 - T.mp4');
+      fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'.repeat(512));
+      const found = organizer.existingEpisodeFile(d, { series: 'One Piece', season: 14, episode: 1000 }, '.mp4', '');
+      check('existingEpisodeFile finds S14E1000 (arc folder, 4-digit)', !!found, String(found));
+    }
   }
 
   // [8] seriesLayoutRisk: the GLOBAL no-duplicate guard, pinned on real layouts
