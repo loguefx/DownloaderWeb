@@ -3814,10 +3814,40 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
   );
 }
 
+// A whole MPEG-TS segment is a run of 188-byte packets, each starting with
+// the 0x47 sync byte; a part cut off mid-transfer ends in a partial packet,
+// which plays as a glitch / skip. Only data that is clearly TS is judged
+// (sync bytes at packets 0, 1 and 2): encrypted, fMP4 or wrapped segments
+// get no opinion.
+function tsLooksTruncated(head, size, lastPacketFirstByte) {
+  if (!head || head.length < 377 || size < 377) return false;
+  if (head[0] !== 0x47 || head[188] !== 0x47 || head[376] !== 0x47) return false;
+  if (size % 188 !== 0) return true;
+  return lastPacketFirstByte !== 0x47;
+}
+function bufferTsTruncated(buf) {
+  if (!buf || buf.length < 377) return false;
+  return tsLooksTruncated(buf, buf.length, buf.length >= 188 ? buf[buf.length - 188] : -1);
+}
+
 function jobFileOk(dir, job) {
   try {
     const p = path.join(dir, job.name);
-    return fs.existsSync(p) && fs.statSync(p).size > 200;
+    if (!fs.existsSync(p)) return false;
+    const size = fs.statSync(p).size;
+    if (size <= 200) return false;
+    if (!job.strip || size < 377) return true;
+    // A captured part that was cut short counts as missing (refetched).
+    const fd = fs.openSync(p, 'r');
+    try {
+      const head = Buffer.alloc(377);
+      fs.readSync(fd, head, 0, 377, 0);
+      const last = Buffer.alloc(1);
+      if (size >= 188) fs.readSync(fd, last, 0, 1, size - 188);
+      return !tsLooksTruncated(head, size, last[0]);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch (e) {
     return false;
   }
@@ -4025,7 +4055,9 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
   }
   if (remaining.length && bound) {
     const stats = holeStats(jobs, dir);
-    if (stats.internal > 0 || stats.have / Math.max(jobs.length, 1) < 0.98) {
+    // Every part, or no file: a missing tail used to be accepted (up to 2%
+    // of the parts - ~30 s of an episode, minutes of a film).
+    if (stats.internal > 0 || stats.have < jobs.length) {
       throw new Error(
         `player only yielded ${stats.have}/${jobs.length} HLS parts` +
           (stats.internal ? ` with ${stats.internal} hole(s) in the middle` : '') +
@@ -4076,6 +4108,12 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
           throw err;
         }
         buf = stripPngWrapper(buf);
+        // Cut off mid-transfer: fetch it again (up to 3 more times).
+        for (let again = 0; again < 3 && bufferTsTruncated(buf); again++) {
+          if (onLog) onLog(`Part ${job.name} arrived cut short; fetching it again.`);
+          buf = stripPngWrapper(await fetchBufferRetry(job.abs, headers, { timeoutMs: 20000, signal, playerWebContentsId, skipPageFetch: !wc }));
+        }
+        if (bufferTsTruncated(buf)) throw new Error(`HLS part ${job.name} keeps arriving cut short`);
       }
       if (!buf || !buf.length) throw new Error('empty HLS part');
       fs.writeFileSync(path.join(dir, job.name), buf);
@@ -4407,6 +4445,8 @@ async function preferMinHeight(det, minHeight) {
 }
 
 module.exports = {
+  bufferTsTruncated,
+  tsLooksTruncated,
   requestViaSession,
   bodyReachable,
   materializePlaylist,

@@ -12,6 +12,7 @@ const placer = require('./placer');
 const { download, lastFfmpegStderr } = require('./downloader');
 const { verifyFile, belowMinHeight, audioLanguages } = require('./verify');
 const audiolang = require('./audiolang');
+const { checkIntegrity } = require('./integrity');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
 const cfsolve = require('./cfsolve');
@@ -314,6 +315,12 @@ class DownloadManager extends EventEmitter {
   // The downloader's stall watchdog (inside the ffmpeg/stream layer) is the
   // fast, byte-level guard; this is the slow net around the whole lifecycle.
   _phaseCap(item) {
+    if (item.status === 'verifying') {
+      // The playback check decodes the whole file (~1 s per minute of 1080p
+      // here; slower machines more): scale with the runtime.
+      const dur = item.expectedDuration > 0 ? item.expectedDuration : 0;
+      return Math.max(PHASE_CAPS_MS.verifying, dur * 2 * 1000);
+    }
     const cap = PHASE_CAPS_MS[item.status];
     if (cap != null) return cap;
     if (item.status === 'downloading') {
@@ -974,6 +981,23 @@ class DownloadManager extends EventEmitter {
             }
             item._wrongAudio = true;
             throw new Error(`downloaded audio is ${audiolang.langLabel(audio.langs)}, not an English dub`);
+          }
+        }
+        // Playback integrity: no skips, no repeated or missing content, audio
+        // in sync, (optionally) no damaged frames. Checked on EVERY path's
+        // output, because each path can lose a segment differently (ffmpeg's
+        // HLS reader skips a segment it cannot fetch and still exits 0; the
+        // MP4 muxer then hides the hole as one stretched frame, which only
+        // looks like "the video skips" when watched).
+        {
+          const expected = (detection && detection.playlistDuration) || item.expectedDuration || 0;
+          const integ = await checkIntegrity(partPath, {
+            expectedDuration: expected,
+            decode: config.download.decodeCheck !== false
+          });
+          if (!integ.ok) {
+            this._dropShortFile(partPath);
+            throw new Error(`playback check failed: ${integ.problems.join('; ')}`);
           }
         }
         if (belowMinHeight(v, floor)) {

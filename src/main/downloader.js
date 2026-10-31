@@ -612,6 +612,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
           deadlineMs: SEG_DEADLINE_MS
         });
         if (!buf || !buf.length) throw new Error('empty part');
+        if (hlscheck.bufferTsTruncated(buf)) throw new Error('part cut short (partial TS packet); will refetch');
         const tmp = p + '.tmp';
         fs.writeFileSync(tmp, buf);
         fs.renameSync(tmp, p);

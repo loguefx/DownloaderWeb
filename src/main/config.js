@@ -126,6 +126,9 @@ module.exports = {
     // minutes for a human click. A configured Cloudflare solver (Settings)
     // always clears the challenge automatically, in either mode.
     skipCloudflareSites: true,
+    // Decode every finished file once to catch damaged frames (on top of the
+    // timeline check, which always runs). ~0.5-1.5 s per minute of 1080p.
+    decodeCheck: true,
     // After a 429, block every HLS start (not just the failed episode).
     rateLimitCooldownMs: 30000,
     maxRetries: 6,
