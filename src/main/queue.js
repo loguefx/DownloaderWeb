@@ -22,6 +22,12 @@ const { writeJsonAtomic, readJson } = require('./jsonfile');
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
 
+// Servers that delivered the WRONG audio for a series (a DUB row whose stream
+// is the original language), remembered for this run: the series' next
+// episodes skip them instead of each downloading a whole wrong file first.
+// "series|mode" -> Set(server label)
+const wrongAudioServers = new Map();
+
 // ---- queue liveness (future-proofing: nothing may sit stuck forever) ------
 // Phase caps for the watchdog. Any phase that runs past its cap is killed
 // and the item is retried like any other failed attempt - a hang (a promise
@@ -714,6 +720,14 @@ class DownloadManager extends EventEmitter {
           }
         }
 
+        // Servers that already served this series the wrong audio this run.
+        {
+          const bad = wrongAudioServers.get(`${item.series}|${item.mode || 'dub'}`);
+          if (bad && bad.size) {
+            item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+            for (const k of bad) if (!item.skipSources.includes(k)) item.skipSources.push(k);
+          }
+        }
         let outcome;
         let noQuality = false;
         {
@@ -721,6 +735,9 @@ class DownloadManager extends EventEmitter {
           // After Vidsrc showed it has no copy in the requested audio, later
           // attempts go straight to the dub/sub-aware sites.
           if (_prof && typeof _prof.directResolve === 'function' && !item._wrongAudio) {
+            // The source has a headless resolver (Vidsrc): its page in a
+            // browser can only replay what that resolver already saw.
+            item._headlessTried = true;
             try {
               outcome = await _prof.directResolve(
                 {
@@ -786,8 +803,9 @@ class DownloadManager extends EventEmitter {
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
           outcome = await item.discover(item);
         } else if (!outcome || outcome.status !== 'resolved') {
-          // Same for "busy"/unreachable Vidsrc: anime DUB skips its page.
-          if (outcome && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
+          // Same when Vidsrc was busy, unreachable or has no copy of the
+          // episode at all (lookup error): anime DUB skips its page.
+          if (item._headlessTried && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
           outcome = await item.discover(item);
         }
         let status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
@@ -1002,6 +1020,9 @@ class DownloadManager extends EventEmitter {
               item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
               const key = String(lab).toLowerCase();
               if (!item.skipSources.includes(key)) item.skipSources.push(key);
+              const sk = `${item.series}|${item.mode || 'dub'}`;
+              if (!wrongAudioServers.has(sk)) wrongAudioServers.set(sk, new Set());
+              wrongAudioServers.get(sk).add(key);
             }
             item._wrongAudio = true;
             throw new Error(`downloaded audio is ${audiolang.langLabel(audio.langs)}, not an English dub`);

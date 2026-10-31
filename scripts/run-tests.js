@@ -25,7 +25,12 @@ for (const f of suites) {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${f.padEnd(28)} ${summary || (r.error ? r.error.message : 'exit ' + r.status)}`);
   if (!ok) {
     failed.push(f);
-    console.log(out.split('\n').filter((l) => /FAIL|Error|error/.test(l)).slice(0, 15).map((l) => '       ' + l).join('\n'));
+    // Enough to diagnose a failure that does not reproduce on the next run:
+    // every failing check, then the end of the suite's own output.
+    const lines = out.split('\n');
+    console.log(lines.filter((l) => /FAIL|Error|error/.test(l)).slice(0, 15).map((l) => '       ' + l).join('\n'));
+    console.log('       --- last lines of ' + f + ' ---');
+    console.log(lines.slice(-25).map((l) => '       ' + l).join('\n'));
   }
 }
 console.log(`\n${suites.length - failed.length}/${suites.length} suites passed` + (SKIP.size ? ` (${[...SKIP].join(', ')} skipped: needs Electron + live sites)` : ''));

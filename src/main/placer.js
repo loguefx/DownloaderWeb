@@ -102,7 +102,11 @@ function folderReady(folder) {
     if (!fs.statSync(folder).isDirectory()) return { ready: false, reason: 'not a directory' };
     fs.accessSync(folder, fs.constants.W_OK);
     if (!fs.existsSync(path.join(folder, MARKER))) return { ready: false, reason: 'missing .mediadownloader marker file' };
-    return { ready: true, free: freeBytes(folder) };
+    // A mount that reports a total size of 0 (FUSE / some network mounts do
+    // not pass statfs through) has UNKNOWN free space, not none.
+    const total = totalBytes(folder);
+    const free = freeBytes(folder);
+    return { ready: true, free, freeUnknown: total === 0 && free === 0 };
   } catch (e) {
     return { ready: false, reason: e.code === 'ENOENT' ? 'not mounted' : e.code || 'not writable' };
   }
@@ -139,8 +143,9 @@ function pickFolder(lib, meta, sizeBytes, opts = {}) {
   for (const loc of locations) {
     const enginePath = toEnginePath(loc, cfg.pathMappings);
     const ready = folderReady(enginePath);
-    folders.push({ jellyfin: loc, folder: enginePath, ready: ready.ready, reason: ready.reason, free: ready.free || 0 });
+    folders.push({ jellyfin: loc, folder: enginePath, ready: ready.ready, reason: ready.reason, free: ready.free || 0, freeUnknown: !!ready.freeUnknown });
   }
+  const hasRoom = (f) => f.freeUnknown || f.free >= sizeBytes + reserve;
 
   const usable = folders.filter((f) => f.ready);
   // Existing series: the folder that already holds the show keeps it (Part 5.3).
@@ -156,12 +161,15 @@ function pickFolder(lib, meta, sizeBytes, opts = {}) {
       return false;
     }
   });
-  if (existing && existing.free >= sizeBytes + reserve) {
-    return { folder: existing.folder, free: existing.free };
+  if (existing && hasRoom(existing)) {
+    return { folder: existing.folder, free: existing.free, freeUnknown: existing.freeUnknown };
   }
 
-  const withRoom = usable.filter((f) => f.free >= sizeBytes + reserve);
+  // Known free space first; a mount that cannot report it is used only
+  // when no drive with known room is left.
+  const withRoom = usable.filter(hasRoom).sort((a, b) => Number(a.freeUnknown) - Number(b.freeUnknown));
   if (!withRoom.length) return null;
+  if (withRoom[0].freeUnknown) return { folder: withRoom[0].folder, free: 0, freeUnknown: true };
   if (cfg.fillMode === 'spread') {
     withRoom.sort((a, b) => b.free - a.free);
     return { folder: withRoom[0].folder, free: withRoom[0].free };
@@ -284,6 +292,9 @@ async function placeItem(item, stagedPath) {
   if (!pick) {
     library.audit('no-space', staged, job.name || 'library', { bytes: size });
     throw noSpaceError(job);
+  }
+  if (pick.freeUnknown) {
+    library.audit('free-space-unknown', staged, `${pick.folder} does not report its free space; placed without the reserve check`);
   }
   const finalPath = organizer.expectedPath(pick.folder, meta, '.mp4');
   const cfg = engineconfig.get();

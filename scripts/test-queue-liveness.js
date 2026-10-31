@@ -391,6 +391,20 @@ async function main() {
       manager.removeByIds([did]);
       await sleep(200);
 
+      // The NEXT episode of the same series starts with that server skipped
+      // (live: Aniwave's "MyCloud" DUB-row server served Chinese audio for
+      // every Link Click S3 episode, ~3.5 min wasted each).
+      let nextSkip = null;
+      const nid = manager.add({
+        label: 'Dub Show S1E2', series: 'Dub Show', season: 1, episode: 2, mode: 'dub', anime: true, minHeight: 0,
+        url: 'https://example.invalid/e2', outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: (it) => { nextSkip = (it && it.skipSources) || []; return Promise.resolve({ status: 'unavailable', reason: 'test' }); }
+      });
+      for (let i = 0; i < 40 && nextSkip === null; i++) await sleep(100);
+      check('the next episode of the series skips that server from the start', Array.isArray(nextSkip) && nextSkip.includes('japaneseserver'), JSON.stringify(nextSkip));
+      manager.removeByIds([nid]);
+      await sleep(100);
+
       // An UNLABELLED player (no DUB row, no -dub marker): nothing is
       // downloaded at all - the episode waits for its dub.
       const plogs = [];

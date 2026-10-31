@@ -24,6 +24,10 @@ module.exports = {
     dubLabelText: ['dub', 'dubbed', 'english dub'],
     subLabelText: ['sub', 'subbed', 'softsub'],
     knownSourceLabels: ['vidplay', 'byfms', 'dghg', 'filemoon', 'mp4upload', 'streamtape', 'streamwish'],
+    // Measured live (Link Click S3, Oct 2026): "MyCloud" sits in the DUB row
+    // but streams the ORIGINAL audio (tagged chi); Vidplay/BYFMS/DGHG serve
+    // the real "-dub" stream. Try it last.
+    deferEmbedHosts: [/mycloud/i],
     // Authoritative: each provider is an <li> under .servers .type[data-type=sub|dub].
     sourceSelector: '.servers .type li, #w-servers li[data-link-id], #w-servers li[data-sv-id]',
     sourceWaitMs: 14000,

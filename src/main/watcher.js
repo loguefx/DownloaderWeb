@@ -672,7 +672,7 @@ class Watcher {
     const dryRun = this.watcherMode().dryRun;
     this.onLog(
       `Checking ${items.length} pending dub(s) for new releases...` +
-        (dryRun ? ' (report only - nothing will be re-queued)' : '')
+        (dryRun ? ' (report-only mode: an episode whose English dub is out is still queued - you asked for it)' : '')
     );
 
     for (const spec of items) {
