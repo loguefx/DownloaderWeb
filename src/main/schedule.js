@@ -97,11 +97,14 @@ class ScheduleStore extends EventEmitter {
     return true;
   }
 
+  // Returns true when an entry was removed.
   remove(key) {
     this.load();
     const before = this.items.length;
     this.items = this.items.filter((it) => it.key !== key);
-    if (this.items.length !== before) this._save();
+    if (this.items.length === before) return false;
+    this._save();
+    return true;
   }
 
   // The watcher confirmed the NEXT season exists and queued it: advance the

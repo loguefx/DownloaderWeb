@@ -37,6 +37,7 @@
 // fallback (the known 1080p catalog that carries the one CF checkbox).
 
 const { lookupMediaId, idFromPlayerUrl } = require('./findtitle');
+const audiolang = require('../audiolang');
 const vidsrcDl = require('./vidsrc_dl');
 
 const HOSTS = ['https://vidsrc.sh', 'https://vidsrcme.ru'];
@@ -97,22 +98,11 @@ async function idsFromPage(hooks, onLog) {
   }
 }
 
-// Classify the audio of a Vidsrc file from its release name.
-//   'dub'     - an English-dubbed copy ("... English ...", "HULU", "DUB", "Multi")
-//   'sub'     - a non-English-audio copy ("CR" = Chinese release, "JP", "RAW", ...)
-//   'multi'   - both kinds of markers (multi-audio file)
-//   'unknown' - no marker (or no name): don't guess.
-const DUB_MARKERS = /\b(english|eng|dub|multi|hulu|crunchyroll|netflix|hidive)\b/i;
-const SUB_MARKERS = /\b(cr|jp|japanese|jap|chinese|korean|raw|original)\b/i;
+// Release-name guess, kept with its old labels ('dub' | 'sub' | 'multi' |
+// 'unknown') for callers and tests. The rules live in audiolang.js.
 function classifyAudio(fileName) {
-  const n = String(fileName || '');
-  if (!n) return 'unknown';
-  const dub = DUB_MARKERS.test(n);
-  const sub = SUB_MARKERS.test(n);
-  if (dub && sub) return 'multi';
-  if (dub) return 'dub';
-  if (sub) return 'sub';
-  return 'unknown';
+  const v = audiolang.classifyFileName(fileName);
+  return v === 'english' ? 'dub' : v === 'foreign' ? 'sub' : v;
 }
 
 module.exports = {
@@ -231,37 +221,87 @@ module.exports = {
       `Vidsrc (headless): resolving ${ref.title || tmdb || imdb} ` +
         `${isMovie ? '(movie)' : `S${season}E${episode}`} via direct API…`
     );
-    // Anime: accept the source's own resolution (often 720p) instead of 1080p.
-    const minH = ref.anime ? 0 : 1080;
-    const best = await vidsrcDl.pick1080(dlRef, onLog, minH);
+    // Quality floor: the job's own choice (the plugin's quality setting) when
+    // given; otherwise anime accepts the source's resolution (often 720p) and
+    // everything else needs 1080p.
+    const minH = ref.minHeight != null && Number.isFinite(Number(ref.minHeight))
+      ? Math.max(0, Number(ref.minHeight))
+      : (ref.anime ? 0 : 1080);
+    // DUB / SUB. Vidsrc has no switch - one file per source - so each source
+    // that passes the quality floor is checked against the requested mode from
+    // real evidence (audio stream tags, the playlist's audio/subtitle tracks,
+    // then the release name). Anime is strict: a DUB request never downloads
+    // a copy shown to be non-English; it goes to the dub-aware sites instead.
+    // TV/movies only PREFER a matching copy (DUB is the plugin's default for
+    // every title, and a foreign-language film has no English dub at all).
+    const mode = ref.mode === 'sub' ? 'sub' : 'dub';
+    const strict = !!ref.anime;
+    const rejected = [];
+    const pickOpts = {
+      accept: (src) => audiolang.checkMode({ mode, audio: src.audio, media: src.media, strictDub: strict }),
+      rejected,
+      preferOnly: !strict
+    };
+    let best;
+    try {
+      best = await vidsrcDl.pick1080(dlRef, onLog, minH, pickOpts);
+    } catch (e) {
+      if (e && e.code === 'VIDSRC_BLOCKED') {
+        onLog(`Vidsrc (headless): ${e.message}. Trying the other sources for this episode.`);
+        return { status: 'busy', reason: e.message };
+      }
+      throw e;
+    }
+    if (!best && pickOpts.allUnreachable) {
+      // Throttled, not missing: wait for the CDN's rate window, then retry once.
+      onLog('Vidsrc (headless): every source is busy (rate-limited); retrying in 10s.');
+      await new Promise((rs) => setTimeout(rs, Number(opts.busyRetryMs) >= 0 ? Number(opts.busyRetryMs) : 10000));
+      pickOpts.allUnreachable = false;
+      best = await vidsrcDl.pick1080(dlRef, onLog, minH, pickOpts);
+      if (!best && pickOpts.allUnreachable) {
+        onLog('Vidsrc (headless): still busy; trying the other sources for this episode.');
+        return { status: 'busy', reason: 'Vidsrc CDN is rate-limiting this IP' };
+      }
+    }
     if (!best) {
+      if (rejected.length) {
+        const why = rejected[0].reason;
+        onLog(
+          `Vidsrc (headless): no ${mode === 'dub' ? 'English-dubbed' : 'English-subtitled'} copy - ${why}. ` +
+            `Looking on the ${mode === 'dub' ? 'dub' : 'sub'}-aware sites instead.`
+        );
+        return { status: 'wrong_audio', reason: why };
+      }
       // No copy at/above the floor on any Vidsrc source. Return a distinct
       // status so the queue can log clearly and cap retries.
       onLog(`Vidsrc (headless): no ${minH ? minH + 'p' : 'usable'} stream on any source for ${ref.title || dlRef.tmdb || dlRef.imdb}.`);
       return { status: 'no_quality' };
     }
     onLog(`Vidsrc (headless): locked ${best.realWidth}x${best.realHeight} from ${best.host}.`);
-    // Audio honesty: Vidsrc has no dub/sub selection, so the user's mode
-    // choice (dub/sub dropdown) cannot be enforced here - but we CAN see which
-    // audio the file carries and must not stay silent about a mismatch
-    // ("Smoking Behind the Supermarket" = "CR WEB-DL" = Japanese audio while
-    // the user asked for DUB: the English dub is simply not on Vidsrc).
-    const mode = ref.mode === 'sub' ? 'sub' : 'dub';
     const fileName = (best.meta && best.meta.fileName) || '';
     if (fileName) onLog(`Vidsrc file: ${fileName}`);
-    const audio = classifyAudio(fileName);
-    if (mode === 'dub' && audio === 'sub') {
-      onLog(
-        `⚠ AUDIO: you chose DUB, but Vidsrc's only file for this episode is ` +
-          `"${fileName}" (non-English audio). Vidsrc has no dub/sub toggle and ` +
-          `no English-dub copy of this episode - an English dub (if it exists) ` +
-          `is not on Vidsrc for this show. Downloading this copy.`
-      );
-    } else if (mode === 'sub' && audio === 'dub') {
-      onLog(
-        `Note: you chose SUB, but Vidsrc's file is an English-dubbed copy ` +
-          `("${fileName}").`
-      );
+    const audio = best.audio || audiolang.audioVerdict({ fileName });
+    const verdict = audiolang.checkMode({ mode, audio, media: best.media, strictDub: strict });
+    onLog(`Audio: ${audio.verdict} (${audio.evidence})${audio.langs && audio.langs.length ? ' - ' + audiolang.langLabel(audio.langs) : ''}.`);
+    if (!verdict.ok) {
+      // Only reachable for TV/movies (preferOnly): no matching copy exists.
+      onLog(`⚠ ${mode.toUpperCase()} requested, but Vidsrc's only copy has ${verdict.reason}. Downloading it anyway (not anime).`);
+    }
+
+    // Separate audio tracks (#EXT-X-MEDIA TYPE=AUDIO with a URI): the video
+    // carries no sound, so pick the track for the mode - English for DUB,
+    // the original (default / Japanese / first non-English) for SUB.
+    const tracks = ((best.media && best.media.audio) || []).filter((a) => a.uri);
+    let audioTrack = null;
+    if (tracks.length) {
+      const en = tracks.find((a) => a.lang === 'en');
+      const original = tracks.find((a) => a.lang && a.lang !== 'en') || tracks.find((a) => a.isDefault) || tracks[0];
+      audioTrack = mode === 'dub' ? (en || tracks.find((a) => a.isDefault) || tracks[0]) : (original || tracks[0]);
+      onLog(`Using the ${audiolang.langLabel([audioTrack.lang]) === 'non-English' ? audioTrack.name || 'default' : audiolang.langLabel([audioTrack.lang])} audio track.`);
+    }
+    const englishSub = mode === 'sub' ? verdict.englishSub : null;
+    if (mode === 'sub') {
+      onLog(englishSub ? 'Embedding the English subtitle track.' : `No separate English subtitle track (${verdict.reason}).`);
     }
     return {
       status: 'resolved',
@@ -274,7 +314,11 @@ module.exports = {
         // extra Referer/Origin headers (HTTP 403). The headless path (vidsrc_dl.js)
         // uses plain https.get() with only User-Agent and works reliably. Flag the
         // downloader to do the same: no session cookies, no Referer, no Origin.
-        plainHttp: true
+        plainHttp: true,
+        audioUrl: audioTrack ? audioTrack.uri : undefined,
+        audioLabel: audioTrack ? audiolang.langLabel([audioTrack.lang]) : undefined,
+        embedSubs: !!englishSub,
+        subtitleUrl: englishSub ? englishSub.uri : undefined
       }
     };
   }

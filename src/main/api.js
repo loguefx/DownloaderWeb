@@ -198,6 +198,20 @@ async function searchTitles(q, type) {
 
 
 
+// Keys of watch-list / waiting-list entries contain the source URL, so "/"
+// arrives escaped. ASP.NET (the Jellyfin plugin's proxy) leaves %2F escaped in
+// route values and re-escapes it, so the key can reach us escaped twice.
+// Try the normal decode first, then one more.
+function removeByKey(rawKey, remove) {
+  let key = '';
+  try { key = decodeURIComponent(rawKey); } catch (e) { key = rawKey; }
+  const out = remove(key);
+  if (out && out.removed === false && /%2F/i.test(key)) {
+    try { return remove(decodeURIComponent(key)); } catch (e) { /* keep first answer */ }
+  }
+  return out;
+}
+
 async function handle(req, res, u) {
   const parts = u.pathname.split('/').filter(Boolean);
   // parts: ['api', ...]
@@ -526,10 +540,73 @@ async function handle(req, res, u) {
         return;
       }
       if (req.method === 'DELETE' && key) {
-        const decoded = decodeURIComponent(key);
-        json(res, 200, service.waitingRemove(decoded));
+        json(res, 200, removeByKey(key, service.waitingRemove));
         return;
       }
+    }
+
+    // ---- English dub, per episode (the plugin's "EN DUB n/m" badge) ----
+    // GET /api/dub/season?tmdb=&season=&count=N   (or &episodes=1,2,5)
+    // Answers from the cache at once and starts a background check for any
+    // episode not yet known (or stale); the answer says pending:true while it
+    // runs, and the plugin polls until it is false.
+    if (req.method === 'GET' && seg === 'dub' && parts[2] === 'season') {
+      const tmdb = String(u.searchParams.get('tmdb') || '').trim();
+      const season = parseInt(u.searchParams.get('season') || '', 10);
+      let episodes = String(u.searchParams.get('episodes') || '')
+        .split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);
+      const count = parseInt(u.searchParams.get('count') || '', 10);
+      if (!episodes.length && count > 0) episodes = Array.from({ length: Math.min(count, 2000) }, (_, i) => i + 1);
+      if (!/^\d+$/.test(tmdb) || !(season >= 0) || !episodes.length) {
+        json(res, 400, { error: 'tmdb, season and count (or episodes) are required' });
+        return;
+      }
+      const dubstatus = require('./dubstatus');
+      // anime=1: the plugin's seasons may follow the anime layout while the
+      // source numbers episodes the TMDB way - translate exactly like the
+      // download URLs do, so each chip counts what a download would fetch.
+      let map = null;
+      if (['1', 'true', 'yes'].includes(String(u.searchParams.get('anime') || '').toLowerCase())) {
+        try { map = await animelayout.urlMapFor(tmdb, u.searchParams.get('title') || '', { anime: true }); } catch (e) { map = null; }
+      }
+      const pairs = episodes.map((ep) => {
+        let p = { season, episode: ep };
+        if (map) {
+          try {
+            const m = map(season, ep);
+            if (m && m.season != null && m.episode != null) p = { season: m.season, episode: m.episode };
+          } catch (e) { /* identity */ }
+        }
+        return { ep, s: p.season, e: p.episode };
+      });
+      const groups = new Map();
+      for (const p of pairs) {
+        if (!groups.has(p.s)) groups.set(p.s, []);
+        groups.get(p.s).push(p.e);
+      }
+      const check = u.searchParams.get('check') !== '0';
+      const rows = new Map();
+      let pending = false;
+      for (const [s, eps] of groups) {
+        let part = dubstatus.peekSeason(tmdb, s, eps);
+        if (check && part.episodes.some((e) => e.stale)) {
+          dubstatus.checkSeason(tmdb, s, eps, { onLog: service.onLog }).catch(() => {});
+          part = dubstatus.peekSeason(tmdb, s, eps);
+        }
+        if (part.pending) pending = true;
+        for (const row of part.episodes) rows.set(`${s}|${row.episode}`, row);
+      }
+      const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending, episodes: [] };
+      for (const p of pairs) {
+        const row = rows.get(`${p.s}|${p.e}`) || { dubbed: null, at: 0 };
+        if (row.at) out.checked += 1;
+        if (row.dubbed === true) out.dubbed += 1;
+        else if (row.dubbed === false) out.notDubbed += 1;
+        else out.unknown += 1;
+        out.episodes.push({ episode: p.ep, dubbed: row.dubbed, file: row.file || '', sourceSeason: p.s, sourceEpisode: p.e });
+      }
+      json(res, 200, out);
+      return;
     }
 
     // ---- AniDB: English-dub availability for a TMDB id (plugin + debugging) ----
@@ -558,8 +635,19 @@ async function handle(req, res, u) {
         // (deduped) so the next dashboard render shows it - the response
         // itself never blocks on the network.
         const anidbMod = require('./anidb');
-        const items = service.schedulesList().map((it) => {
-          if (!it || !it.tmdb) return it;
+        // Dub state per watched series: "waiting" while any of its episodes
+        // sit on the waiting-for-dub list, else "watching" (caught up, or the
+        // next season's dub has not started).
+        const waitingBySeries = new Map();
+        for (const w of service.waitingList()) {
+          if ((w.mode || 'dub') !== 'dub') continue;
+          waitingBySeries.set(w.series, (waitingBySeries.get(w.series) || 0) + 1);
+        }
+        const items = service.schedulesList().map((it0) => {
+          if (!it0) return it0;
+          const n = waitingBySeries.get(it0.series) || 0;
+          const it = Object.assign({}, it0, { dubWaiting: n, dubState: n ? 'waiting' : 'watching' });
+          if (!it.tmdb) return it;
           const hit = anidbMod.peek(it.tmdb);
           if (hit) {
             return Object.assign({}, it, {
@@ -632,7 +720,7 @@ async function handle(req, res, u) {
         return;
       }
       if (req.method === 'DELETE' && key) {
-        json(res, 200, service.schedulesRemove(decodeURIComponent(key)));
+        json(res, 200, removeByKey(key, service.schedulesRemove));
         return;
       }
     }

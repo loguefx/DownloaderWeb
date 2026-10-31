@@ -341,6 +341,21 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                 Check("G: entry survives a reload", !gThrew && new Outbox(freshDir).Get("g-1") != null);
             }
 
+            // ---- H: a damaged outbox.json is kept, not overwritten ---------
+            // It used to load as empty and the next Save replaced it, losing
+            // every waiting job without a trace.
+            {
+                var hDir = Path.Combine(tempRoot, "corrupt-outbox");
+                Directory.CreateDirectory(hDir);
+                File.WriteAllText(Path.Combine(hDir, "outbox.json"), "{ \"job-1\": { \"JobId\": \"job-1\", ");
+                var h = new Outbox(hDir);
+                h.Add("h-1", Parse("{}"), "after");
+                var aside = Directory.GetFiles(hDir, "outbox.json.corrupt-*");
+                Check("H: the damaged file is kept as outbox.json.corrupt-*", aside.Length == 1);
+                Check("H: ...with its original contents", aside.Length == 1 && File.ReadAllText(aside[0]).Contains("job-1"));
+                Check("H: the outbox keeps working", new Outbox(hDir).Get("h-1") != null);
+            }
+
             Console.WriteLine("HARNESS " + _passed + " passed, " + _failed + " failed");
             return _failed == 0 ? 0 : 1;
         }

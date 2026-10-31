@@ -55,6 +55,14 @@ class PendingStore extends EventEmitter {
       // Engine (Part 5): re-queued episodes must still land in the library.
       library: spec.library || null,
       minHeight: Number(spec.minHeight) || 0,
+      // Anime DUB entries: the daily pass checks the source for the dub
+      // (TMDB id + the TMDB-numbered pair the source URL uses) before it
+      // re-queues anything.
+      anime: !!spec.anime,
+      tmdb: spec.tmdb ? String(spec.tmdb) : null,
+      urlSeason: spec.urlSeason != null ? Number(spec.urlSeason) : null,
+      urlEpisode: spec.urlEpisode != null ? Number(spec.urlEpisode) : null,
+      episodeName: spec.episodeName || '',
       addedAt: Date.now(),
       lastChecked: null
     });
@@ -62,11 +70,14 @@ class PendingStore extends EventEmitter {
     return true;
   }
 
+  // Returns true when an entry was removed.
   remove(key) {
     this.load();
     const before = this.items.length;
     this.items = this.items.filter((it) => it.key !== key);
-    if (this.items.length !== before) this._save();
+    if (this.items.length === before) return false;
+    this._save();
+    return true;
   }
 
   markChecked(key) {

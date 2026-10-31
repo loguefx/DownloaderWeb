@@ -235,6 +235,10 @@
 .mdl-season b em { font-style: normal; font-weight: 400; color: var(--md-faint); font-size: .85em; }
 .mdl-season.on { border-color: var(--md-accent); background: var(--md-accent-soft); }
 .mdl-season.picked { border-color: var(--md-green-line); background: var(--md-green-bg); }
+.mdl-dub { display: inline-block; font-size: .72em; font-weight: 600; padding: .05em .45em; border-radius: .4em; margin-left: .35em; vertical-align: .1em; border: 1px solid var(--md-line); }
+.mdl-dub.full { border-color: var(--md-green-line); background: var(--md-green-bg); }
+.mdl-dub.part { border-color: var(--md-accent); background: var(--md-accent-soft); }
+.mdl-dub.none { opacity: .75; }
 .mdl-ep { display: grid; grid-template-columns: 1.3em 3.2em minmax(0,1fr) auto auto; align-items: center; gap: .75em; padding: .65em .9em; border: 1px solid var(--md-line); border-radius: .55em; cursor: pointer; background: var(--md-card); }
 .mdl-ep + .mdl-ep { margin-top: .4em; }
 .mdl-ep:hover { background: var(--md-hover); }
@@ -1240,9 +1244,39 @@
                                 if (S.t === t) renderTitle();
                                 return checkSeason(t, s);
                             })
+                            .then(() => loadDub(t, s))
                             .then(worker);
                     };
                     return Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+                }
+
+                // English-dub status of an anime season, from the engine (the
+                // same check the DUB download uses). Polls while the engine is
+                // still looking episodes up (~1 s per episode, cached after).
+                function loadDub(t, s, tries) {
+                    if (!t.anime || t.kind !== 'series' || !t.tmdb || !(s.season > 0) || !s.count) return Promise.resolve();
+                    tries = tries || 0;
+                    const url = 'MediaDownloader/DubSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season + '&count=' + s.count +
+                        '&anime=1&title=' + encodeURIComponent(t.title || '');
+                    return get(url).then((d) => {
+                        if (!d || S.t !== t) return;
+                        const map = {};
+                        (d.episodes || []).forEach((e) => { map[e.episode] = e.dubbed; });
+                        s.dub = { dubbed: d.dubbed || 0, notDubbed: d.notDubbed || 0, unknown: d.unknown || 0, total: d.total || s.count, pending: !!d.pending, eps: map };
+                        renderTitle();
+                        if (d.pending && tries < 60) {
+                            return new Promise((res) => setTimeout(res, 3000)).then(() => (S.t === t ? loadDub(t, s, tries + 1) : null));
+                        }
+                    }).catch(() => { /* badge is informational */ });
+                }
+
+                // "EN DUB 2/12" badge for a season (anime only).
+                function dubBadge(s) {
+                    if (!s || !s.dub) return '';
+                    const d = s.dub;
+                    if (d.pending && !d.dubbed && !d.notDubbed) return '<span class="mdl-dub none">checking dub…</span>';
+                    const cls = d.dubbed >= d.total ? 'full' : d.dubbed > 0 ? 'part' : 'none';
+                    return '<span class="mdl-dub ' + cls + '" title="Episodes whose release is an English dub">EN DUB ' + d.dubbed + '/' + d.total + '</span>';
                 }
 
                 function checkSeason(t, s) {
@@ -1603,6 +1637,16 @@
                     h += '<div class="mdl-modes">' + modes.map((m) => '<button type="button" class="mdl-mode' + (t.mode === m[0] ? ' on' : '') + '" data-tmode="' + m[0] + '"><i></i><div><b>' + m[1] + '</b><span>' + m[2] + '</span></div></button>').join('') + '</div>';
 
                     // season chips
+                    if (t.anime && t.seasons.some((s) => s.dub)) {
+                        const withDub = t.seasons.filter((s) => s.dub && s.season > 0);
+                        const dubbed = withDub.reduce((a, s) => a + s.dub.dubbed, 0);
+                        const total = withDub.reduce((a, s) => a + s.dub.total, 0);
+                        const checking = withDub.some((s) => s.dub.pending);
+                        h += '<div class="small" style="margin-bottom:.5em;">English dub: <b>' + dubbed + ' of ' + total + '</b> episode' + (total === 1 ? '' : 's') +
+                            (checking ? ' <span class="faint">(still checking…)</span>' : '') +
+                            (t.modeAudio === 'dub' && dubbed < total ? ' · in DUB mode the other ' + (total - dubbed) + ' go to <b>Waiting for dub</b> and download when their dub comes out (checked every 24 h).' : '') +
+                            '</div>';
+                    }
                     h += '<div class="mdl-seasons">' + t.seasons.map((s) => {
                         const avail = availableEps(s).length;
                         let sub;
@@ -1627,7 +1671,7 @@
                         if (t.mode === 'episodes' && t.active === s.season) cls += ' on';
                         if (t.mode === 'season' && t.picked[s.season]) cls += ' picked';
                         if (t.mode === 'full' && avail) cls += ' picked';
-                        return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>' + seasonLabel(s.season) + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + '</b><span>' + esc(sub) + '</span></button>';
+                        return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>' + seasonLabel(s.season) + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + (t.anime ? dubBadge(s) : '') + '</b><span>' + esc(sub) + '</span></button>';
                     }).join('') + '</div>';
 
                     if (t.mode === 'full') {
@@ -1659,7 +1703,10 @@
                         return '<label class="mdl-ep' + (off ? ' off' : '') + (on ? ' sel' : '') + '">' +
                             '<input type="checkbox" data-ep="' + e.episode + '"' + (on ? ' checked' : '') + (off ? ' disabled' : '') + '>' +
                             '<span class="no">E' + e.episode + '</span>' +
-                            '<span class="nm">' + esc(e.name || 'Episode ' + e.episode) + (e.airDate && st === 'unaired' ? ' <span class="faint small">· ' + esc(e.airDate) + '</span>' : '') + '</span>' +
+                            '<span class="nm">' + esc(e.name || 'Episode ' + e.episode) + (e.airDate && st === 'unaired' ? ' <span class="faint small">· ' + esc(e.airDate) + '</span>' : '') +
+                                (t.anime && s.dub && s.dub.eps[e.episode] === true ? '<span class="mdl-dub full">EN DUB</span>' : '') +
+                                (t.anime && s.dub && s.dub.eps[e.episode] === false ? '<span class="mdl-dub none" title="No English dub yet: waits on the Waiting for dub list in DUB mode">SUB only</span>' : '') +
+                                '</span>' +
                             '<span class="rt">' + (e.runtime ? e.runtime + ' min' : '') + '</span>' +
                             '<span class="mdl-pill ' + ui[0] + '">' + esc(ui[1]) + '</span></label>';
                     }).join('');
@@ -1761,9 +1808,19 @@
                     footMsg('wait', '<span class="mdl-spin"></span> Sending ' + plural(jobs.length, 'job') + '…');
                     let ok = 0;
                     const total = jobs.reduce((a, j) => a + (j.selections ? j.selections[0].episodes.length : 1), 0);
+                    // Anime in DUB mode: episodes with no English dub yet are
+                    // parked on the waiting list by the engine, not downloaded.
+                    let waitN = 0;
+                    if (t.anime && t.modeAudio === 'dub') {
+                        jobs.forEach((j) => (j.selections || []).forEach((x) => {
+                            const s = (t.seasons || []).find((y) => y.season === x.season);
+                            if (s && s.dub) x.episodes.forEach((e) => { if (s.dub.eps[e] === false) waitN++; });
+                        }));
+                    }
                     jobs.reduce((p, j) => p.then(() => post('MediaDownloader/Enqueue', j).then(() => { ok++; })), Promise.resolve())
                         .then(() => {
-                            footMsg('ok', '✓ Queued ' + (t.kind === 'movie' ? t.title : plural(total, 'episode')) + ' → ' + esc(t.library) +
+                            footMsg('ok', '✓ Queued ' + (t.kind === 'movie' ? t.title : plural(total - waitN, 'episode')) + ' → ' + esc(t.library) +
+                                (waitN ? '; ' + plural(waitN, 'episode') + ' without an English dub yet went to <a data-go="queue">Waiting for dub</a> (checked every 24 h, then this series stays on the watch list)' : '') +
                                 '. <a data-go="queue">Open the queue</a>');
                             refresh();
                             // Re-check so the picker shows them as "Already queued".
@@ -1873,6 +1930,12 @@
                             bits.push(x.lastChecked ? 'checked ' + whenOf(x.lastChecked) : 'not checked yet');
                             return '<div class="mdl-row"><div class="grow"><div class="t">' + esc(x.series) + '</div><div class="sub">' + esc(bits.join(' · ')) + '</div></div>' +
                                 (x.anime ? '<span class="mdl-pill purple">anime</span>' : '') +
+                                (x.anime && (x.mode || 'dub') === 'dub' && x.dubState === 'waiting'
+                                    ? '<span class="mdl-pill yellow" title="Episodes of this series are on the Waiting for dub list; checked every 24 h">waiting for dub (' + (x.dubWaiting || 0) + ')</span>'
+                                    : '') +
+                                (x.anime && (x.mode || 'dub') === 'dub' && x.dubState === 'watching'
+                                    ? '<span class="mdl-pill green" title="Every aired episode with an English dub is handled; watching for new episodes and seasons">dub complete: watching</span>'
+                                    : '') +
                                 (x.anidb && x.anidb.available === true ? '<span class="mdl-pill green" title="AniDB: an English-dub release of this series exists">eng dub</span>' : '') +
                                 (x.anidb && x.anidb.available === false ? '<span class="mdl-pill red" title="AniDB: no English-dub release - source sites will serve Japanese/sub audio">no eng dub</span>' : '') +
                                 '<button type="button" class="mdl-btn icon sm" title="Stop watching" data-w-del="' + esc(x.key) + '">✕</button></div>';

@@ -383,7 +383,7 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
         [HttpDelete("Waiting/{key}")]
         public async Task<IActionResult> WaitingRemove(string key) =>
-            await ProxyAsync(() => _engine.DeleteAsync("api/waiting/" + Uri.EscapeDataString(key ?? string.Empty))).ConfigureAwait(false);
+            await ProxyAsync(() => _engine.DeleteAsync("api/waiting/" + EscapeKey(key))).ConfigureAwait(false);
 
         [HttpGet("Schedules")]
         public async Task<IActionResult> Schedules() =>
@@ -409,7 +409,15 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
         [HttpDelete("Schedules/{key}")]
         public async Task<IActionResult> SchedulesRemove(string key) =>
-            await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + Uri.EscapeDataString(key ?? string.Empty))).ConfigureAwait(false);
+            await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + EscapeKey(key))).ConfigureAwait(false);
+
+        /// <summary>
+        /// Watch/waiting keys contain the source URL. ASP.NET decodes every
+        /// escape in a route value EXCEPT %2F, so "/" arrives still escaped;
+        /// escaping it again sent %252F and the engine matched nothing.
+        /// </summary>
+        private static string EscapeKey(string key) =>
+            Uri.EscapeDataString((key ?? string.Empty).Replace("%2F", "/", StringComparison.OrdinalIgnoreCase));
 
         // anime: the UI sets this for anime titles, and the engine answers with
         // the Aniwave/AniList season layout (the user's library is organized
@@ -431,6 +439,21 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         {
             var a = string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}";
             return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}{a}")).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// English-dub status of a season's episodes (the anime "EN DUB n/m"
+        /// badge). Answers from the engine's cache at once; pending:true while
+        /// the engine is still checking, so the page polls.
+        /// </summary>
+        [HttpGet("DubSeason")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> DubSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] int count, [FromQuery] string anime = null, [FromQuery] string title = null)
+        {
+            var path = $"api/dub/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}&count={count}";
+            if (!string.IsNullOrEmpty(anime)) path += "&anime=" + Uri.EscapeDataString(anime);
+            if (!string.IsNullOrEmpty(title)) path += "&title=" + Uri.EscapeDataString(title);
+            return await ProxyAsync(() => _engine.GetRawAsync(path)).ConfigureAwait(false);
         }
 
         [HttpGet("Browse")]
@@ -473,7 +496,17 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             var path = "api/title?url=" + Uri.EscapeDataString(url ?? string.Empty);
             if (!string.IsNullOrWhiteSpace(library))
             {
-                path += "&library=" + Uri.EscapeDataString(library);
+                // The engine expects {"locations":[...]}, not a library name.
+                var libs = ResolveLibraries(new[] { library });
+                var locations = new JsonArray();
+                foreach (var lib in libs)
+                {
+                    foreach (var loc in lib["locations"].AsArray())
+                    {
+                        locations.Add((JsonNode)loc.GetValue<string>());
+                    }
+                }
+                path += "&library=" + Uri.EscapeDataString(new JsonObject { ["locations"] = locations }.ToJsonString());
             }
             return await ProxyAsync(() => _engine.GetRawAsync(path)).ConfigureAwait(false);
         }
@@ -678,7 +711,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             }
             catch (EngineApiException ex)
             {
-                return StatusCode(ex.Status, new { error = ex.Message });
+                // Status 0 = never reached the engine (URL not set, plugin not
+                // ready). StatusCode(0) is not a valid HTTP answer and turned
+                // the friendly message into a server error.
+                var status = ex.Status >= 400 && ex.Status <= 599 ? ex.Status : StatusCodes.Status503ServiceUnavailable;
+                return StatusCode(status, new { error = ex.Message });
             }
             catch (Exception ex)
             {
@@ -690,7 +727,9 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         {
             if (ex is HttpRequestException or TaskCanceledException)
             {
-                return "Engine is offline - the request is waiting in the outbox and will be delivered when it comes back.";
+                // Only queued jobs go through the outbox (Health reports its
+                // count); every other call simply failed.
+                return "Engine is offline or did not answer in time.";
             }
             return "Engine unreachable: " + ex.Message;
         }

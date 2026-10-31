@@ -1848,6 +1848,13 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
     onLog('The page has no DUB row at all (only SUB servers); adding to the waiting list.');
     return { status: 'unavailable', reason: 'DUB not released yet' };
   }
+  // The same for SUB: a page that labels its rows but offers only DUB servers
+  // has no subbed copy. Downloading the dub would hand back English audio
+  // for a SUB request; fail this site so the next one is asked instead.
+  if (wantSub && !primary.length && scan.hasDub) {
+    onLog('The page has no SUB row (only DUB servers); not taking the dub for a SUB request.');
+    return { status: 'failed', reason: 'no SUB servers on this site' };
+  }
 
   onLog(
     `Found ${primary.length} ${MODE} + ${fallback.length} ${OTHER} server(s); ` +

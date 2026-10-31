@@ -77,7 +77,7 @@ class Watcher {
   // whole pass holds until Mullvad is confirmed up (Part 3).
   async tick() {
     await vpn.waitUntilConnected();
-    this.checkNow();
+    await this.checkNow();
     await this.checkSchedules();
   }
 
@@ -433,6 +433,46 @@ class Watcher {
     // episode is already owned, so none may be re-queued and none is missed.
     const floor = this.seriesFlatFloor(roots, s.series);
     const floorActive = floor != null && sourceTotal != null && floor >= sourceTotal;
+    // Anime DUB: which aired episodes are English-dubbed on the source (one
+    // batched, cached check per season, TMDB numbering like the source URL).
+    const pairOf = (ep) => {
+      if (!urlMap) return { season, episode: ep };
+      try {
+        const m = urlMap(season, ep);
+        if (m && m.season != null && m.episode != null) return { season: m.season, episode: m.episode };
+      } catch (err) {
+        // identity
+      }
+      return { season, episode: ep };
+    };
+    const dubGate = !!(s.anime && (s.mode || 'dub') === 'dub' && /^\d+$/.test(String(s.tmdb || '')));
+    const dubbedOf = new Map(); // episode -> true/false/null
+    let dubStarted = false;
+    let notDubbed = 0;
+    let parked = 0;
+    if (dubGate && eps.length) {
+      const dubstatus = require('./dubstatus');
+      const bySeason = new Map();
+      for (const e of eps) {
+        const p = pairOf(e.episode);
+        if (!bySeason.has(p.season)) bySeason.set(p.season, []);
+        bySeason.get(p.season).push({ ep: e.episode, urlEp: p.episode });
+      }
+      for (const [urlSeason, list] of bySeason) {
+        let res = null;
+        try {
+          res = await dubstatus.checkSeason(s.tmdb, urlSeason, list.map((x) => x.urlEp), { onLog: this.onLog });
+        } catch (err) {
+          res = null;
+        }
+        for (const x of list) {
+          const row = res && res.episodes.find((r) => r.episode === x.urlEp);
+          const d = row ? row.dubbed : null;
+          dubbedOf.set(x.ep, d);
+          if (d === true) dubStarted = true;
+        }
+      }
+    }
     for (const e of eps) {
       if (floorActive && e.episode != null && Number(e.episode) <= floor) {
         present++;
@@ -472,6 +512,33 @@ class Watcher {
         this.onLog(`No source URL for "${s.series}" S${season}E${e.episode} - skipping it.`);
         continue;
       }
+      if (dubGate && dubbedOf.get(e.episode) !== true) {
+        // Not dubbed (or unknown) yet. Once the season's dub has started, the
+        // episode waits on the waiting-for-dub list (re-checked every 24 h).
+        // Before the first dub of the season appears, the series just stays
+        // on the watch list - nothing is queued or parked.
+        notDubbed += 1;
+        if (dubStarted && dubbedOf.get(e.episode) === false && !dryRun) {
+          const isNew = pending.add({
+            label: organizer.buildBaseName({ series: s.series, season, episode: e.episode }),
+            series: s.series,
+            season,
+            episode: e.episode,
+            outputRoot: s.outputRoot,
+            baseUrl: url,
+            mode: 'dub',
+            library: s.library || null,
+            minHeight: s.minHeight || 0,
+            anime: true,
+            tmdb: s.tmdb,
+            urlSeason: pair.season,
+            urlEpisode: pair.episode,
+            episodeName: e.name || ''
+          });
+          if (isNew) parked += 1;
+        }
+        continue;
+      }
       if (dryRun) {
         // Report-only: record the gap, spend no bandwidth on it.
         missing.push(e.episode);
@@ -488,11 +555,20 @@ class Watcher {
           episodeName: e.name || '',
           library: s.library || null,
           minHeight: s.minHeight || 0,
-          anime: !!s.anime
+          anime: !!s.anime,
+          tmdb: s.tmdb || null
         },
         this.onLog
       );
       queued += r.queued || 0;
+    }
+    if (dubGate && notDubbed) {
+      this.onLog(
+        `"${s.series}" season ${season}: ${notDubbed} aired episode(s) not dubbed yet - ` +
+          (dubStarted
+            ? (dryRun ? 'would wait for their dub (report only).' : `${parked} newly added to the waiting-for-dub list.`)
+            : 'the English dub has not started for this season; watching until it does.')
+      );
     }
     return { queued, present, missing };
   }
@@ -568,9 +644,11 @@ class Watcher {
 
   // ---- waiting-for-dub list -------------------------------------------------
 
-  checkNow() {
+  async checkNow() {
     const items = pending.list();
     if (!items.length) return { checked: 0 };
+    const dubstatus = require('./dubstatus');
+    const dubTally = new Map(); // series|season -> { released, waiting }
     const dryRun = this.watcherMode().dryRun;
     this.onLog(
       `Checking ${items.length} pending dub(s) for new releases...` +
@@ -609,7 +687,33 @@ class Watcher {
         continue;
       }
 
-      if (dryRun) {
+      // Anime DUB entries: ask the source whether the dub is out before
+      // spending anything on it. Not out -> stays on the list (checked again
+      // in 24 h). Out -> queued even in report-only mode: these are episodes
+      // the user already asked for, not the scanner's guesses.
+      const dubEntry = spec.anime && (spec.mode || 'dub') === 'dub' && spec.tmdb;
+      if (dubEntry) {
+        let dubbed = null;
+        try {
+          dubbed = await dubstatus.isDubbed(
+            spec.tmdb,
+            spec.urlSeason != null ? spec.urlSeason : spec.season,
+            spec.urlEpisode != null ? spec.urlEpisode : spec.episode,
+            { maxAgeMs: 60 * 60 * 1000 }
+          );
+        } catch (e) {
+          dubbed = null;
+        }
+        const tk = `${spec.series}|${spec.season}`;
+        const t = dubTally.get(tk) || { series: spec.series, season: spec.season, released: [], waiting: 0 };
+        dubTally.set(tk, t);
+        pending.markChecked(spec.key);
+        if (dubbed !== true) {
+          t.waiting += 1;
+          continue;
+        }
+        t.released.push(spec.episode);
+      } else if (dryRun) {
         this.onLog(`Pending dub "${spec.label}" still missing - report only, not re-queued.`);
         pending.markChecked(spec.key);
         continue;
@@ -630,6 +734,7 @@ class Watcher {
         library: spec.library || null,
         minHeight: spec.minHeight || 0,
         anime: !!spec.anime,
+        tmdb: spec.tmdb || null,
         url,
         baseUrl: url,
         template: spec.template || null,
@@ -643,9 +748,16 @@ class Watcher {
         anime: rec.anime,
         minHeight: rec.minHeight,
         series: rec.series,
-        season: rec.season
+        season: rec.season,
+        skipSourceSite: !!rec._wrongAudio
       }));
       manager.add(rec);
+    }
+    for (const t of dubTally.values()) {
+      const out = t.released.length
+        ? `English dub out for E${t.released.join(', E')} - queued`
+        : 'no new English-dubbed episodes';
+      this.onLog(`"${t.series}" season ${t.season}: ${out}; ${t.waiting} episode(s) still waiting for their dub.`);
     }
     return { checked: items.length };
   }

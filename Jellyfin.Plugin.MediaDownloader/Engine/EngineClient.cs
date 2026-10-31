@@ -77,7 +77,9 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
                 {
                     url = "http://" + url;
                 }
-                return new Uri(url);
+                // Trailing "/" so a base with a path prefix
+                // (http://host/engine) keeps it when "api/..." is appended.
+                return new Uri(url + "/");
             }
         }
 
@@ -95,7 +97,9 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
             {
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             }
-            if (body.HasValue)
+            // An empty request body arrives as an Undefined element, which has
+            // no raw text: send no body instead of throwing.
+            if (body.HasValue && body.Value.ValueKind != JsonValueKind.Undefined)
             {
                 request.Content = new StringContent(body.Value.GetRawText(), System.Text.Encoding.UTF8, "application/json");
             }

@@ -48,10 +48,18 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
             Load();
         }
 
+        /// <summary>Delivered jobs older than this are dropped from the file.</summary>
+        private static readonly TimeSpan SentRetention = TimeSpan.FromDays(30);
+
         private void Load()
         {
             lock (_gate)
             {
+                _entries = new Dictionary<string, OutboxEntry>();
+                if (!File.Exists(_file))
+                {
+                    return;
+                }
                 try
                 {
                     var raw = File.ReadAllText(_file);
@@ -59,9 +67,47 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
                 }
                 catch (Exception)
                 {
-                    _entries = new Dictionary<string, OutboxEntry>();
+                    // An unreadable outbox must not be overwritten by the next
+                    // Save (its waiting jobs would be lost without a trace).
+                    // Keep it aside so the jobs can be recovered by hand.
+                    try
+                    {
+                        File.Move(_file, _file + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMddHHmmss"), true);
+                    }
+                    catch (Exception)
+                    {
+                        // leave it in place
+                    }
+                }
+                if (PruneSent() > 0)
+                {
+                    Save();
                 }
             }
+        }
+
+        /// <summary>
+        /// Drops delivered jobs older than SentRetention. Every change rewrites
+        /// the whole file, so without this it grew (and slowed) with every job
+        /// ever queued. Caller holds _gate.
+        /// </summary>
+        private int PruneSent()
+        {
+            var cutoff = DateTime.UtcNow - SentRetention;
+            var doomed = new List<string>();
+            foreach (var kv in _entries)
+            {
+                var e = kv.Value;
+                if (e != null && e.State == StateSent && (e.LastAttemptAt ?? e.CreatedAt) < cutoff)
+                {
+                    doomed.Add(kv.Key);
+                }
+            }
+            foreach (var id in doomed)
+            {
+                _entries.Remove(id);
+            }
+            return doomed.Count;
         }
 
         private void Save()
@@ -149,7 +195,11 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
 
         public void MarkSent(string jobId, string engineMessage)
         {
-            SetState(jobId, StateSent, engineMessage);
+            lock (_gate)
+            {
+                PruneSent();
+                SetState(jobId, StateSent, engineMessage);
+            }
         }
 
         public void MarkRejected(string jobId, string engineMessage)

@@ -190,9 +190,10 @@ async function main() {
     check('threw an error', !!err, 'no error');
     check('error flags the expired token', err && !!err.tokenExpired, err && err.message);
     check('error message says resume will continue', err && /resume from \d+\/5 part/.test(err.message), err && err.message);
-    // Parts 1-3 should be saved (4 is 403, 5 may or may not have landed).
+    // Whatever finished before the 403 is kept (how many depends on how many
+    // parts were in flight); the resume below must fetch exactly the rest.
     const saved = [1, 2, 3].filter((i) => fs.existsSync(path.join(dir, partName(i))));
-    check('parts before the 403 were kept for resume', saved.length === 3, 'saved=' + saved.join(','));
+    check('parts finished before the 403 were kept for resume', saved.length >= 1 && saved[0] === 1, 'saved=' + saved.join(','));
     // A follow-up run with a "fresh token" (server no longer 403s) completes.
     // Simulate an interrupted run: part 5 may already have landed during the
     // first (failed) pass - drop it so the resume must demonstrably refetch.
@@ -207,7 +208,8 @@ async function main() {
       const complete = [1, 2, 3, 4, 5].every((i) => fs.existsSync(path.join(dir2, partName(i))) && fs.readFileSync(path.join(dir2, partName(i))).length > 0);
       check('retry completed the download', complete, 'incomplete');
       const reqSet = [...state2.segRequests].sort().join(',');
-      check('retry only fetched the missing tail (4,5)', reqSet === '4,5', JSON.stringify(state2.segRequests));
+      const missing = [1, 2, 3, 4, 5].filter((i) => !saved.includes(i)).join(',');
+      check('retry only fetched the parts that were missing', reqSet === missing, JSON.stringify(state2.segRequests) + ' expected ' + missing);
       const idx = fs.readFileSync(pl, 'utf8');
       check('final playlist is local + complete', (idx.match(/seg0000\d\.ts/g) || []).length === N, idx.slice(0, 160));
     } finally {
@@ -327,66 +329,70 @@ async function main() {
     check('bounded (finished in < 15s despite the endless drip)', elapsed < 15000, elapsed + 'ms');
   }
 
-  // ---- [7] 429: fail fast, no orphan siblings, counter never exceeds total ---
-  // 02:40 PM incident: one part got a 429, but the other 7 workers kept
-  // fetching (a second run then stacked on top), and the per-part retry
-  // loop hammered the same 429 3x. Now: a 429 fails the run immediately,
-  // tears down every in-flight sibling, and progress stays <= total.
-  console.log('\n[7] 429 fails fast; no orphan workers; progress never exceeds total');
-  {
-    const TEN = 10; // more parts than workers (8): parts 9,10 are ONLY reachable
-    // by a worker that loops back to the queue after the 429 already killed
-    // the run - the exact orphan behavior the fix removes.
+  // ---- [7] 429 is "slow down", not failure ---------------------------------
+  // Live measurement (Vidsrc CDN): ~2-3 requests/s per IP; extra requests get
+  // 429 and the SAME part succeeds ~1 s later. The old rule (one 429 kills the
+  // whole run) turned every download into abort -> 90 s cooldown -> re-resolve
+  // -> 429 again, i.e. no progress at all.
+  console.log('\n[7] 429 backs off and retries the part; a 429 that never clears still fails cleanly');
+  const config = require(path.join(REPO, 'src/main/config.js'));
+  const serve429 = (rule) => {
     const state = { segRequests: [] };
     const srv = http.createServer((req, res) => {
       const u = new URL(req.url, 'http://127.0.0.1');
       const m = u.pathname.match(/^\/seg(\d+)\.ts$/);
-      if (m) {
-        const i = Number(m[1]);
-        state.segRequests.push(i);
-        if (i === 2) {
-          res.writeHead(429, { 'Content-Type': 'text/plain' });
-          return res.end('rate limited');
-        }
-        // Healthy segments land well AFTER the instant 429, so any worker
-        // that finishes one and loops back must see the run already aborted.
-        const t = setTimeout(() => {
-          try {
-            res.writeHead(200, { 'Content-Type': 'video/mp2t' });
-            res.end(SEG_BODY(i));
-          } catch (e) { /* aborted */ }
-        }, 50);
-        req.on('close', () => clearTimeout(t));
-        return;
+      if (!m) { res.writeHead(404); return res.end('nope'); }
+      const i = Number(m[1]);
+      state.segRequests.push(i);
+      if (rule(i, state.segRequests.filter((x) => x === i).length)) {
+        res.writeHead(429, { 'Content-Type': 'text/plain' });
+        return res.end('rate limited');
       }
-      res.writeHead(404);
-      res.end('nope');
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+      res.end(SEG_BODY(i));
     });
-    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-    const port = srv.address().port;
-    const base = `http://127.0.0.1:${port}`;
-    let text = '#EXTM3U\n';
-    for (let i = 1; i <= TEN; i++) text += `#EXTINF:5.0,\n${base}/seg${i}.ts\n`;
-    text += '#EXT-X-ENDLIST\n';
-    const dir = fs.mkdtempSync(path.join(DATA_DIR, '429-'));
+    return new Promise((rs) => srv.listen(0, '127.0.0.1', () => rs({ srv, state, base: `http://127.0.0.1:${srv.address().port}` })));
+  };
+  const TEN = 10;
+  const list = (base) => {
+    let t = '#EXTM3U\n';
+    for (let i = 1; i <= TEN; i++) t += `#EXTINF:5.0,\n${base}/seg${i}.ts\n`;
+    return t + '#EXT-X-ENDLIST\n';
+  };
+  {
+    // Part 2 is rate-limited twice, then served: the download must finish.
+    const { srv, state, base } = await serve429((i, nth) => i === 2 && nth <= 2);
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, '429ok-'));
+    let err = null;
     let maxReceived = 0;
+    try {
+      await localizePlainSegments(list(base), base, dir, 'test-ua', { onProgress: (p) => { if (p.received > maxReceived) maxReceived = p.received; } });
+    } catch (e) { err = e; }
+    const hits = (i) => state.segRequests.filter((x) => x === i).length;
+    check('a short 429 burst is waited out: download completes', !err, err && err.message);
+    check('...the 429 part was retried until served (3 hits)', hits(2) === 3, 'hits=' + hits(2));
+    check('...every other part fetched exactly once', [1, 3, 4, 5, 6, 7, 8, 9, 10].every((i) => hits(i) === 1), JSON.stringify(state.segRequests));
+    check('...progress never exceeded the total', maxReceived <= TEN, `max=${maxReceived}/${TEN}`);
+    srv.close();
+  }
+  {
+    // Part 2 is rate-limited forever: bounded retries, then a clean 429 failure.
+    const prev = config.download.segment429Retries;
+    config.download.segment429Retries = 2;
+    const { srv, state, base } = await serve429((i) => i === 2);
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, '429bad-'));
     let err = null;
     try {
-      await localizePlainSegments(text, base, dir, 'test-ua', {
-        onProgress: (p) => {
-          if (p.received > maxReceived) maxReceived = p.received;
-        }
-      });
-    } catch (e) {
-      err = e;
-    }
-    check('rejected', !!err, 'no error - hung?');
+      await localizePlainSegments(list(base), base, dir, 'test-ua', {});
+    } catch (e) { err = e; }
+    config.download.segment429Retries = prev;
+    const hits = (i) => state.segRequests.filter((x) => x === i).length;
+    check('a 429 that never clears still fails', !!err, 'no error - hung?');
     check('...with the 429, not a token-expiry error', err && err.status === 429 && !err.tokenExpired, err && `${err.status}: ${err.message}`);
-    const hits = (i) => state.segRequests.filter((r) => r === i).length;
-    check('the 429 part was NOT retried per-segment (exactly 1 hit)', hits(2) === 1, 'hits=' + hits(2));
-    check('no orphan worker looped back to new parts (9,10 untouched)', hits(9) === 0 && hits(10) === 0, JSON.stringify(state.segRequests));
-    check('total requests bounded (no stacked double-run)', state.segRequests.length <= 8, 'total=' + state.segRequests.length + ' ' + JSON.stringify(state.segRequests));
-    check('progress never exceeded the total', maxReceived <= TEN, `max=${maxReceived}/${TEN}`);
+    check('...after a bounded number of tries (1 + 2 retries)', hits(2) === 3, 'hits=' + hits(2));
+    check('...no other part was fetched twice', [1, 3, 4, 5, 6, 7, 8, 9, 10].every((i) => hits(i) <= 1), JSON.stringify(state.segRequests));
+    const kept = fs.readdirSync(dir).filter((n) => /^seg\d+\.ts$/.test(n)).length;
+    check('...parts that did land are kept for the resume', kept >= 1, 'kept=' + kept);
     srv.close();
   }
 

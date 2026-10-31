@@ -27,6 +27,7 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const audiolang = require('../audiolang');
 
 // Cross-platform ffmpeg/ffprobe resolution (was hardcoded to /usr/bin/ which
 // doesn't exist on Windows — the engine PC). Use the main downloader's resolver
@@ -207,7 +208,34 @@ async function decryptStreamUrls(encrypted, vs) {
     .filter((s) => /^https?:\/\//i.test(s));
 }
 
+// Circuit breaker. When Vidsrc blocks this IP (its relay and data API answer
+// a plain nginx "403 Forbidden" page, not the API's JSON), every request only
+// prolongs the block: each episode used to burn ~1 min of token retries, over
+// and over. On a block page Vidsrc is paused for BLOCK_PAUSE_MS engine-wide;
+// callers fall back to the other sources meanwhile.
+const BLOCK_PAUSE_MS = 15 * 60 * 1000;
+let blockedUntil = 0;
+function isBlockPage(status, bodyText) {
+  return status === 403 && /<html|nginx|forbidden/i.test(String(bodyText || '').slice(0, 400)) && !/^\s*\{/.test(String(bodyText || ''));
+}
+function markBlocked() {
+  const first = Date.now() >= blockedUntil;
+  blockedUntil = Date.now() + BLOCK_PAUSE_MS;
+  return first;
+}
+function blockedError() {
+  const mins = Math.max(1, Math.ceil((blockedUntil - Date.now()) / 60000));
+  return Object.assign(
+    new Error(`Vidsrc is blocking this IP (HTTP 403 page); Vidsrc paused for ${mins} min - switching the Mullvad server clears it sooner`),
+    { code: 'VIDSRC_BLOCKED' }
+  );
+}
+function isBlocked() {
+  return Date.now() < blockedUntil;
+}
+
 async function fetchStreamUrls(ref) {
+  if (isBlocked()) throw blockedError();
   await throttleApi();
   let qs;
   if (ref.type === 'movie') {
@@ -270,6 +298,10 @@ async function fetchStreamUrls(ref) {
     }
     lastStatus = r.status;
     const bodyText = r.body.toString('utf8');
+    if (isBlockPage(r.status, bodyText)) {
+      markBlocked();
+      throw blockedError();
+    }
     let j;
     try {
       j = JSON.parse(bodyText);
@@ -303,6 +335,59 @@ async function fetchStreamUrls(ref) {
   throw lastErr || new Error('Vidsrc API request failed after retries');
 }
 
+// Release name of one episode, without the stream list (no decrypt, no CDN
+// calls): what the English-dub count needs. `session` carries the API token
+// across a season ({ token }); a 403 re-acquires it once. Same data-API
+// spacing as every other call. -> { fileName, status } (fileName '' when the
+// episode is not on Vidsrc).
+async function episodeRelease(ref, session = {}) {
+  if (isBlocked()) return { fileName: '', status: 'unreachable' };
+  if (!session.token) {
+    try {
+      session.token = await acquireApiToken(ref);
+    } catch (e) {
+      session.token = '';
+    }
+  }
+  const idpart = ref.imdb ? 'imdb=' + ref.imdb : 'tmdb=' + ref.tmdb;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await throttleApi();
+    const url = `${API_BASE}?type=tv&${idpart}&season=${ref.season}&episode=${ref.episode}` +
+      (session.token ? '&api_token=' + encodeURIComponent(session.token) : '');
+    let res;
+    try {
+      res = await request(url, {}, 20000);
+    } catch (e) {
+      continue;
+    }
+    if (isBlockPage(res.status, res.body.toString('utf8'))) {
+      markBlocked();
+      return { fileName: '', status: 'unreachable' };
+    }
+    if (res.status === 403) {
+      try {
+        session.token = await acquireApiToken(ref);
+      } catch (e) {
+        /* keep going */
+      }
+      continue;
+    }
+    if (res.status === 429 || res.status >= 500) {
+      await new Promise((rs) => setTimeout(rs, 2000 * (attempt + 1)));
+      continue;
+    }
+    let j = null;
+    try {
+      j = JSON.parse(res.body.toString('utf8'));
+    } catch (e) {
+      return { fileName: '', status: 'bad-response' };
+    }
+    if (String(j.status_code) !== '200') return { fileName: '', status: 'not-found' };
+    return { fileName: String((j.data && j.data.file_name) || ''), status: 'ok' };
+  }
+  return { fileName: '', status: 'unreachable' };
+}
+
 // Parse a master playlist into variants: [{ width, height, bandwidth, url }].
 function parseMaster(masterText, baseOrigin) {
   const lines = masterText.split('\n').map((s) => s.trim());
@@ -331,6 +416,26 @@ function meetsFloor(width, height, min) {
   return height > 0 && width / height >= 1.85;
 }
 
+// Audio language tags of a media file ('' for an untagged track).
+function probeAudioLangs(bufPath) {
+  return new Promise((resolve) => {
+    execFile(
+      getFfprobe(),
+      ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', bufPath],
+      { timeout: 20000 },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        try {
+          const j = JSON.parse(String(stdout || '{}'));
+          resolve((j.streams || []).map((st) => audiolang.normLang(st.tags && st.tags.language)));
+        } catch (e) {
+          resolve([]);
+        }
+      }
+    );
+  });
+}
+
 function probeResolution(bufPath) {
   return new Promise((resolve) => {
     execFile(
@@ -346,6 +451,35 @@ function probeResolution(bufPath) {
   });
 }
 
+// One CDN token for a host. generate.php is rate-limited per IP: three
+// requests at once get one 200 and two 429s, and after a few of those the
+// host stops answering (the 10 s timeouts). The token covers every playlist
+// and segment on that host, so ONE request per host is all a lookup needs.
+// 429 / 5xx / timeouts are retried twice with a short backoff; a non-200
+// body is never mistaken for a token.
+async function fetchHostToken(origin) {
+  let last = '';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await new Promise((rs) => setTimeout(rs, 1200 * attempt + Math.floor(Math.random() * 400)));
+    let res;
+    try {
+      res = await request(origin + '/generate.php', {}, 10000);
+    } catch (e) {
+      last = e.message || 'network error';
+      continue;
+    }
+    if (res.status === 200) {
+      const token = parseToken(res.body.toString('utf8'));
+      if (token) return token;
+      last = 'empty token';
+      continue;
+    }
+    last = 'HTTP ' + res.status;
+    if (res.status !== 429 && res.status < 500) break;
+  }
+  throw new Error(last || 'no token');
+}
+
 // Return a verified variant playlist URL at or above `minH` (default 1080),
 // or null if none found. Anime passes minH 0 to accept the source's own
 // resolution (often 720p) instead of requiring 1080p.
@@ -353,7 +487,7 @@ function probeResolution(bufPath) {
 // segment -> real probe. Returns a passing detection or null. Each source is
 // on its own CDN host (separate rate limits), so the sources can be raced in
 // parallel by the caller.
-async function verifySource(raw, i, meta, min, onLog) {
+async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken) {
   let u;
   try {
     u = new URL(raw);
@@ -362,10 +496,10 @@ async function verifySource(raw, i, meta, min, onLog) {
   }
   let token;
   try {
-    token = parseToken((await request(u.origin + '/generate.php', {}, 10000)).body.toString('utf8'));
+    token = await tokenFor(u.origin);
   } catch (e) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — generate.php failed (${e.message}).`);
-    return null;
+    return { unreachable: true };
   }
   if (!token) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — empty token.`);
@@ -376,9 +510,11 @@ async function verifySource(raw, i, meta, min, onLog) {
     master = (await request(raw + '?token=' + encodeURIComponent(token), {}, 15000)).body.toString('utf8');
   } catch (e) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master failed (${e.message}).`);
-    return null;
+    return { unreachable: true };
   }
   const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+  // Alternate audio / subtitle tracks the master lists (#EXT-X-MEDIA).
+  const media = audiolang.parseHlsMedia(master, raw);
   for (const v of variants) {
     if (!meetsFloor(v.width, v.height, min)) break;
     try {
@@ -407,9 +543,12 @@ async function verifySource(raw, i, meta, min, onLog) {
         rq.setTimeout(15000, () => { rq.destroy(); rej(new Error('timeout')); });
       });
       const pr = await probeResolution(segPath);
+      const streamLangs = await probeAudioLangs(segPath);
+      try { fs.unlinkSync(segPath); } catch (e) { /* already gone */ }
       onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
       if (pr.ok && meetsFloor(pr.width, pr.height, min)) {
-        return { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta, order: i };
+        const audio = audiolang.audioVerdict({ streamLangs, media, fileName: meta && meta.fileName });
+        return { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta, order: i, media, audio };
       }
     } catch (e) {
       onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} verify failed (${e.message}).`);
@@ -421,8 +560,15 @@ async function verifySource(raw, i, meta, min, onLog) {
 // Return a verified variant playlist URL at or above `minH` (default 1080),
 // or null if none found. Anime passes minH 0 to accept the source's own
 // resolution (often 720p) instead of requiring 1080p.
-async function pick1080(ref, onLog, minH = 1080) {
+// opts.accept(source) -> { ok, reason }: the dub/sub check. A source that
+// passes the quality floor but not this check is set aside (opts.rejected
+// collects { host, reason }) and the race goes on; with opts.preferOnly the
+// first set-aside source is still returned when no source passes.
+async function pick1080(ref, onLog, minH = 1080, opts = {}) {
   const min = Math.max(0, Number(minH) || 0);
+  const accept = typeof opts.accept === 'function' ? opts.accept : null;
+  const rejected = Array.isArray(opts.rejected) ? opts.rejected : [];
+  let fallback = null;
   const { urls, meta } = await fetchStreamUrls(ref);
   onLog && onLog(`Vidsrc: ${meta.title} — ${urls.length} source(s) available.`);
   // Verify sources in parallel; the FIRST one to pass the floor wins (the
@@ -432,21 +578,45 @@ async function pick1080(ref, onLog, minH = 1080) {
   // does not stop the race - the remaining sources keep verifying and the
   // first passing one still wins. Losers keep running briefly in the
   // background (bounded: one segment + one ffprobe) and are ignored.
+  // Sources usually share one CDN host: fetch its token once, for all of them.
+  const tokens = new Map();
+  const tokenFor = (origin) => {
+    if (!tokens.has(origin)) tokens.set(origin, fetchHostToken(origin));
+    return tokens.get(origin);
+  };
   const attempts = urls.map((raw, i) =>
-    verifySource(raw, i, meta, min, onLog).catch((e) => {
+    verifySource(raw, i, meta, min, onLog, tokenFor).catch((e) => {
       onLog && onLog(`Vidsrc: source[${i}] verify failed (${(e && e.message) || e}).`);
       return null;
     })
   );
+  let unreachable = 0;
+  const total = attempts.length;
   while (attempts.length) {
     const { value: r, index } = await firstSettled(attempts);
     attempts.splice(index, 1);
-    if (r) {
-      delete r.order;
-      return r;
+    if (r && r.unreachable) {
+      unreachable += 1;
+      continue;
     }
+    if (!r) continue;
+    delete r.order;
+    if (accept) {
+      const v = accept(r);
+      if (!v || !v.ok) {
+        rejected.push({ host: r.host, reason: (v && v.reason) || 'not accepted' });
+        onLog && onLog(`Vidsrc: ${r.host} skipped - ${(v && v.reason) || 'not accepted'}.`);
+        if (!fallback) fallback = r;
+        continue;
+      }
+    }
+    return r;
   }
-  return null;
+  // Every source failed on a token/network error (the CDN throttles this IP
+  // for a while after bursts): that is "try again shortly", not "no copy at
+  // this quality".
+  if (!fallback && total && unreachable === total) opts.allUnreachable = true;
+  return opts.preferOnly ? fallback : null;
 }
 
 function spawnFfmpeg(inputUrl, outPath, ua, opts) {
@@ -490,7 +660,11 @@ async function download(ref, outPath, opts = {}) {
   return { path: outPath, width: pr.width, height: pr.height, host: best.host, meta: best.meta };
 }
 
-module.exports = { pick1080, download, fetchStreamUrls, acquireApiToken, UA };
+module.exports = {
+  pick1080, download, fetchStreamUrls, acquireApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
+  isBlocked, isBlockPage,
+  _setBlockedUntilForTests(t) { blockedUntil = t; }
+};
 
 // CLI: vidsrc_dl.js <tv|movie> <tmdb|imdb> [season] [episode] [outPath]
 if (require.main === module) {

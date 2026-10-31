@@ -10,7 +10,8 @@ const organizer = require('./organizer');
 const library = require('./library');
 const placer = require('./placer');
 const { download, lastFfmpegStderr } = require('./downloader');
-const { verifyFile, belowMinHeight } = require('./verify');
+const { verifyFile, belowMinHeight, audioLanguages } = require('./verify');
+const audiolang = require('./audiolang');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
 const cfsolve = require('./cfsolve');
@@ -710,7 +711,9 @@ class DownloadManager extends EventEmitter {
         let noQuality = false;
         {
           const _prof = sites.resolve(item.url || item.baseUrl || '');
-          if (_prof && typeof _prof.directResolve === 'function') {
+          // After Vidsrc showed it has no copy in the requested audio, later
+          // attempts go straight to the dub/sub-aware sites.
+          if (_prof && typeof _prof.directResolve === 'function' && !item._wrongAudio) {
             try {
               outcome = await _prof.directResolve(
                 {
@@ -721,6 +724,7 @@ class DownloadManager extends EventEmitter {
                   url: item.url || item.baseUrl || '',
                   baseUrl: item.baseUrl || item.url || '',
                   anime: !!item.anime,
+                  minHeight: item.minHeight != null ? item.minHeight : undefined,
                   // The dub/sub choice the user made when queueing. Headless
                   // resolvers can't toggle servers, but they can at least tell
                   // us when the file they found contradicts that choice.
@@ -758,6 +762,14 @@ class DownloadManager extends EventEmitter {
               'The free catalogs will not have it and no Cloudflare solver is configured, so the gated fallbacks are unusable. Not retrying.'
           );
           outcome = { status: 'failed', reason: item._exclusiveHint || 'licensed exclusive' };
+        } else if (outcome && outcome.status === 'wrong_audio') {
+          // Vidsrc only has the other audio. Its page would play the same
+          // file, so discovery skips it and asks the dub/sub-aware sites
+          // (anime sites with DUB/SUB server rows). No dub anywhere -> the
+          // episode lands on the waiting-for-dub list.
+          item._wrongAudio = true;
+          this._log(`"${item.label}": ${outcome.reason || 'wrong audio on Vidsrc'}; trying sites with a ${(item.mode || 'dub').toUpperCase()} option.`);
+          outcome = await item.discover();
         } else if (outcome && outcome.status === 'no_quality') {
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
@@ -944,6 +956,25 @@ class DownloadManager extends EventEmitter {
             // ignore
           }
           throw new Error('Verification failed: ' + v.reason);
+        }
+        // Anime DUB: the finished file must not be tagged with only
+        // non-English audio. Every path (Vidsrc, catalog sites, captured
+        // players) ends here, so a mislabelled "dub" server is caught too.
+        // Untagged audio is not evidence and is accepted.
+        if (item.anime && (item.mode || 'dub') === 'dub') {
+          const langs = await audioLanguages(partPath);
+          const audio = audiolang.audioVerdict({ streamLangs: langs });
+          if (audio.verdict === 'foreign') {
+            this._dropShortFile(partPath);
+            const lab = detection && detection.sourceLabel;
+            if (lab) {
+              item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+              const key = String(lab).toLowerCase();
+              if (!item.skipSources.includes(key)) item.skipSources.push(key);
+            }
+            item._wrongAudio = true;
+            throw new Error(`downloaded audio is ${audiolang.langLabel(audio.langs)}, not an English dub`);
+          }
         }
         if (belowMinHeight(v, floor)) {
           // Only the .part we just wrote is ever dropped here. A file already

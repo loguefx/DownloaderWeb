@@ -113,4 +113,25 @@ function meetsQualityFloor(width, height, min) {
   return height > 0 && width / height >= 1.85;
 }
 
-module.exports = { verifyFile, ffprobePath, belowMinHeight, meetsQualityFloor };
+// Audio language tags of a file ('' for an untagged track); [] when unreadable.
+function audioLanguages(filePath) {
+  const { normLang } = require('./audiolang');
+  return new Promise((resolve) => {
+    execFile(
+      ffprobePath(),
+      ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=index:stream_tags=language', '-of', 'json', filePath],
+      { timeout: 30000, windowsHide: true },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        try {
+          const j = JSON.parse(stdout || '{}');
+          resolve((j.streams || []).map((s) => normLang(s.tags && s.tags.language)));
+        } catch (e) {
+          resolve([]);
+        }
+      }
+    );
+  });
+}
+
+module.exports = { verifyFile, ffprobePath, belowMinHeight, meetsQualityFloor, audioLanguages };

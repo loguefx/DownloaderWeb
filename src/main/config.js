@@ -105,10 +105,10 @@ module.exports = {
     // and the queue retries with backoff (see downloader/queue).
     hlsConcurrency: 5,
     // How many HLS parts of ONE episode to fetch at once (plain-HTTP localizer,
-    // Vidsrc path). The Vidsrc CDNs have handled ffmpeg's default 10 concurrent
-    // connections fine, so 8 is a safe speed-up with no extra rate-limit
-    // profile (same host, same IP - only the in-flight part count changes).
-    segmentConcurrency: 8,
+    // Vidsrc path). The Vidsrc CDNs rate-limit each IP to ~2-3 requests a
+    // second (measured: 3 at once ~5 MB/s with a rare 429; 8 at once got 10 of
+    // 16 parts rejected). 429s are absorbed by a per-part backoff.
+    segmentConcurrency: 3,
     // Per-part socket-idle timeout (wire goes fully silent).
     segmentIdleMs: 60000,
     // Per-part ABSOLUTE deadline: fires even if bytes keep trickling, so a CDN

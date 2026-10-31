@@ -329,6 +329,66 @@ async function main() {
   srv.close();
   config.download.maxRetries = 6;
 
+  // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
+  //         finished file tagged only Japanese is rejected -------------------
+  console.log('\n[7] Anime DUB never keeps a Japanese-only file');
+  {
+    const { spawnSync } = require('child_process');
+    const media = path.join(DATA_DIR, 'ja.mp4');
+    const made = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=10', '-f', 'lavfi', '-i', 'sine=frequency=300',
+      '-t', '25', '-c:v', 'libx264', '-c:a', 'aac', '-metadata:s:a:0', 'language=jpn', '-movflags', '+faststart', media]);
+    if (made.status !== 0) {
+      check('ffmpeg made the test file', false, String(made.stderr));
+    } else {
+      const httpMod = require('http');
+      const body = fs.readFileSync(media);
+      const msrv = httpMod.createServer((req, res) => { res.setHeader('Content-Length', body.length); res.end(body); });
+      await new Promise((r) => msrv.listen(0, '127.0.0.1', r));
+      // The registry keeps its own copy of each profile: stub THAT one (and
+      // load the registry, which the earlier sections never needed).
+      const sitesReg = M('sites');
+      if (!sitesReg.profiles.length) sitesReg.init(DATA_DIR);
+      const vs = sitesReg.resolve('https://vidsrc.sh/embed/tv/123-1-1');
+      check('the Vidsrc profile is the one stubbed (no real request)', vs && vs.id === 'vidsrc', vs && vs.id);
+      const origDirect = vs.directResolve;
+      let directCalls = 0;
+      vs.directResolve = async () => { directCalls += 1; return { status: 'wrong_audio', reason: 'audio is Japanese (audio stream tags), not an English dub' }; };
+      let discovers = 0;
+      const dlogs = [];
+      const realLog4 = manager._log.bind(manager);
+      manager._log = (m) => { dlogs.push(m); realLog4(m); };
+      const did = manager.add({
+        label: 'Dub Show S1E1',
+        series: 'Dub Show',
+        season: 1,
+        episode: 1,
+        mode: 'dub',
+        anime: true,
+        minHeight: 0,
+        url: 'https://vidsrc.sh/embed/tv/123-1-1',
+        outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: () => {
+          discovers += 1;
+          return Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'JapaneseServer' } });
+        }
+      });
+      const ditem = manager.items.find((x) => x.id === did);
+      for (let i = 0; i < 150 && !(discovers >= 2 && ditem.attempts >= 2); i++) await sleep(100);
+      check('Vidsrc wrong audio -> dub-aware discovery runs', discovers >= 1 && directCalls >= 1, 'discovers=' + discovers + ' directCalls=' + directCalls);
+      check('...and says why', dlogs.some((m) => /trying sites with a DUB option/.test(m)), dlogs.slice(0, 4).join(' | '));
+      check('the Japanese-only file was rejected, not kept', dlogs.some((m) => /downloaded audio is Japanese, not an English dub/.test(m)), dlogs.slice(-4).join(' | '));
+      check('nothing was saved for the episode', !fs.existsSync(path.join(DATA_DIR, 'staging', 'Dub Show', 'Season 1', 'Dub Show S1E1.mp4')));
+      check('the server that served it is skipped next time', (ditem.skipSources || []).includes('japaneseserver'), JSON.stringify(ditem.skipSources));
+      check('later attempts do not ask Vidsrc again', directCalls === 1, 'directCalls=' + directCalls);
+      manager.removeByIds([did]);
+      await sleep(200);
+      vs.directResolve = origDirect;
+      manager._log = realLog4;
+      msrv.close();
+    }
+  }
+
   if (manager._watchdogTimer) clearInterval(manager._watchdogTimer);
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

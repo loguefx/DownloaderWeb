@@ -116,14 +116,19 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
                     _outbox.MarkRejected(job.JobId, ex.Message);
                     _logger.LogWarning("Outbox job {JobId} rejected by engine: {Message}", job.JobId, ex.Message);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
+                    // The plugin is stopping. (An HttpClient TIMEOUT is also an
+                    // OperationCanceledException, but not this one: it falls
+                    // through below, is recorded, and the pass moves on.)
                     return;
                 }
                 catch (Exception ex)
                 {
                     // Offline / timeout / 5xx: stays waiting, retried next tick.
-                    _outbox.NoteFailedAttempt(job.JobId, ex.Message);
+                    // The engine keeps working on a timed-out job and answers
+                    // the resend as a duplicate, so nothing is queued twice.
+                    _outbox.NoteFailedAttempt(job.JobId, ex is OperationCanceledException ? "engine did not answer in time; will retry" : ex.Message);
                     _logger.LogInformation("Engine unreachable for {JobId} ({Message}); will retry.", job.JobId, ex.Message);
                 }
             }

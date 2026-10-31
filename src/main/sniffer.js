@@ -804,10 +804,12 @@ class Sniffer extends EventEmitter {
       .some((d) => urlMode(d.url, hints) === mode);
   }
 
+  // The subtitle capture to embed: English when a URL says so (see
+  // audiolang.pickEnglishSubtitle), else the newest.
   latestSub(webContentsId) {
     const items = this.list(webContentsId).filter((d) => d.type === 'sub');
     if (!items.length) return null;
-    return items.sort((a, b) => b.ts - a.ts)[0];
+    return require('./audiolang').pickEnglishSubtitle(items);
   }
 
   lastEmbed(webContentsId) {

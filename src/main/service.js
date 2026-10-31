@@ -298,12 +298,14 @@ async function runJob(job) {
 
   let queued = 0;
   let skipped = 0;
+  let waiting = 0; // anime DUB episodes parked on the waiting-for-dub list
 
   const stamp = (rec) => {
     rec.library = lib;
     rec.minHeight = minHeight;
     rec.jobId = job.jobId || null;
     rec.anime = anime;
+    if (/^\d+$/.test(String(job.tmdb || '').trim())) rec.tmdb = String(job.tmdb).trim();
     return rec;
   };
 
@@ -329,8 +331,9 @@ async function runJob(job) {
     // the per-episode dedupe below still runs, and placement refuses to
     // touch anything already on the drive.
     let urlMap = null;
+    const dubTmdb = String(job.tmdb || '').trim() || String((ref && ref.tmdb) || '').trim();
     try {
-      const tmdbId = String(job.tmdb || '').trim() || String((ref && ref.tmdb) || '').trim();
+      const tmdbId = dubTmdb;
       if (/^\d+$/.test(tmdbId)) {
         urlMap = await animelayout.urlMapFor(tmdbId, series, { anime: !!(job.anime) });
       }
@@ -346,6 +349,41 @@ async function runJob(job) {
         const epUrl =
           require('./urltemplate').buildEpisodeUrl({ baseUrl: url, season: m.season, series }, m.episode) || url;
         const epName = selNames[ep] || selNames[String(ep)] || '';
+        // Anime DUB: only episodes whose source release IS an English dub are
+        // downloaded now. The others wait for their dub (checked every 24 h),
+        // instead of downloading the Japanese release. Unknown (not on the
+        // source, network) is queued: the strict resolver still refuses a
+        // non-English copy and parks it if no dub turns up.
+        if (anime && mode === 'dub' && /^\d+$/.test(dubTmdb)) {
+          let dubbed = null;
+          try {
+            dubbed = await require('./dubstatus').isDubbed(dubTmdb, m.season, m.episode);
+          } catch (e) {
+            dubbed = null;
+          }
+          if (dubbed === false) {
+            const label = organizer.buildBaseName({ series, season, episode: ep });
+            const isNew = pending.add({
+              label,
+              series,
+              season,
+              episode: ep,
+              outputRoot: staging,
+              baseUrl: epUrl,
+              mode,
+              library: lib,
+              minHeight,
+              anime: true,
+              tmdb: dubTmdb,
+              urlSeason: m.season,
+              urlEpisode: m.episode,
+              episodeName: epName
+            });
+            waiting += 1;
+            onLog(`${label}: no English dub yet - added to the waiting-for-dub list${isNew === false ? ' (already there)' : ''}.`);
+            continue;
+          }
+        }
         const r = await bulk.queueOne(
           stamp({ url: epUrl, series, season, episode: ep, mode, outputRoot: staging, episodeName: epName }),
           onLog
@@ -391,6 +429,10 @@ async function runJob(job) {
   // watch:false is just "unchecked", which the old UI leaves in its default
   // state, so the library rule still applies for it.
   const optedOut = job.noWatch === true;
+  // An anime with episodes waiting for their dub is always watched (unless
+  // explicitly opted out), so the daily pass picks the dubs - and the next
+  // season - up on its own.
+  const dubWatch = waiting > 0 && job.kind !== 'movie';
   // TMDB id for the daily "what has aired" check: from the job, else parsed
   // out of the source URL (Vidsrc embeds carry it in the path). Stored on the
   // schedule entry so the watcher can ask TMDB instead of guessing from the
@@ -400,7 +442,7 @@ async function runJob(job) {
     try { watchTmdb = require('./sites/findtitle').idFromPlayerUrl(url).tmdb || ''; } catch (e) { watchTmdb = ''; }
   }
   const watchImdb = String(job.imdb || '').trim() || String((ref && ref.imdb) || '').trim() || '';
-  const manualWatch = job.watch === true && job.kind !== 'movie';
+  const manualWatch = (job.watch === true || dubWatch) && job.kind !== 'movie';
   if (!optedOut && !manualWatch) {
     let onDisk = false;
     const roots = [staging];
@@ -463,6 +505,7 @@ async function runJob(job) {
   const summary = {
     queued,
     skipped,
+    waiting,
     series,
     mode,
     scope: job.kind === 'movie' ? 'movie' : scope,
@@ -511,8 +554,7 @@ function waitingList() {
   return pending.list();
 }
 function waitingRemove(key) {
-  pending.remove(key);
-  return { removed: true };
+  return { removed: pending.remove(key) };
 }
 
 // ---- schedules (keep watching) ----
@@ -561,8 +603,7 @@ function schedulesAdd(spec) {
   return { added, key: schedule.constructor.key(specKey) };
 }
 function schedulesRemove(key) {
-  schedule.remove(key);
-  return { removed: true };
+  return { removed: schedule.remove(key) };
 }
 
 // Opt-out ("frozen") safety net. riskSeries is a set of TMDB ids whose disk

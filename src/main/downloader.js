@@ -419,6 +419,8 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } =
       if (code >= 400) {
         const e = new Error('HTTP ' + code);
         e.status = code;
+        const ra = Number(rs.headers && rs.headers['retry-after']);
+        if (Number.isFinite(ra) && ra > 0) e.retryAfterMs = Math.min(ra, 30) * 1000;
         rs.resume();
         return fail(e);
       }
@@ -564,6 +566,26 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
   const SEG_IDLE_MS = Number(config.download.segmentIdleMs) || 60000;
   const SEG_DEADLINE_MS = Number(config.download.segmentDeadlineMs) || 120000;
   const SEG_RETRIES = 3;
+  // The Vidsrc CDNs allow roughly 2-3 requests a second per IP and answer the
+  // excess with 429 (measured live: 8 parts at once -> 10 of 16 rejected;
+  // the same parts retried 1 s later -> all accepted). A 429 is a "slow
+  // down", not a failure: the part waits and retries, and every worker pauses
+  // until the shared slow-down window has passed so they do not stampede.
+  const SEG_429_RETRIES = Number.isFinite(Number(config.download.segment429Retries)) ? Number(config.download.segment429Retries) : 8;
+  let slowUntil = 0;
+  const waitAbortable = (ms) =>
+    new Promise((resolve, reject) => {
+      if (runCtrl.signal.aborted) return reject(abortErr());
+      const t = setTimeout(() => {
+        runCtrl.signal.removeEventListener('abort', onA);
+        resolve();
+      }, ms);
+      const onA = () => {
+        clearTimeout(t);
+        reject(abortErr());
+      };
+      runCtrl.signal.addEventListener('abort', onA, { once: true });
+    });
   let first403 = null;
   const abortErr = () => {
     const e = new Error('Aborted');
@@ -579,8 +601,11 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       return;
     }
     let lastErr = null;
+    let n429 = 0;
     for (let a = 0; a < SEG_RETRIES; a++) {
       if (runCtrl.signal.aborted) throw abortErr();
+      const pause = slowUntil - Date.now();
+      if (pause > 0) await waitAbortable(pause);
       try {
         const buf = await plainHttpBuffer(job.abs, ua, SEG_IDLE_MS, {
           signal: runCtrl.signal,
@@ -596,11 +621,20 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       } catch (e) {
         if (e && e.name === 'AbortError') throw e;
         lastErr = e;
+        if (e && e.status === 429 && n429 < SEG_429_RETRIES) {
+          // Rate-limited: back off (Retry-After when given), then retry this
+          // part. Does not use up the ordinary retries.
+          n429 += 1;
+          const backoff = e.retryAfterMs || Math.min(8000, 800 * n429) + Math.floor(Math.random() * 400);
+          slowUntil = Math.max(slowUntil, Date.now() + backoff);
+          a -= 1;
+          continue;
+        }
         if (e && (e.status === 403 || e.status === 429)) {
           // 403 = signed token expired mid-download: fail fast so the queue
           // re-resolves a fresh token and resumes from the saved parts.
-          // 429 = rate-limited: the queue's cooldown waits it out; hammering
-          // the same part 3x (x8 workers) just deepens the limit.
+          // A 429 that outlasted every backoff: let the queue's cooldown
+          // take over (the parts already saved are kept).
           if (e.status === 403) first403 = first403 || job;
           break;
         }
@@ -618,9 +652,9 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     throw lastErr || new Error('segment fetch failed');
   };
 
-  // Bounded concurrency (the CDN answers ffmpeg's default 10 fine; the config
-  // default of 8 stays under that while keeping bursts gentle).
-  const CONC = Math.max(1, Number(config.download.segmentConcurrency) || 8);
+  // Bounded concurrency. Measured live: 3 at once runs at ~5 MB/s with an
+  // occasional 429 (absorbed by the backoff above); more just collects 429s.
+  const CONC = Math.max(1, Number(config.download.segmentConcurrency) || 3);
   let idx = 0;
   let firstErr = null;
   const workers = Array.from({ length: Math.max(1, Math.min(CONC, jobs.length)) }, async () => {
@@ -1046,6 +1080,17 @@ async function downloadHls(detection, partPath, opts = {}) {
           onProgress,
           onLog
         });
+        // The master listed the audio as a separate track (#EXT-X-MEDIA with
+        // a URI): the video segments carry no sound, so fetch the chosen
+        // audio track too and mux it in as the second input.
+        if (detection.audioUrl) {
+          const audioDir = path.join(dir, 'audio');
+          fs.mkdirSync(audioDir, { recursive: true });
+          const audioText = (await plainHttpBuffer(detection.audioUrl, ua, 30000, { signal, deadlineMs: 60000 })).toString('utf8');
+          if (!/#EXTINF:/i.test(audioText)) throw new Error('audio track playlist is empty or not HLS');
+          if (onLog) onLog(`Fetching the separate ${detection.audioLabel || 'audio'} track.`);
+          detection._localAudioPlaylist = await localizePlainSegments(audioText, detection.audioUrl, audioDir, ua, { signal, onLog });
+        }
       } else {
         fs.mkdirSync(dir, { recursive: true });
         localPlaylist = path.join(dir, 'playlist.m3u8');
@@ -1203,23 +1248,32 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
     args.push('-fflags', '+genpts', '-avoid_negative_ts', 'make_zero');
     args.push('-i', ffmpegFileArg(inputUrl));
 
-    const audioPl = /mse-video\.m3u8$/i.test(String(inputUrl || ''))
-      ? String(inputUrl).replace(/mse-video\.m3u8$/i, 'mse-audio.m3u8')
-      : '';
-    const hasMseAudio = !!(audioPl && fs.existsSync(audioPl));
+    const audioPl = detection._localAudioPlaylist
+      ? ffmpegFileArg(detection._localAudioPlaylist)
+      : /mse-video\.m3u8$/i.test(String(inputUrl || ''))
+        ? String(inputUrl).replace(/mse-video\.m3u8$/i, 'mse-audio.m3u8')
+        : '';
+    const hasMseAudio = !!(audioPl && fs.existsSync(String(audioPl).replace(/^file:/, '')));
     if (hasMseAudio) {
       args.push('-f', 'hls', '-i', ffmpegFileArg(audioPl));
     }
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;
     if (hasExternalSub) args.push('-i', detection.subtitleUrl);
+    // Input order: 0 = video (+ muxed audio), [1 = separate audio], [next = subtitles].
+    const subInput = hasMseAudio ? 2 : 1;
     const fmp4Hls = /mse-(index|video)\.m3u8$/i.test(String(inputUrl || ''));
 
-    if (hasMseAudio) {
+    if (hasMseAudio && hasExternalSub) {
+      // Separate audio track AND an English subtitle track (SUB mode).
+      args.push('-map', '0:v?', '-map', '1:a?', '-map', `${subInput}:0`);
+      args.push('-c:v', 'copy', '-c:a', 'copy', '-c:s', 'mov_text', '-dn');
+      args.push('-metadata:s:s:0', 'language=eng', '-disposition:s:0', 'default');
+    } else if (hasMseAudio) {
       args.push('-map', '0:v?', '-map', '1:a?', '-c', 'copy', '-dn', '-sn');
     } else if (detection.embedSubs) {
       args.push('-map', '0:v:0', '-map', '0:a:0?');
-      args.push('-map', hasExternalSub ? '1:0' : '0:s:0?');
+      args.push('-map', hasExternalSub ? `${subInput}:0` : '0:s:0?');
       args.push('-c:v', 'copy', '-c:a', 'copy', '-c:s', 'mov_text');
       if (!fmp4Hls) args.push('-bsf:a', 'aac_adtstoasc');
       args.push('-metadata:s:s:0', 'language=eng', '-disposition:s:0', 'default');
