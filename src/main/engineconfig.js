@@ -89,17 +89,43 @@ const engineconfig = {
 
   get() {
     if (this._data) return this._data;
+    let text = null;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file(), 'utf8'));
-      this._data = Object.assign(defaults(), raw || {});
+      text = fs.readFileSync(this.file(), 'utf8');
+    } catch (e) {
+      text = null; // first run: no file yet
+    }
+    let raw = null;
+    if (text != null) {
+      try {
+        raw = JSON.parse(text);
+      } catch (e) {
+        // A typo from a hand edit must not silently reset everything: the old
+        // code fell through to "first run" and wrote a NEW apiKey (locking the
+        // plugin out) over the user's mappings and keys. Keep the broken file
+        // next to the new one so it can be fixed and restored.
+        const aside = `${this.file()}.corrupt-${Date.now()}`;
+        try {
+          fs.renameSync(this.file(), aside);
+        } catch (err) {
+          /* leave it */
+        }
+        console.error(
+          `[engine] engine.json is not valid JSON (${e.message}). It was moved to ${aside}; ` +
+            'the engine started with defaults and a NEW API key. Fix that file and copy it back to restore your settings.'
+        );
+      }
+    }
+    if (raw && typeof raw === 'object') {
+      this._data = Object.assign(defaults(), raw);
       // Keep the shape stable as new fields are added.
       this._data.jellyfin = Object.assign({ baseUrl: '', apiKey: '' }, (raw || {}).jellyfin || {});
       this._data.cloudflare = Object.assign({ solverUrl: '' }, (raw || {}).cloudflare || {});
       this._data.pathMappings = Array.isArray(this._data.pathMappings) ? this._data.pathMappings : [];
       this._data.riskSeries = Array.isArray(this._data.riskSeries) ? this._data.riskSeries.map((x) => String(x)) : [];
-    } catch (e) {
+    } else {
       this._data = defaults();
-      this._persist(); // first run: create the file with a generated key
+      this._persist(); // first run (or unreadable file): create it with a generated key
     }
     return this._data;
   },

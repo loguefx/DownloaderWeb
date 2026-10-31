@@ -1,10 +1,13 @@
 'use strict';
 
-const { session, webContents } = require('electron');
+const { app, session, webContents } = require('electron');
 const { EventEmitter } = require('events');
 const config = require('./config');
 
 const guestTabIds = new Set();
+
+// How long a destroyed window's detections are kept (see attach()).
+const FORGET_AFTER_MS = 30 * 60 * 1000;
 
 function windowOf(id) {
   try {
@@ -247,6 +250,36 @@ class Sniffer extends EventEmitter {
 
   attach() {
     this.attachSession(session.fromPartition(config.sessionPartition));
+    // Every episode opens fresh discovery/player windows with new ids, and
+    // nothing else drops their entries, so a long-running engine grew these
+    // maps with every episode. Forget a window's state once it is gone - late
+    // (a popup player can close while its parent is still resolving and
+    // reading the popup's detections; 30 min outlives the 20-min resolve cap).
+    if (app && typeof app.on === 'function' && !this._forgetHooked) {
+      this._forgetHooked = true;
+      app.on('web-contents-created', (_e, wc) => {
+        const id = wc.id;
+        wc.once('destroyed', () => {
+          const t = setTimeout(() => this._forget(id), FORGET_AFTER_MS);
+          if (t.unref) t.unref();
+        });
+      });
+    }
+  }
+
+  // Drop everything kept for one (destroyed) webContents id.
+  _forget(id) {
+    this.byTab.delete(id);
+    this._embeds.delete(id);
+    this._badHosts.delete(id);
+    this._dropped.delete(id);
+    guestTabIds.delete(id);
+    for (const [apiUrl, meta] of [...this._sourcesMeta]) {
+      if (meta.webContentsId !== id) continue;
+      this._sourcesMeta.delete(apiUrl);
+      this._sourcesFetched.delete(apiUrl);
+      this._sourcesFetched.delete(`${id}|${apiUrl}`);
+    }
   }
 
   // Linux gives each SFlix episode its own Chromium partition so five Vidfast

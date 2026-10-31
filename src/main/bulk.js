@@ -936,7 +936,8 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         baseUrl: entry.baseUrl,
         mode,
         library: opts.library || null,
-        minHeight: Number(opts.minHeight) || 0
+        minHeight: Number(opts.minHeight) || 0,
+        anime: !!opts.anime
       };
       const rec = {
         label,
@@ -1004,7 +1005,8 @@ async function queueOne(entry, onLog = () => {}) {
     baseUrl: url,
     mode,
     library: (entry && entry.library) || null,
-    minHeight: Number((entry && entry.minHeight) || 0)
+    minHeight: Number((entry && entry.minHeight) || 0),
+    anime: !!(entry && entry.anime)
   };
   const rec = {
     label,

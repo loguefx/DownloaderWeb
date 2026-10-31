@@ -335,6 +335,34 @@ function hlsWorkDir(partPath) {
   return path.join(os.tmpdir(), `wvd-hls-${id}`);
 }
 
+// Segment caches are kept after a failed attempt so the retry resumes. One
+// whose episode was then removed or gave up is never touched again, and on
+// Windows nothing empties %TEMP%. Remove caches idle for maxAgeMs (default 3
+// days - well past any retry or restart-resume). Returns the number removed.
+async function sweepStaleHlsCaches(maxAgeMs = 3 * 24 * 3600 * 1000, dir = os.tmpdir()) {
+  let names = [];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch (e) {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const n of names) {
+    if (!/^wvd-hls-[0-9a-f]{16}$/.test(n)) continue;
+    const p = path.join(dir, n);
+    try {
+      const st = await fs.promises.stat(p);
+      if (st.mtimeMs > cutoff) continue;
+      await fs.promises.rm(p, { recursive: true, force: true });
+      removed += 1;
+    } catch (e) {
+      // in use or already gone
+    }
+  }
+  return removed;
+}
+
 // ---- Plain-HTTP segment localizer (Vidsrc headless path) --------------------
 // Vidsrc's CDNs reject Electron session traffic (403 on cookies/Referer), so
 // their segments must be pulled with bare Node HTTP. Doing it here (instead of
@@ -741,6 +769,17 @@ function writeStreamWithProgress(readable, partPath, total, { signal, onProgress
     readable.pipe(out);
     out.on('finish', () => {
       disarmIdle();
+      if (signal) signal.removeEventListener('abort', onAbort);
+      // The server announced the size: anything short of it is a connection
+      // that closed early. A faststart MP4 cut off this way still probes with
+      // the full duration (its index is at the front), so verification alone
+      // would accept a file missing its ending.
+      if (total > 0 && received < total) {
+        out.close(() =>
+          reject(new Error(`download truncated: got ${received} of ${total} bytes (the server closed early); will retry`))
+        );
+        return;
+      }
       out.close(() => resolve({ bytes: received }));
     });
     out.on('error', (e) => {
@@ -1342,6 +1381,7 @@ function download(detection, partPath, opts) {
 
 module.exports = {
   download,
+  sweepStaleHlsCaches,
   downloadMp4,
   downloadHls,
   AbortError,

@@ -4,8 +4,9 @@
 // own module so bulk.js and dubselect.js can both create one without requiring
 // each other.
 
+const fs = require('fs');
 const path = require('path');
-const { BrowserWindow, screen, session, webContents } = require('electron');
+const { app, BrowserWindow, screen, session, webContents } = require('electron');
 const config = require('./config');
 const cfsolve = require('./cfsolve');
 
@@ -38,6 +39,52 @@ function hostOf(url) {
   } catch (e) {
     return '';
   }
+}
+
+// Single-use token-CDN partitions are named wvd-<ms>-<rand>. Shared per-host
+// jars (wvd-player-<host>, wvd-site) are kept: they carry Cloudflare clearance.
+const ONE_SHOT_PARTITION_DIR = /^wvd-\d{10,}-\d+$/;
+
+// A finished run's single-use partition: wipe its cache and storage now (each
+// one held up to ~300 MB of player cache) and forget it. The folder itself is
+// removed by sweepOneShotPartitions() at the next start, when no session can
+// still be using it.
+function releaseOwnerPartition(ownerId) {
+  const name = ownerPartitions.get(ownerId);
+  if (!name) return;
+  ownerPartitions.delete(ownerId);
+  try {
+    const ses = session.fromPartition(name);
+    ses.clearCache().catch(() => {});
+    ses.clearStorageData().catch(() => {});
+  } catch (e) {
+    // session already gone
+  }
+}
+
+// Delete single-use partition folders left by earlier runs (they piled up to
+// thousands of folders / ~100 GB). Runs in the background at startup, before
+// any of them could be in use. Returns a promise of { removed, failed }.
+async function sweepOneShotPartitions(userDataDir) {
+  const dir = path.join(userDataDir || app.getPath('userData'), 'Partitions');
+  let names = [];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch (e) {
+    return { removed: 0, failed: 0 };
+  }
+  let removed = 0;
+  let failed = 0;
+  for (const n of names) {
+    if (!ONE_SHOT_PARTITION_DIR.test(n)) continue;
+    try {
+      await fs.promises.rm(path.join(dir, n), { recursive: true, force: true });
+      removed += 1;
+    } catch (e) {
+      failed += 1;
+    }
+  }
+  return { removed, failed };
 }
 
 function playerPartition(ownerId, embedUrl = '') {
@@ -458,6 +505,7 @@ function destroyAll() {
       // ignore
     }
   }
+  for (const ownerId of [...ownerPartitions.keys()]) releaseOwnerPartition(ownerId);
 }
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -645,15 +693,17 @@ async function passCloudflare(win, _pageUrl, onLog = () => {}, opts = {}) {
 // Tears down the windows belonging to one discovery run only.
 function destroyOwned(ownerId) {
   const set = owned.get(ownerId);
-  if (!set) return;
-  for (const w of [...set]) {
-    try {
-      if (w && !w.isDestroyed()) w.destroy();
-    } catch (e) {
-      // ignore
+  if (set) {
+    for (const w of [...set]) {
+      try {
+        if (w && !w.isDestroyed()) w.destroy();
+      } catch (e) {
+        // ignore
+      }
     }
+    owned.delete(ownerId);
   }
-  owned.delete(ownerId);
+  releaseOwnerPartition(ownerId);
 }
 
 module.exports = {
@@ -661,6 +711,8 @@ module.exports = {
   mainBrowserWindow,
   destroyOwned,
   destroyAll,
+  sweepOneShotPartitions,
+  ONE_SHOT_PARTITION_DIR,
   idsSharingOwner,
   cloak,
   cloakAll,

@@ -15,6 +15,24 @@ const placer = require('./placer');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// The episodes of a season that have aired by `today` (YYYY-MM-DD). An
+// episode with no air date is TMDB's "announced, not scheduled yet" (the TBA
+// tail of a running season) - it counts as aired only when a LATER episode of
+// the same season has already aired. A season with no dates at all (old
+// shows with sparse data) is taken as fully aired, as before.
+function airedEpisodes(eps, today) {
+  const list = eps || [];
+  const dated = list.filter((e) => e && e.airDate);
+  if (!dated.length) return list.slice();
+  const airedDated = dated.filter((e) => String(e.airDate).slice(0, 10) <= today);
+  const lastAired = airedDated.reduce((m, e) => Math.max(m, Number(e.episode) || 0), 0);
+  return list.filter((e) => {
+    if (!e) return false;
+    if (e.airDate) return String(e.airDate).slice(0, 10) <= today;
+    return Number(e.episode) < lastAired;
+  });
+}
+
 // Wraps an injected log sink so every line is ALSO emitted on the queue
 // manager's 'log' event. In engine mode there is no Electron window to push
 // to, and the /api/log activity buffer listens to exactly that event (it is
@@ -42,8 +60,11 @@ class Watcher {
   start(onLog = () => {}) {
     this.onLog = withManagerLog(onLog);
     if (this.timer) return;
-    this.tick();
-    this.timer = setInterval(() => this.tick(), DAY_MS);
+    // Nothing awaits these passes: a failure outside the per-series guards
+    // must be logged, not left as an unhandled rejection.
+    const run = () => this.tick().catch((e) => this.onLog(`Watcher pass failed: ${(e && e.message) || e}`));
+    run();
+    this.timer = setInterval(run, DAY_MS);
   }
 
   stop() {
@@ -83,7 +104,17 @@ class Watcher {
   // season detection, even for sources that list no episodes like Vidsrc);
   // the old source-detection path remains as the fallback when a title has no
   // TMDB id or TMDB has no data for it. One bad series never stops the rest.
-  async checkSchedules() {
+  // A pass already running (daily tick vs. "Check now") is joined, not run
+  // twice side by side.
+  checkSchedules() {
+    if (this._schedulesRun) return this._schedulesRun;
+    this._schedulesRun = this._checkSchedules().finally(() => {
+      this._schedulesRun = null;
+    });
+    return this._schedulesRun;
+  }
+
+  async _checkSchedules() {
     const items = schedule.list();
     if (!items.length) return { checked: 0, newSeasons: 0 };
     const dryRun = this.watcherMode().dryRun;
@@ -317,7 +348,7 @@ class Watcher {
     }
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const aired = eps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
+    const aired = airedEpisodes(eps, today);
     const notAired = eps.length - aired.length;
     if (!aired.length) {
       this.onLog(`"${s.series}" season ${season}: no episodes have aired yet.`);
@@ -368,7 +399,7 @@ class Watcher {
       if (next) {
         const nextData = await tmdb.tmdbSeason(s.tmdb, next, { anime });
         const nextEps = (nextData && nextData.episodes) || [];
-        const nextAired = nextEps.filter((e) => !e.airDate || String(e.airDate).slice(0, 10) <= today);
+        const nextAired = airedEpisodes(nextEps, today);
         if (nextAired.length) {
           if (dryRun) {
             const r = await this.queueMissingEps(s, next, nextAired, urlMap, template, roots, true, sourceTotal);
@@ -496,11 +527,11 @@ class Watcher {
     if (
       r &&
       r.queued === 0 &&
-      s.season &&
+      Number(s.season) > 0 &&
       typeof s.template === 'string' &&
       urltemplate.hasSeasonToken(s.template)
     ) {
-      const next = s.season + 1;
+      const next = Number(s.season) + 1;
       try {
         const probeUrl = urltemplate.fill(s.template, { season: next, episode: 1 });
         if (probeUrl) {
@@ -563,7 +594,8 @@ class Watcher {
       const meta = { series: spec.series, season: spec.season, episode: spec.episode };
       for (const root of this.rootsFor(spec)) {
         try {
-          if (root && organizer.existingEpisodeFile(root, meta, '.mp4')) {
+          // Any video container (.mkv etc.), like every other presence check.
+          if (root && organizer.existingEpisodeFile(root, meta)) {
             onDisk = true;
             break;
           }
@@ -584,24 +616,41 @@ class Watcher {
       }
 
       pending.markChecked(spec.key);
-      manager.add({
+      // Same fields bulk.queueOne gives an item: the URL picks the site (and
+      // the headless Vidsrc path + per-site limits), and lets the item be
+      // restored after a restart.
+      const rec = {
         label: spec.label,
         series: spec.series,
         season: spec.season,
         episode: spec.episode,
+        mode: spec.mode || 'dub',
         outputRoot: spec.outputRoot,
         stopRunOnFail: false, // watcher must never nuke the queue
         library: spec.library || null,
         minHeight: spec.minHeight || 0,
+        anime: !!spec.anime,
+        url,
+        baseUrl: url,
+        template: spec.template || null,
         key: spec.key,
-        discover: bulk.makeDiscover(url, this.onLog, spec.mode || 'dub'),
+        skipSources: [],
         onUnavailable: () => pending.markChecked(spec.key),
         onDone: () => pending.remove(spec.key)
-      });
+      };
+      rec.discover = bulk.makeDiscover(url, this.onLog, rec.mode, () => ({
+        skipSources: rec.skipSources,
+        anime: rec.anime,
+        minHeight: rec.minHeight,
+        series: rec.series,
+        season: rec.season
+      }));
+      manager.add(rec);
     }
     return { checked: items.length };
   }
 }
 
 module.exports = new Watcher();
+module.exports.airedEpisodes = airedEpisodes;
 module.exports.withManagerLog = withManagerLog; // exposed for tests

@@ -25,6 +25,7 @@
 // walker simply continues with the existing (pre-fix) behavior.
 
 const engineconfig = require('../engineconfig');
+const jellyfin = require('../jellyfin');
 const findtitle = require('./findtitle');
 
 function normTitle(s) {
@@ -51,13 +52,9 @@ async function httpJson(url, headers = {}, timeoutMs = 8000) {
 // 2) Jellyfin catalog search. Prefer series/season/episode items (anime land
 // there) and read ProviderIds.Tmdb / ProviderIds.Imdb (Jellyfin's key names).
 async function fromJellyfin(title, onLog) {
-  const j = (engineconfig.get() || {}).jellyfin || {};
-  const base = String(j.baseUrl || '').trim().replace(/\/+$/, '');
-  const key = String(j.apiKey || '').trim();
+  const { base, key } = jellyfin.settings();
   if (!base || !key) return { tmdb: '', imdb: '' };
-  const url = `${base}/api/search?searchTerm=${encodeURIComponent(title)}&limit=25`;
-  const body = await httpJson(url, { 'X-Emby-Token': key, Accept: 'application/json' });
-  const items = (body && body.Items) || [];
+  const items = await jellyfin.searchItems(title, ['Series', 'Season', 'Episode', 'Movie']);
   const score = (it) =>
     it && (it.Type === 'Series' ? 3 : it.Type === 'Season' ? 2 : it.Type === 'Episode' ? 2 : it.Type === 'Movie' ? 1 : 0);
   let best = null;

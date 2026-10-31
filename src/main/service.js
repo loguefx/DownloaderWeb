@@ -58,8 +58,13 @@ function onLog(msg) {
 // of holding an SSE stream open through Jellyfin.
 const LOG_MAX = 1000;
 const recent = [];
+let lastLogTs = 0;
 manager.on('log', (msg) => {
-  recent.push({ ts: Date.now(), msg: String(msg == null ? '' : msg) });
+  // Strictly increasing timestamps: the plugin polls with since=<last ts it
+  // saw> and gets ts > since, so two lines in the same millisecond would lose
+  // the second one if the poll landed between them.
+  lastLogTs = Math.max(Date.now(), lastLogTs + 1);
+  recent.push({ ts: lastLogTs, msg: String(msg == null ? '' : msg) });
   if (recent.length > LOG_MAX) recent.splice(0, recent.length - LOG_MAX);
 });
 
@@ -80,8 +85,22 @@ function loadAccepted() {
   return {};
 }
 
-function saveAccepted(map) {
+const ACCEPTED_MAX = 2000;
+
+// Records one accepted jobId. Re-reads the file first, so two jobs finishing
+// together cannot overwrite each other's entry, and keeps the newest
+// ACCEPTED_MAX ids so the file does not grow forever.
+function recordAccepted(jobId, summary) {
   try {
+    const map = loadAccepted();
+    map[jobId] = summary;
+    const ids = Object.keys(map);
+    if (ids.length > ACCEPTED_MAX) {
+      ids
+        .sort((a, b) => String((map[a] && map[a].at) || '').localeCompare(String((map[b] && map[b].at) || '')))
+        .slice(0, ids.length - ACCEPTED_MAX)
+        .forEach((id) => delete map[id]);
+    }
     fs.mkdirSync(path.dirname(ACCEPTED_JOBS_FILE), { recursive: true });
     const tmp = ACCEPTED_JOBS_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(map, null, 2));
@@ -90,6 +109,11 @@ function saveAccepted(map) {
     // non-fatal
   }
 }
+
+// jobId -> promise of the submission still being processed. A resend that
+// arrives before the first copy finishes gets the same answer instead of
+// queueing everything a second time.
+const inFlightJobs = new Map();
 
 // ---- health ----
 
@@ -224,10 +248,25 @@ async function submitJob(job) {
 
   // Idempotency: the engine ignores a jobId it already accepted, so the
   // plugin (and an outbox retry after a lost reply) can safely resend.
-  const accepted = loadAccepted();
-  if (job.jobId && accepted[job.jobId]) {
-    return { accepted: true, duplicate: true, summary: accepted[job.jobId] };
+  const jobId = job.jobId ? String(job.jobId) : '';
+  if (jobId) {
+    const accepted = loadAccepted();
+    if (accepted[jobId]) return { accepted: true, duplicate: true, summary: accepted[jobId] };
+    const running = inFlightJobs.get(jobId);
+    if (running) {
+      const first = await running;
+      return { accepted: true, duplicate: true, summary: first.summary };
+    }
   }
+  const p = runJob(job);
+  if (jobId) {
+    inFlightJobs.set(jobId, p);
+    p.then(() => inFlightJobs.delete(jobId), () => inFlightJobs.delete(jobId));
+  }
+  return p;
+}
+
+async function runJob(job) {
 
   const url = String(job.sourceUrl).trim();
   const ref = episodeRefFromUrl(url);
@@ -238,7 +277,8 @@ async function submitJob(job) {
   // Quality floor for this job: an explicit job value wins, otherwise the
   // global minimum-quality setting (default 1080). 0 means "best available".
   const globalMin = engineconfig.get().minQuality != null ? Number(engineconfig.get().minQuality) : 1080;
-  const minHeight = job.minHeight != null ? Number(job.minHeight) : globalMin;
+  const jobMin = job.minHeight != null ? Number(job.minHeight) : NaN;
+  const minHeight = Number.isFinite(jobMin) && jobMin >= 0 ? jobMin : globalMin;
   const scope = job.scope || 'full';
   // Anime: the plugin sends anime:true and minHeight 0, so the source's own
   // resolution (often 720p) is accepted. TV/movies keep the 1080p floor.
@@ -290,7 +330,7 @@ async function submitJob(job) {
     // touch anything already on the drive.
     let urlMap = null;
     try {
-      const tmdbId = String((job.tmdb || '').trim()) || String(((ref && ref.tmdb) || '').trim());
+      const tmdbId = String(job.tmdb || '').trim() || String((ref && ref.tmdb) || '').trim();
       if (/^\d+$/.test(tmdbId)) {
         urlMap = await animelayout.urlMapFor(tmdbId, series, { anime: !!(job.anime) });
       }
@@ -428,10 +468,7 @@ async function submitJob(job) {
     scope: job.kind === 'movie' ? 'movie' : scope,
     at: new Date().toISOString()
   };
-  if (job.jobId) {
-    accepted[job.jobId] = summary;
-    saveAccepted(accepted);
-  }
+  if (job.jobId) recordAccepted(String(job.jobId), summary);
   return { accepted: true, duplicate: false, summary };
 }
 
@@ -592,10 +629,41 @@ async function settingsGetAsync() {
   return base;
 }
 
+const badSetting = (msg) => Object.assign(new Error(msg), { code: 'BAD_REQUEST', status: 400 });
+
+// Every field is checked BEFORE anything is saved: a bad port or bind address
+// saved here would stop the API from listening on the next start, and the
+// engine could then only be fixed by hand-editing engine.json.
 function settingsPut(patch) {
   const allowed = {};
-  for (const k of ['port', 'bind', 'stagingPath', 'reserveBytes', 'fillMode', 'pathMappings']) {
-    if (patch && patch[k] !== undefined) allowed[k] = patch[k];
+  if (patch && patch.port !== undefined) {
+    const port = Number(patch.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw badSetting('port must be a whole number from 1 to 65535');
+    allowed.port = port;
+  }
+  if (patch && patch.bind !== undefined) {
+    const bind = String(patch.bind || '').trim();
+    if (!bind || /\s/.test(bind)) throw badSetting('bind must be an IP address or host name (e.g. 0.0.0.0 or 127.0.0.1)');
+    allowed.bind = bind;
+  }
+  if (patch && patch.stagingPath !== undefined) {
+    if (patch.stagingPath != null && typeof patch.stagingPath !== 'string') throw badSetting('stagingPath must be a folder path');
+    allowed.stagingPath = String(patch.stagingPath || '').trim();
+  }
+  if (patch && patch.reserveBytes !== undefined) {
+    const rb = Number(patch.reserveBytes);
+    if (!Number.isFinite(rb) || rb < 0) throw badSetting('reserveBytes must be a number of bytes, 0 or more');
+    allowed.reserveBytes = Math.floor(rb);
+  }
+  if (patch && patch.fillMode !== undefined) {
+    if (!['order', 'spread'].includes(patch.fillMode)) throw badSetting('fillMode must be "order" or "spread"');
+    allowed.fillMode = patch.fillMode;
+  }
+  if (patch && patch.pathMappings !== undefined) {
+    const list = patch.pathMappings;
+    const ok = Array.isArray(list) && list.every((m) => m && typeof m.jellyfin === 'string' && typeof m.engine === 'string');
+    if (!ok) throw badSetting('pathMappings must be a list of { jellyfin, engine } folder pairs');
+    allowed.pathMappings = list.map((m) => ({ jellyfin: m.jellyfin.trim(), engine: m.engine.trim() }));
   }
   if (patch && patch.minQuality != null) {
     const q = Number(patch.minQuality);

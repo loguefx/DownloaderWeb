@@ -367,6 +367,24 @@ app.whenReady().then(() => {
     cb({ requestHeaders: details.requestHeaders });
   });
   sites.init(app.getPath('userData'));
+  // Single-use player partitions from earlier runs are dead weight (each kept
+  // up to ~300 MB of cache; thousands piled up). The listing is taken now,
+  // before any discovery run can create or use one, then deleted in the
+  // background so startup is not held up.
+  discoverwindow
+    .sweepOneShotPartitions(app.getPath('userData'))
+    .then(({ removed, failed }) => {
+      if (removed || failed) {
+        console.log(`[startup] removed ${removed} leftover player partition(s)` + (failed ? `, ${failed} could not be removed` : ''));
+      }
+    })
+    .catch(() => {});
+  require('./downloader')
+    .sweepStaleHlsCaches()
+    .then((n) => {
+      if (n) console.log(`[startup] removed ${n} stale HLS segment cache(s)`);
+    })
+    .catch(() => {});
   pending.load();
   schedule.load();
   sniffer.attach();
@@ -439,8 +457,11 @@ app.whenReady().then(() => {
     manager.clearPersistedQueue();
   }
 
-  // Start the daily watcher for pending dubbed episodes.
-  watcher.start(onLog);
+  // Start the daily watcher for pending dubbed episodes. No extra log sink:
+  // the watcher emits every line on the queue's 'log' event, which
+  // wireEvents() already forwards to the window - passing onLog here showed
+  // each watcher line twice.
+  watcher.start();
 
   // Engine mode: once the queue + watcher are up, open the HTTP API (Part 1).
   if (engineMode) {

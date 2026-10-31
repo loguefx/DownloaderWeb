@@ -40,6 +40,7 @@ const manager = require('./queue');
 const service = require('./service');
 const engineconfig = require('./engineconfig');
 const animelayout = require('./anime-layout');
+const jellyfin = require('./jellyfin');
 // TMDB client (cached, anime-layout-aware) - shared with the daily watcher.
 const { getTmdbKey, tmdbFetch, tmdbInfo, tmdbSeason } = require('./tmdb');
 
@@ -150,24 +151,11 @@ async function searchTitles(q, type) {
   const key = getTmdbKey();
   if (!key) {
     // Fallback: Jellyfin catalog search
-    const j = (engineconfig.get() || {}).jellyfin || {};
-    const base = String(j.baseUrl || '').trim().replace(/\/+$/, '');
-    const jkey = String(j.apiKey || '').trim();
-    if (!base || !jkey) return [];
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
+    const { base } = jellyfin.settings();
     try {
-      const url = `${base}/api/search?searchTerm=${encodeURIComponent(q)}&limit=25`;
-      const res = await fetch(url, { signal: ctrl.signal, headers: { 'X-Emby-Token': jkey, Accept: 'application/json' } });
-      if (!res.ok) return [];
-      const body = await res.json();
-      const items = (body && body.Items) || [];
+      const types = type === 'tv' ? ['Series'] : type === 'movie' ? ['Movie'] : ['Series', 'Movie'];
+      const items = await jellyfin.searchItems(q, types);
       return items
-        .filter((it) => {
-          if (type === 'tv' && it.Type !== 'Series' && it.Type !== 'Season') return false;
-          if (type === 'movie' && it.Type !== 'Movie') return false;
-          return true;
-        })
         .slice(0, 15)
         .map((it) => ({
           tmdb: String((it.ProviderIds && it.ProviderIds.Tmdb) || ''),
@@ -181,8 +169,6 @@ async function searchTitles(q, type) {
         }));
     } catch (e) {
       return [];
-    } finally {
-      clearTimeout(t);
     }
   }
 

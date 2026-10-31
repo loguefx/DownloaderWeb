@@ -23,9 +23,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
-const https = require('https');
 const engineconfig = require('./engineconfig');
+const jellyfin = require('./jellyfin');
 const organizer = require('./organizer');
 const library = require('./library');
 
@@ -49,6 +48,31 @@ function toEnginePath(p, mappings) {
     if (s === j) return m.e;
     const withSep = j.endsWith(path.sep) ? j : j + path.sep;
     if (s.startsWith(withSep)) return m.e + s.slice(j.length);
+  }
+  return p;
+}
+
+// Engine path -> the path JELLYFIN sees (the reverse of toEnginePath), using
+// the longest matching engine-side prefix. The result uses the Jellyfin side's
+// separator style ("/mnt/disk1/anime/Show" for a Linux server even when the
+// engine runs on Windows). Unmapped paths come back unchanged.
+function toJellyfinPath(p, mappings) {
+  const list = (mappings || engineconfig.get().pathMappings || []).filter(
+    (m) => m && m.jellyfin && m.engine
+  );
+  const s = normSep(p);
+  const sorted = list
+    .map((m) => ({ j: String(m.jellyfin), e: normSep(m.engine) }))
+    .sort((a, b) => b.e.length - a.e.length);
+  for (const m of sorted) {
+    const e = m.e.endsWith(path.sep) && m.e.length > 1 ? m.e.slice(0, -1) : m.e;
+    let rest = null;
+    if (s === e) rest = '';
+    else if (s.startsWith(e + path.sep)) rest = s.slice(e.length + 1);
+    if (rest == null) continue;
+    const jsep = m.j.includes('\\') && !m.j.includes('/') ? '\\' : '/';
+    const j = m.j.replace(/[\\/]+$/, '');
+    return rest ? j + jsep + rest.split(path.sep).join(jsep) : j;
   }
   return p;
 }
@@ -122,9 +146,11 @@ function pickFolder(lib, meta, sizeBytes, opts = {}) {
   // Existing series: the folder that already holds the show keeps it (Part 5.3).
   const existing = usable.find((f) => {
     try {
+      // existingSeriesFolder also finds "Show (2019)" / accent variants, so
+      // a show is not split across drives over a folder-name difference.
       return (
         organizer.existingEpisodeFile(f.folder, meta) != null ||
-        fs.existsSync(path.join(f.folder, organizer.sanitize(meta.series) || 'Video'))
+        organizer.existingSeriesFolder(f.folder, meta) != null
       );
     } catch (e) {
       return false;
@@ -291,59 +317,25 @@ async function placeItem(item, stagedPath) {
   return { placed: true, finalPath, folder: pick.folder };
 }
 
-// POST {jellyfin.baseUrl}/Library/Media/Updated with the file's folder path.
-// Jellyfin then scans that folder instead of the whole library. Failures are
-// logged, never fatal: the file is safely on disk either way.
-function refreshJellyfin(cfg, finalPath) {
-  const base = String((cfg && cfg.jellyfin && cfg.jellyfin.baseUrl) || '').trim();
-  const key = String((cfg && cfg.jellyfin && cfg.jellyfin.apiKey) || '').trim();
-  if (!base || !key) return Promise.resolve(false);
-  const folder = path.dirname(finalPath);
-  let u;
-  try {
-    u = new URL(base.replace(/\/+$/, '') + '/Library/Media/Updated');
-  } catch (e) {
-    return Promise.resolve(false);
+// Tell Jellyfin to scan just the new file's folder (POST
+// /Library/Media/Updated). The folder is translated to the path Jellyfin
+// sees. Failures are reported, never fatal: the file is safely on disk and
+// Jellyfin's own scheduled scan still finds it.
+async function refreshJellyfin(cfg, finalPath) {
+  const { base, key } = jellyfin.settings();
+  if (!base || !key) return false;
+  const folder = toJellyfinPath(path.dirname(finalPath), cfg && cfg.pathMappings);
+  const r = await jellyfin.notifyCreated(folder);
+  if (!r.ok) {
+    library.audit('jellyfin-refresh-failed', finalPath, r.reason || 'error', { folder });
   }
-  const mod = u.protocol === 'https:' ? https : http;
-  const body = JSON.stringify(folder);
-  return new Promise((resolve) => {
-    let req;
-    try {
-      req = mod.request(
-        u,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-            'X-Emby-Authorization': `MediaBrowser client="WebVideoDownloader", device="engine", token="${key}"`,
-            'X-EmbyClient': 'WebVideoDownloader',
-            'X-EmbyDeviceName': 'engine'
-          },
-          timeout: 15000
-        },
-        (res) => {
-          res.resume();
-          resolve(true);
-        }
-      );
-    } catch (e) {
-      return resolve(false);
-    }
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
-    req.write(body);
-    req.end();
-  });
+  return r.ok;
 }
 
 module.exports = {
   MARKER,
   toEnginePath,
+  toJellyfinPath,
   freeBytes,
   totalBytes,
   folderReady,
