@@ -616,7 +616,10 @@ async function handle(req, res, u) {
     // ---- AniDB: English-dub availability for a TMDB id (plugin + debugging) ----
     if (seg === 'anidb' && req.method === 'GET' && parts[2]) {
       const anidbMod = require('./anidb');
-      const r = await anidbMod.englishDubForTmdb(decodeURIComponent(parts[2])).catch((e) => ({
+      const r = await anidbMod.englishDubForTmdb(decodeURIComponent(parts[2]), {
+        title: String(u.searchParams.get('title') || ''),
+        season: parseInt(u.searchParams.get('season') || '1', 10) || 1
+      }).catch((e) => ({
         tmdbId: decodeURIComponent(parts[2]),
         available: null,
         reason: 'network',
@@ -634,7 +637,8 @@ async function handle(req, res, u) {
         // dryRun: watcher mode (report-only banner). riskSeries + frozen show
         // the opt-out safety net: which at-risk ids are set, and which of the
         // watched series are frozen and why (explicit vs policy).
-        // anidb: per-title English-dub status (best effort). Served from cache
+        // anidb: per-title English-dub status from the anime sources (field
+        // name kept for the plugin; best effort). Served from cache
         // when present; a missing entry triggers a ONE-SHOT background fetch
         // (deduped) so the next dashboard render shows it - the response
         // itself never blocks on the network.
@@ -651,8 +655,8 @@ async function handle(req, res, u) {
           if (!it0) return it0;
           const n = waitingBySeries.get(it0.series) || 0;
           const it = Object.assign({}, it0, { dubWaiting: n, dubState: n ? 'waiting' : 'watching' });
-          if (!it.tmdb) return it;
-          const hit = anidbMod.peek(it.tmdb);
+          if (!it.tmdb || !it.anime) return it;
+          const hit = anidbMod.peek(it.tmdb, it.season);
           if (hit) {
             return Object.assign({}, it, {
               anidb: {
@@ -665,7 +669,7 @@ async function handle(req, res, u) {
               }
             });
           }
-          anidbMod.ensure(it.tmdb).catch(() => {});
+          anidbMod.ensure(it.tmdb, { title: it.series, season: it.season }).catch(() => {});
           return it;
         });
         json(res, 200, {

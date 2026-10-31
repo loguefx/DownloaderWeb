@@ -1,45 +1,29 @@
 'use strict';
 
-// AniDB: "does an English-dubbed release of this anime exist?"
+// "Does this anime season have an English dub, and how much of it?" - the
+// watch list's "eng dub" pill and the daily log line.
 //
-// The user's watch list mixes shows with official English dubs (Crunchyroll,
-// Hulu...) and shows that will never get one. Vidsrc (and friends) serve ONE
-// fixed file per episode with no dub/sub toggle, so the only way to know what
-// to expect is to ask AniDB - the authoritative release database - whether any
-// release carries English audio.
+// Answered from the anime sources the downloads use (Aniwave's per-episode dub
+// flags, Anime Village's separate dub files): the number of English-dubbed
+// episodes of the season. The AniDB id is still looked up (Anime-Lists'
+// TMDB -> AniDB mapping) and shown, but AniDB itself is NOT asked: it has no
+// public API for release audio (the HTTP API needs a registered client and
+// lists no releases), so the old release query never once answered.
 //
-// Two upstreams:
-//   1. TMDB -> AniDB id: the Anime-Lists project mapping (anime-lists.json).
-//      Community-maintained, used by Kometa/Shoko; covers essentially every
-//      anime that also exists on TMDB. Fetched once and cached on disk.
-//   2. Releases: the AniDB API itself (api.anidb.net), public key "0".
-//      Port 564 (HTTPS) first, port 7 (HTTP) as fallback - residential
-//      networks block one or the other.
-//
-// Everything here is BEST-EFFORT: any network failure returns
-// { available: null, reason: 'network' } instead of throwing, because this
-// feeds a daily schedule check and a dashboard badge - never the download
-// path.
-
+// Everything here is BEST-EFFORT: a failure returns { available: null }
+// instead of throwing - this feeds a log line and a badge, never downloads.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
 const https = require('https');
 
-const MAPPING_URL =
-  'https://raw.githubusercontent.com/Fribb/anime-lists/main/anidb-anime-lists.json';
-// The repo publishes both a full and a reduced file; try the reduced one first
-// (same anidb_id/themoviedb_id pairs, far smaller).
+// Anime-Lists moved its files (the old main/anidb-anime-lists*.json paths
+// are 404 since 2026): the mini file has the same anidb_id/themoviedb_id pairs.
 const MAPPING_URLS = [
-  'https://raw.githubusercontent.com/Fribb/anime-lists/main/anidb-anime-lists-reduced.json',
-  MAPPING_URL
+  'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-mini.json',
+  'https://raw.githubusercontent.com/Fribb/anime-lists/master/anime-list-full.json'
 ];
-const ANIDB_BASES = [
-  { lib: https, host: 'api.anidb.net', port: 564, scheme: 'https:' },
-  { lib: http, host: 'api.anidb.net', port: 7, scheme: 'http:' }
-];
-const KEY = '0'; // public, rate-limited - fine for a daily per-series check
 
 const MAPPING_TTL_MS = 7 * 24 * 3600 * 1000; // refresh the id map weekly
 const RESULT_TTL_MS = 24 * 3600 * 1000; // a show's dub status is stable
@@ -81,22 +65,6 @@ function rawGet(url, timeoutMs) {
       reject(new Error('timeout'));
     });
   });
-}
-
-async function anidbApi(query, timeoutMs = 15000) {
-  // Try each base; the first that answers wins. Throws only if ALL fail.
-  let lastErr = null;
-  for (const b of ANIDB_BASES) {
-    try {
-      const u = `${b.scheme}//${b.host}:${b.port}/3/?${query}`;
-      const r = await rawGet(u, timeoutMs);
-      if (r.status === 200) return r.body.toString('utf8');
-      lastErr = new Error(`HTTP ${r.status}`);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error('AniDB unreachable');
 }
 
 function mappingFile() {
@@ -158,46 +126,35 @@ async function tmdbToAnidb(tmdbId) {
   return _mapping.map.get(String(tmdbId)) || null;
 }
 
-// Parse AniDB release XML -> [{ name, audio, date }] (best-effort, no deps).
-function parseReleases(xml) {
-  const out = [];
-  const blocks = String(xml || '').match(/<release\b[^>]*>[\s\S]*?<\/release>/g) || [];
-  for (const b of blocks) {
-    const pick = (tag) => {
-      const m = b.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
-      return m ? m[1].replace(/\s+/g, ' ').trim() : '';
-    };
-    out.push({ name: pick('name'), audio: pick('audio'), date: pick('date') });
-  }
-  return out;
-}
+const rkey = (tmdbId, season) => `${String(tmdbId || '').trim()}|${Number(season) > 0 ? Number(season) : 1}`;
 
-function cached(tmdbId) {
-  const r = _results.get(String(tmdbId));
+function cached(key) {
+  const r = _results.get(key);
   if (!r) return null;
   const ttl = r.available === null ? FAILURE_TTL_MS : RESULT_TTL_MS;
   return Date.now() - r.at < ttl ? r : null;
 }
 
-function remember(tmdbId, r) {
-  _results.set(String(tmdbId), r);
+function remember(key, r) {
+  _results.set(key, r);
   return r;
 }
 
 const _inflight = new Map(); // tmdbId -> promise (dedupe concurrent fetches)
 
 /** Non-mutating read: the cached result if fresh, else null. Never touches the network. */
-function peek(tmdbId) {
-  return cached(String(tmdbId || '').trim());
+function peek(tmdbId, season = 1) {
+  return cached(rkey(tmdbId, season));
 }
 
 /** Kicks off a fetch if none is cached; safe to call repeatedly (deduped). */
-function ensure(tmdbId) {
+function ensure(tmdbId, { title = '', season = 1 } = {}) {
   const id = String(tmdbId || '').trim();
   if (!id) return Promise.resolve({ tmdbId: null, available: null, reason: 'no-tmdb-id', at: Date.now() });
-  if (peek(id)) return Promise.resolve(peek(id));
-  if (!_inflight.has(id)) {
-    const p = englishDubForTmdb(id)
+  const k = rkey(id, season);
+  if (peek(id, season)) return Promise.resolve(peek(id, season));
+  if (!_inflight.has(k)) {
+    const p = englishDubForTmdb(id, { title, season })
       .catch((e) => ({
         tmdbId: id,
         anidbId: null,
@@ -206,86 +163,64 @@ function ensure(tmdbId) {
         error: String((e && e.message) || e),
         at: Date.now()
       }))
-      .finally(() => _inflight.delete(id));
-    _inflight.set(id, p);
+      .finally(() => _inflight.delete(k));
+    _inflight.set(k, p);
   }
-  return _inflight.get(id);
+  return _inflight.get(k);
 }
 
-/**
- * English-dub availability for a TMDB id.
- *   available: true  - at least one AniDB release carries English audio
- *   available: false - on AniDB, but no release has English audio
- *   available: null  - unknown (not in the mapping, or network failure)
- */
-async function englishDubForTmdb(tmdbId, { force = false } = {}) {
-  const id = String(tmdbId || '').trim();
-  if (!id) return { tmdbId: null, available: null, reason: 'no-tmdb-id', at: Date.now() };
-  const hit = cached(id);
-  if (hit && !force) return hit;
+// Injectable for tests: (title, season) -> { aniwave: Map|null, animevillage: Map|null }
+let sources = async (title, season) => {
+  const dubstatus = require('./dubstatus');
+  const [aniwave, animevillage] = await Promise.all([
+    dubstatus.aniwaveDubMap(title, season).catch(() => null),
+    require('./sites/animevillage_api').dubMap(title, season).catch(() => null)
+  ]);
+  return { aniwave, animevillage };
+};
 
-  let anidbId = null;
+/**
+ * English-dub status of one anime season, from the anime sources.
+ *   available: true  - at least one episode is English-dubbed
+ *                      (englishDubReleases = dubbed episodes, totalReleases = episodes)
+ *   available: false - Anime Village answered and no episode is dubbed on either source
+ *   available: null  - unknown (no title, or Anime Village unreachable)
+ */
+async function englishDubForTmdb(tmdbId, { title = '', season = 1, force = false } = {}) {
+  const id = String(tmdbId || '').trim();
+  const k = rkey(id, season);
+  const hit = cached(k);
+  if (hit && !force) return hit;
+  // The AniDB id is informational only: looked up alongside, never waited
+  // on alone, and a failure leaves it null.
+  const idP = id ? tmdbToAnidb(id).catch(() => null) : Promise.resolve(null);
+  if (!String(title || '').trim()) {
+    return { tmdbId: id || null, anidbId: await idP, englishDubReleases: 0, totalReleases: 0, sample: '', at: Date.now(), available: null, reason: 'no-title' };
+  }
+  let src = { aniwave: null, animevillage: null };
   try {
-    anidbId = await tmdbToAnidb(id);
+    src = await sources(String(title).trim(), Number(season) > 0 ? Number(season) : 1);
   } catch (e) {
-    // Mapping fetch failed: if we have a STALE mapping, use it; otherwise
-    // report unknown (network), not "no dub".
-    if (!_mapping) {
-      return remember(id, {
-        tmdbId: id,
-        anidbId: null,
-        available: null,
-        englishDubReleases: 0,
-        totalReleases: 0,
-        sample: '',
-        reason: 'network',
-        error: String((e && e.message) || e),
-        at: Date.now()
-      });
-    }
+    src = { aniwave: null, animevillage: null };
   }
-  if (!anidbId) {
-    return remember(id, {
-      tmdbId: id,
-      anidbId: null,
-      available: null,
-      englishDubReleases: 0,
-      totalReleases: 0,
-      sample: '',
-      reason: 'not-on-anidb',
-      at: Date.now()
-    });
+  const base = { tmdbId: id || null, anidbId: await idP, englishDubReleases: 0, totalReleases: 0, sample: '', at: Date.now() };
+  const eps = new Map();
+  for (const m of [src.aniwave, src.animevillage]) {
+    if (!m) continue;
+    for (const [ep, d] of m) eps.set(ep, eps.get(ep) === true || d === true);
   }
-  let xml = '';
-  try {
-    xml = await anidbApi(
-      `req=getanime&sub=release&file=anidb.all&anime=${anidbId}&key=${KEY}`
-    );
-  } catch (e) {
-    return remember(id, {
-      tmdbId: id,
-      anidbId,
-      available: null,
-      englishDubReleases: 0,
-      totalReleases: 0,
-      sample: '',
-      reason: 'network',
-      error: String((e && e.message) || e),
-      at: Date.now()
-    });
-  }
-  const releases = parseReleases(xml);
-  const english = releases.filter((r) => /\benglish\b/i.test(r.audio || ''));
-  return remember(id, {
-    tmdbId: id,
-    anidbId,
-    available: english.length > 0,
-    englishDubReleases: english.length,
-    totalReleases: releases.length,
-    sample: english[0] ? english[0].name : '',
-    reason: 'ok',
-    at: Date.now()
-  });
+  const dubbed = [...eps.values()].filter(Boolean).length;
+  const via = [src.aniwave && [...src.aniwave.values()].some(Boolean) ? 'Aniwave' : '', src.animevillage && [...src.animevillage.values()].some(Boolean) ? 'Anime Village' : ''].filter(Boolean).join(' + ');
+  let available = null;
+  if (dubbed > 0) available = true;
+  else if (src.animevillage) available = false;
+  return remember(k, Object.assign(base, {
+    available,
+    englishDubReleases: dubbed,
+    totalReleases: eps.size,
+    sample: via,
+    reason: available === null ? 'unreachable' : 'ok'
+  }));
 }
 
 module.exports = {
@@ -293,7 +228,9 @@ module.exports = {
   peek,
   ensure,
   // Exported for tests:
-  parseReleases,
+  _setSourcesForTests(fn) {
+    sources = fn;
+  },
   _setMappingForTests(m) {
     _mapping = { at: Date.now(), map: m };
   },
@@ -304,9 +241,5 @@ module.exports = {
   _setMappingUrlsForTests(urls) {
     MAPPING_URLS.length = 0;
     (urls || []).forEach((u) => MAPPING_URLS.push(u));
-  },
-  _setAnidbBasesForTests(bases) {
-    ANIDB_BASES.length = 0;
-    (bases || []).forEach((b) => ANIDB_BASES.push(b));
   }
 };

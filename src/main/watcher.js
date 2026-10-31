@@ -367,30 +367,22 @@ class Watcher {
         (notAired ? `, ${notAired} not out yet (skipped until they air)` : '') + '.'
     );
 
-    // Dub availability (AniDB) - the user chose a dub/sub mode when queueing,
-    // but source sites like Vidsrc have NO dub toggle: one fixed file per
-    // episode. So the daily check states plainly whether an English-dubbed
-    // release of this series even EXISTS, so a "dub" download that turns out
-    // to be Japanese audio is never a surprise. Best-effort: a network
+    // English-dub status of the season on the anime sources (the same ones
+    // the downloads use), stated plainly in the daily log. Best-effort: a
     // failure must never break the schedule check.
-    if (anime && s.tmdb) {
+    if (anime) {
       let d = null;
       try {
-        d = await anidb.englishDubForTmdb(s.tmdb);
+        d = await anidb.englishDubForTmdb(s.tmdb, { title: s.series, season });
       } catch (e) {
-        d = { available: null, reason: 'network' };
+        d = { available: null };
       }
       if (d && d.available === true) {
-        this.onLog(
-          `"${s.series}" AniDB: English dub EXISTS - ${d.englishDubReleases} release(s)` +
-            (d.sample ? ` (e.g. ${String(d.sample).slice(0, 90)})` : '') + '.'
-        );
+        this.onLog(`"${s.series}" season ${season}: English dub on ${d.sample || 'the anime sources'} - ${d.englishDubReleases} of ${d.totalReleases} episode(s) dubbed.`);
       } else if (d && d.available === false) {
-        this.onLog(
-          `"${s.series}" AniDB: no English-dub release found (${d.totalReleases} release(s) total) - expect Japanese/sub audio from source sites.`
-        );
+        this.onLog(`"${s.series}" season ${season}: no English dub on Aniwave or Anime Village yet (${d.totalReleases} episode(s) listed).`);
       } else {
-        this.onLog(`"${s.series}" AniDB: English-dub status unknown (${(d && d.reason) || 'lookup failed'}) - not counted against the show.`);
+        this.onLog(`"${s.series}" season ${season}: English-dub status unknown (anime sources unreachable) - checked again next pass.`);
       }
     }
 
@@ -651,7 +643,10 @@ class Watcher {
   // ---- waiting-for-dub list -------------------------------------------------
 
   async checkNow() {
-    const items = pending.list();
+    // In episode order, so released episodes download E1, E2, ... (the list
+    // keeps insertion order: re-parked E4/E5 used to come last).
+    const items = pending.list().slice().sort((a, b) =>
+      String(a.series).localeCompare(String(b.series)) || (Number(a.season) || 0) - (Number(b.season) || 0) || (Number(a.episode) || 0) - (Number(b.episode) || 0));
     if (!items.length) return { checked: 0 };
     const dubstatus = require('./dubstatus');
     const dubTally = new Map(); // series|season -> { released, waiting }
@@ -763,12 +758,22 @@ class Watcher {
           skipSourceSite: !!live._wrongAudio
         };
       });
-      manager.add(rec);
+      // null = the same episode is already in the queue (e.g. restored after
+      // a restart): not queued twice, and not reported as newly queued.
+      if (manager.add(rec) == null) {
+        const t = dubTally.get(`${spec.series}|${spec.season}`);
+        if (t && t.released.includes(spec.episode)) {
+          t.released = t.released.filter((e) => e !== spec.episode);
+          t.inQueue = (t.inQueue || 0) + 1;
+        }
+      }
     }
     for (const t of dubTally.values()) {
       const out = t.released.length
-        ? `English dub out for E${t.released.join(', E')} - queued`
-        : 'no new English-dubbed episodes';
+        ? `English dub out for E${t.released.join(', E')} - queued` + (t.inQueue ? ` (${t.inQueue} more already in the queue)` : '')
+        : t.inQueue
+          ? `${t.inQueue} dubbed episode(s) already in the queue`
+          : 'no new English-dubbed episodes';
       this.onLog(`"${t.series}" season ${t.season}: ${out}; ${t.waiting} episode(s) still waiting for their dub.`);
     }
     return { checked: items.length };
