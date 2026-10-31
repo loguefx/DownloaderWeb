@@ -10,6 +10,29 @@ const findtitle = require('./sites/findtitle');
 const { createDiscoverWindow, cloakForPlayback, presentChallenge } = require('./discoverwindow');
 const hlscheck = require('./hlscheck');
 const cfsolve = require('./cfsolve');
+const {
+  dubVariantUrl,
+  isBrokenEmbed,
+  isOffsiteEmbed,
+  embedMatchesClick,
+  NESTED_PLAYER_RE,
+  NESTED_AD_RE,
+  absolutizeUrl,
+  pageKey,
+  isRealPlayerPage,
+  pickNestedPlayerUrl,
+  isHopShell,
+  isVidapiShell,
+  vidapiDownstream,
+  urlsHaveInPagePlayer,
+  rankSource,
+  orderTryList,
+  bestMasterVariant
+} = require('./dub/urls');
+const {
+  scanScript,
+  clickScript
+} = require('./dub/page-scripts');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -62,19 +85,6 @@ async function evalJs(wc, code, timeoutMs = EVAL_MS) {
   } catch (e) {
     return null;
   }
-}
-
-// Builds the DUB variant of a detected (sub) stream URL by inserting the site's
-// audio marker into the slug segment that precedes the episode number, e.g.
-//   ".../seihantai-na-kimi-to-boku/3/master.m3u8"
-//     -> ".../seihantai-na-kimi-to-boku-dub/3/master.m3u8"
-// Returns null if the URL doesn't fit the pattern or already contains the marker.
-function dubVariantUrl(url, marker) {
-  if (!url || !marker) return null;
-  if (url.toLowerCase().includes(marker.toLowerCase())) return url;
-  const re = /\/([a-z0-9][a-z0-9-]*?)\/(\d+)\//i;
-  if (!re.test(url)) return null;
-  return url.replace(re, (m, slug, ep) => `/${slug}${marker}/${ep}/`);
 }
 
 // Verifies a *constructed* stream URL (e.g. slug + "-dub") actually exists
@@ -158,157 +168,6 @@ function urlIsPlayable(url, headers, redirectsLeft = 3) {
   });
 }
 
-// In-page scan. Finds the DUB and SUB toggles, then classifies each provider
-// button (Vidplay/BYFMS/DGHG/...) into the DUB row or the SUB row by vertical
-// proximity to each toggle. This is what prevents grabbing a SUB stream when we
-// asked for DUB (the page shows both rows at once). Explicit CSS selectors from
-// the site profile take priority, with heuristics as fallback.
-function scanScript(opts) {
-  return `(() => {
-    const norm = (s) => (s || '').trim().toLowerCase();
-    const dubLabels = ${JSON.stringify(opts.dubLabelText || [])};
-    const subLabels = ${JSON.stringify(opts.subLabelText || [])};
-    const known = ${JSON.stringify(opts.knownSourceLabels || [])};
-    const dubSelector = ${JSON.stringify(opts.dubSelector || '')};
-    const subSelector = ${JSON.stringify(opts.subSelector || '')};
-    const sourceSelector = ${JSON.stringify(opts.sourceSelector || '')};
-
-    const visible = (el) => {
-      if (!el) return false;
-      const r = el.getBoundingClientRect();
-      const st = getComputedStyle(el);
-      return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
-    };
-    const text = (el) => norm(el.textContent).slice(0, 40);
-    const matchesAny = (t, arr) => arr.some((w) => t === w || t.includes(w));
-    const q = (sel) => { try { return Array.from(document.querySelectorAll(sel)); } catch (e) { return []; } };
-    const top = (el) => el.getBoundingClientRect().top;
-    const left = (el) => el.getBoundingClientRect().left;
-    const clickable = Array.from(document.querySelectorAll('button, a, li, div, span, [role="button"], [onclick]'));
-
-    // A row label is an element whose text - ignoring emoji/icons - is exactly
-    // "sub"/"dub". This avoids matching a big container or a "Sub & Dub" filter
-    // dropdown that merely contains the word.
-    const isLabel = (el, labels) => {
-      const t = text(el).replace(/[^a-z ]/g, '').replace(/\\s+/g, ' ').trim();
-      return labels.some((w) => t === w);
-    };
-    // The SUB / DUB row labels can be ANY element (span, b, label, div...), not
-    // just clickable ones, so search all elements for one whose own short text is
-    // exactly "sub"/"dub" (icons/emoji stripped).
-    const allEls = Array.from(document.querySelectorAll('*'));
-    const labelsOf = (words) => allEls.filter((el) => isLabel(el, words) && visible(el) && !matchesAny(text(el), known));
-    let dub = dubSelector ? q(dubSelector).find(visible) : labelsOf(dubLabels)[0];
-    let sub = subSelector ? q(subSelector).find(visible) : labelsOf(subLabels)[0];
-
-    // The audio a button belongs to, read from an explicit data-type="sub|dub"
-    // on the button or an ancestor (HiAnime-style sites like enma.lol tag every
-    // .server-item this way). This is authoritative when present - no geometry.
-    const dataMode = (el) => {
-      const h = el.closest ? el.closest('[data-type]') : null;
-      const v = h ? norm(h.getAttribute('data-type')) : '';
-      return v === 'sub' || v === 'dub' ? v : '';
-    };
-
-    // Provider/server candidates.
-    let cands = [];
-    if (sourceSelector) cands = q(sourceSelector).filter(visible);
-    if (!cands.length) {
-      cands = clickable.filter((el) => visible(el) && (
-        matchesAny(text(el), known) || el.dataset.provider || el.dataset.server ||
-        el.dataset.serverId || el.dataset.linkId || dataMode(el)
-      ));
-    }
-    // Drop the toggles themselves and pure label chips.
-    cands = cands.filter((el) => {
-      const t = text(el);
-      const isLabelOnly = (matchesAny(t, dubLabels) || matchesAny(t, subLabels)) && !matchesAny(t, known);
-      return !isLabelOnly;
-    });
-    // Keep only the leaf-most candidates: drop any wrapper that contains another
-    // candidate (e.g. the whole "sub/dub" block or a row container), which would
-    // otherwise be misread as an extra source button.
-    cands = cands.filter((el) => !cands.some((o) => o !== el && el.contains(o)));
-    // A real provider button has short text (~one known label), not the
-    // concatenated text of a container.
-    cands = cands.filter((el) => text(el).replace(/\\s+/g, '').length <= 24);
-
-    // Classify each candidate button by the SUB/DUB label whose ROW (vertical
-    // center) is nearest. The page shows "SUB <servers>" and "DUB <servers>" as
-    // two horizontal rows, so the closest label vertically is the right audio.
-    const midY = (el) => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
-    const subY = sub ? midY(sub) : null;
-    const dubY = dub ? midY(dub) : null;
-    let dubSources = [], subSources = [];
-    for (const el of cands) {
-      const y = midY(el);
-      const dm = dataMode(el);
-      let isSubRow;
-      if (dm) isSubRow = dm === 'sub'; // explicit data-type wins over geometry
-      else if (subY != null && dubY != null) isSubRow = Math.abs(y - subY) < Math.abs(y - dubY);
-      else if (dubY != null) isSubRow = Math.abs(y - dubY) > 80; // far from the dub row -> sub
-      else if (subY != null) isSubRow = Math.abs(y - subY) < 80; // near the sub row -> sub
-      else isSubRow = false; // no labels found -> assume dub (we still try every button)
-      (isSubRow ? subSources : dubSources).push(el);
-    }
-
-    // Sort row-by-row (top), then left-to-right. Dedup by text+row so the SAME
-    // provider in TWO different rows (e.g. a sub-row Vidplay AND a dub-row Vidplay)
-    // are BOTH kept and tried - only a genuinely duplicated element at the same
-    // spot is dropped. This is what lets us fall through to servers 2 and 3 (and
-    // the other row) when the first one is broken.
-    const order = (arr) => arr.sort((a, b) => top(a) - top(b) || left(a) - left(b));
-    const dedup = (arr) => {
-      const seen = new Set();
-      return arr.filter((el) => {
-        const k = text(el) + '@' + Math.round(top(el) / 8);
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
-    };
-    dubSources = dedup(order(dubSources));
-    subSources = dedup(order(subSources));
-
-    dubSources.forEach((el, i) => el.setAttribute('data-wvd-source', 'dub-' + i));
-    subSources.forEach((el, i) => el.setAttribute('data-wvd-source', 'sub-' + i));
-    if (dub) dub.setAttribute('data-wvd-toggle', 'dub');
-    if (sub) sub.setAttribute('data-wvd-toggle', 'sub');
-
-    return {
-      hasDub: !!dub,
-      hasSub: !!sub,
-      dubSources: dubSources.map((el, i) => ({
-        index: i,
-        label: text(el),
-        playerUrl: (el.getAttribute && el.getAttribute('data-player-url')) || ''
-      })),
-      subSources: subSources.map((el, i) => ({
-        index: i,
-        label: text(el),
-        playerUrl: (el.getAttribute && el.getAttribute('data-player-url')) || ''
-      }))
-    };
-  })()`;
-}
-
-function clickScript(selector) {
-  return `(() => {
-    const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) return null;
-    el.scrollIntoView({ block: 'center' });
-    const r = el.getBoundingClientRect();
-    el.click();
-    const host = el.closest('[data-link-id]') || el;
-    return {
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
-      linkId: (host.getAttribute && host.getAttribute('data-link-id')) || '',
-      playerUrl: (el.getAttribute && el.getAttribute('data-player-url')) || ''
-    };
-  })()`;
-}
-
 async function clickSource(wc, selector) {
   const pt = await evalJs(wc, clickScript(selector), EVAL_MS);
   if (!pt) return null;
@@ -329,25 +188,6 @@ async function iframeSrcs(wc) {
   )) || [];
 }
 
-function isBrokenEmbed(src) {
-  return /https?:\/\/undefined\b/i.test(src || '');
-}
-
-// A real player embed lives on another host. Same-origin iframe src (SFlix
-// parks #main-player on the episode URL until Play is clicked) is a placeholder
-// and must not count as "the player loaded".
-function isOffsiteEmbed(src, originHost) {
-  if (!src || !/^https?:\/\//i.test(src) || isBrokenEmbed(src)) return false;
-  try {
-    const host = new URL(src).hostname;
-    if (!host) return false;
-    if (originHost && host === originHost) return false;
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
 async function setIframeSrc(wc, url) {
   return (
     (await evalJs(
@@ -366,21 +206,6 @@ async function setIframeSrc(wc, url) {
       EVAL_MS
     )) || false
   );
-}
-
-function embedMatchesClick(embed, afterTs, linkId) {
-  if (!embed || !embed.url) return false;
-  if (linkId) {
-    const api = String(embed.apiUrl || '');
-    const m = api.match(/[?&]id=([^&]+)/i);
-    if (!m) return false;
-    try {
-      return decodeURIComponent(m[1]) === String(linkId);
-    } catch (e) {
-      return m[1] === String(linkId);
-    }
-  }
-  return !afterTs || (embed.ts && embed.ts >= afterTs - 80);
 }
 
 async function waitForEmbed(id, afterTs, linkId, timeoutMs = EMBED_WAIT_MS) {
@@ -469,62 +294,6 @@ async function clickPlayerArea(wc) {
   }
 }
 
-const NESTED_PLAYER_RE =
-  /embedflix|videoplayback\.php|nextgencloudfabric|cloudfabric|videm\.xyz|filemoon|mixdrop|streamwish|megacloud|rabbitstream|vidcloud|upcloud|vidfast|vidplay|mcloud|streamtape|doodstream|filelions|voe\.sx|upstream|vtube|playerwish|vidsrc|2embed/i;
-const NESTED_AD_RE =
-  /youtube|youtu\.be|google|gstatic|facebook|doubleclick|adsco|adx|cloudflareinsights|googlesyndication|imasdk|adnxs|taboola|outbrain|challenges\.cloudflare/i;
-
-function absolutizeUrl(u, base) {
-  const s = String(u || '').trim();
-  if (!s || /javascript:/i.test(s)) return '';
-  try {
-    return new URL(s, base || 'https://embedflix.win/').href;
-  } catch (e) {
-    return s;
-  }
-}
-
-function pageKey(url) {
-  try {
-    const u = new URL(url);
-    return `${u.origin}${u.pathname.replace(/\/$/, '')}`;
-  } catch (e) {
-    return String(url || '');
-  }
-}
-
-function isRealPlayerPage(url) {
-  const u = String(url || '');
-  return /videoplayback\.php|player\.embedflix|nextgencloud|cloudfabric/i.test(u);
-}
-
-function pickNestedPlayerUrl(urls, currentUrl) {
-  // videoplayback.php / player.embedflix already host the working iframe
-  // (nextgencloudfabric 404s as a top-level page). Hopping one more time
-  // dropped the referrer chain and Linux never saw /_stream.
-  if (isRealPlayerPage(currentUrl)) return null;
-  const here = pageKey(currentUrl);
-  const httpsUrls = (urls || [])
-    .map((u) => absolutizeUrl(u, currentUrl))
-    .filter((u) => {
-      if (!/^https?:/i.test(u) || /nontongo/i.test(u)) return false;
-      if (/nextgencloudfabric|cloudfabric/i.test(u)) return false;
-      return pageKey(u) !== here;
-    });
-  const ranked = [/videoplayback\.php/i, /player\.embedflix/i, NESTED_PLAYER_RE];
-  for (const re of ranked) {
-    const hit = httpsUrls.find((u) => re.test(u) && !NESTED_AD_RE.test(u));
-    if (hit) return hit;
-  }
-  return httpsUrls.find((u) => !NESTED_AD_RE.test(u));
-}
-
-function isHopShell(url) {
-  const u = String(url || '');
-  if (isRealPlayerPage(u)) return false;
-  return /nontongo/i.test(u) || /embedflix\.win\/embed\//i.test(u);
-}
-
 // Vidapi refuses to play as a top-level page (it paints "404 — Page Not Found"
 // when window === window.top). The real players are the server-button data-src
 // values; the stream.vidapi.xyz/*-tv pages only rewrite those into another embed.
@@ -535,47 +304,6 @@ function pagePlaylistRejected(ownerId) {
   } catch (e) {
     return false;
   }
-}
-
-function isVidapiShell(url) {
-  try {
-    const host = new URL(String(url || '')).hostname.replace(/^www\./i, '');
-    return host === 'vidapi.xyz';
-  } catch (e) {
-    return false;
-  }
-}
-
-function vidapiDownstream(dataSrc) {
-  let u;
-  try {
-    u = new URL(String(dataSrc || ''));
-  } catch (e) {
-    return '';
-  }
-  const host = u.hostname.replace(/^www\./i, '');
-  if (host !== 'stream.vidapi.xyz') {
-    if (/embedmaster\.|embdmstrplayer|multiembed\.|streamingnow\.mov|nontongo/i.test(String(dataSrc || ''))) {
-      return '';
-    }
-    return /^https?:/i.test(String(dataSrc || '')) ? String(dataSrc) : '';
-  }
-  const tmdb = u.searchParams.get('tmdb') || '';
-  const season = u.searchParams.get('s') || '';
-  const episode = u.searchParams.get('e') || '';
-  if (!/^\d+$/.test(tmdb)) return '';
-  const id = season && episode ? `${tmdb}/${season}/${episode}` : tmdb;
-  const routes = [
-    [/\/xps-tv\b/i, `https://videm.xyz/embed/tv/${id}`],
-    [/\/vnest-tv\b/i, `https://cineby.hair/tv/${id}`],
-    [/\/vcr-tv\b/i, `https://vidcore.net/tv/${id}`],
-    [/\/vesy-tv\b/i, `https://player.videasy.to/tv/${id}`],
-    [/\/vsrcc-tv\b/i, `https://vidsrc.cc/v2/embed/tv/${id}`],
-    [/\/vsrc-tv\b/i, `https://vsembed.ru/embed/tv/${id}`],
-    [/\/vpls-tv\b/i, `https://peachify.top/embed/tv/${id}`]
-  ];
-  const hit = routes.find(([re]) => re.test(u.pathname));
-  return hit ? hit[1] : '';
 }
 
 async function vidapiPlayerHops(wc) {
@@ -612,12 +340,6 @@ async function vidapiPlayerHops(wc) {
   // Videm first, then the other Vidapi players. A player under 1080p is
   // skipped by the caller so the next one still gets a chance.
   return hops.slice(0, 4);
-}
-
-function urlsHaveInPagePlayer(urls, base) {
-  return (urls || []).some((u) =>
-    /nextgencloudfabric|cloudfabric|player\.embedflix|videoplayback\.php/i.test(absolutizeUrl(u, base))
-  );
 }
 
 function collectNestedUrls(wc) {
@@ -816,19 +538,6 @@ async function waitOutCloudflare(wc, onLog, ms = 300000, win = null) {
   return !settled;
 }
 
-function rankSource(src, dub) {
-  const u = `${src.playerUrl || ''} ${src.label || ''}`;
-  const prefer = dub.preferEmbedHosts || [];
-  const defer = dub.deferEmbedHosts || [];
-  if (prefer.some((re) => re && re.test(u))) return 0;
-  if (defer.some((re) => re && re.test(u))) return 2;
-  return 1;
-}
-
-function orderTryList(tryList, dub) {
-  return [...tryList].sort((a, b) => rankSource(a, dub) - rankSource(b, dub));
-}
-
 // ---- Vidspark deterministic source API (SFlix server 1's nested player) ----
 //
 // cdn.vidspark.to's page JS is flaky inside our windows (its playlist fetch
@@ -883,36 +592,6 @@ async function vidsparkGet(url, headers = {}, maxBytes = 8 * 1024 * 1024, timeou
     req.on('timeout', () => req.destroy(new Error('timeout')));
     req.on('error', reject);
   });
-}
-
-// Highest-resolution variant of a master playlist, as an absolute URL.
-function bestMasterVariant(text, base) {
-  const lines = String(text).split(/\r?\n/);
-  let best = null;
-  let bestH = -1;
-  let bestBw = -1;
-  let pending = null;
-  for (const raw of lines) {
-    const t = raw.trim();
-    if (/^#EXT-X-STREAM-INF:/i.test(t)) {
-      const res = t.match(/RESOLUTION=\d+x(\d+)/i);
-      const bw = t.match(/BANDWIDTH=(\d+)/i);
-      pending = { h: res ? parseInt(res[1], 10) : 0, bw: bw ? parseInt(bw[1], 10) : 0 };
-    } else if (t && !t.startsWith('#') && pending) {
-      if (pending.h > bestH || (pending.h === bestH && pending.bw > bestBw)) {
-        bestH = pending.h;
-        bestBw = pending.bw;
-        best = t;
-      }
-      pending = null;
-    }
-  }
-  if (!best) return null;
-  try {
-    return new URL(best, base).toString();
-  } catch (e) {
-    return best;
-  }
 }
 
 // Resolves a vidspark embed straight to a downloadable HLS media playlist via

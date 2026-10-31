@@ -7,6 +7,52 @@ const { spawnSync } = require('child_process');
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
+const {
+  firstUri,
+  looksLikePlaylist,
+  isMasterPlaylist,
+  isMediaPlaylist,
+  playlistPathname,
+  playlistFromBuffer,
+  looksLikeHtml,
+  looksLikeJson,
+  parseStreamInf,
+  variantScore,
+  bestAudioGroupId,
+  bestVariantInfo,
+  bestVariantUri,
+  trimMasterToBest,
+  playlistMediaDuration,
+  mediaPlaylistScore,
+  describeMediaPlaylist,
+  rewritePlaylistUris,
+  notPlaylistError
+} = require('./hls/playlist');
+const {
+  isPng,
+  isFmp4At,
+  isMediaAt,
+  bufferFromCdpString,
+  stripPngWrapper,
+  looksLikeSegment,
+  utf8ReplacementCount,
+  splitMp4Boxes,
+  classifyMseBuffers,
+  forEachIsoBox,
+  tfhdTrackId,
+  tfdtBaseMediaDecodeTime,
+  tkhdTrackId,
+  initStreamKind,
+  tsLooksTruncated,
+  bufferTsTruncated
+} = require('./hls/media-bytes');
+const {
+  CDN_PATH_RE,
+  isTokenCdn,
+  isPlayerBoundCdn,
+  isOneShotHls,
+  isVodHls
+} = require('./hls/cdn');
 
 // BYFMS (and similar) will happily serve a master playlist whose first media
 // segment is a 20-minute stub that 502s. ffmpeg then copies the leftover 45s of
@@ -21,7 +67,6 @@ const PROBE_MS = 8000;
 
 const CDN_HOST_RE =
   /peakstorm|vidfast|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|cybergate|quietraven|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger/i;
-const CDN_PATH_RE = /\/r6\/|\/r2\/|\/vd\//i;
 const PAGE_CDN_RE =
   'peakstorm|ashencloud|ashenlion|orbitnorth|hiddenmesa|solidbear|primecomet|calmcanvas|nobleember|plainorbit|nobletrail|rapidtree|metaldisk|vidfast|thunderpencil|pearlmaple|novaoak|lightgrove|peakbadger|\\/r6\\/|\\/r2\\/|\\/vd\\/';
 const CDP_FETCH_PATTERNS = [
@@ -182,171 +227,6 @@ async function request(url, headers, opts = {}) {
   return requestNode(url, headers, opts);
 }
 
-function firstUri(playlist) {
-  return (playlist || '')
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => l && !l.startsWith('#'));
-}
-
-function looksLikePlaylist(text) {
-  return /^#EXTM3U/m.test(text || '');
-}
-
-function isMasterPlaylist(text) {
-  const t = String(text || '');
-  return /#EXT-X-STREAM-INF/i.test(t) && !/#EXTINF:/i.test(t);
-}
-
-function isMediaPlaylist(text) {
-  return /#EXTINF:/i.test(String(text || ''));
-}
-
-function playlistPathname(url) {
-  try {
-    return new URL(url).pathname;
-  } catch (e) {
-    return String(url || '').split('?')[0];
-  }
-}
-
-function playlistFromBuffer(buf, url) {
-  if (!buf || !buf.length) return null;
-  const utf8 = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf);
-  if (looksLikePlaylist(utf8)) return { body: utf8, url, status: 200 };
-  const latin1 = Buffer.isBuffer(buf) ? buf.toString('latin1') : utf8;
-  if (looksLikePlaylist(latin1)) return { body: latin1, url, status: 200 };
-  return null;
-}
-
-function looksLikeHtml(text) {
-  const t = String(text || '')
-    .slice(0, 256)
-    .trim();
-  return /^<!DOCTYPE/i.test(t) || /^<html/i.test(t) || /<html[\s>]/i.test(t);
-}
-
-function looksLikeJson(text) {
-  const t = String(text || '')
-    .slice(0, 64)
-    .trim();
-  return t.startsWith('{') || t.startsWith('[');
-}
-
-function parseStreamInf(line) {
-  const bw = parseInt((String(line).match(/\bBANDWIDTH=(\d+)/i) || [])[1] || '0', 10) || 0;
-  const res = String(line).match(/RESOLUTION=(\d+)x(\d+)/i);
-  return {
-    bw,
-    w: res ? parseInt(res[1], 10) : 0,
-    h: res ? parseInt(res[2], 10) : 0,
-    audio: ((String(line).match(/AUDIO="([^"]+)"/i) || [])[1] || '').trim()
-  };
-}
-
-function variantScore(info) {
-  return (info.h || 0) * 1e12 + (info.w || 0) * 1e6 + (info.bw || 0);
-}
-
-function bestAudioGroupId(playlist) {
-  let bestId = '';
-  let bestScore = -1;
-  for (const line of String(playlist || '').split(/\r?\n/)) {
-    if (!/#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line)) continue;
-    const id = ((line.match(/GROUP-ID="([^"]+)"/i) || [])[1] || '').trim();
-    if (!id) continue;
-    const ch = parseInt((line.match(/CHANNELS="([^"]+)"/i) || [])[1] || '0', 10) || 0;
-    const def = /DEFAULT=YES/i.test(line) ? 1 : 0;
-    const name = ((line.match(/NAME="([^"]+)"/i) || [])[1] || '').toLowerCase();
-    const hi = /atmos|truehd|ddp|eac-3|ec-3|5\.1|7\.1/i.test(name) ? 50 : 0;
-    const score = ch * 1000 + hi + def;
-    if (score >= bestScore) {
-      bestScore = score;
-      bestId = id;
-    }
-  }
-  return bestId;
-}
-
-function bestVariantInfo(playlist, base) {
-  const lines = String(playlist || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim());
-  const wantAudio = bestAudioGroupId(playlist);
-  let best = null;
-  let bestScore = -1;
-  let bestInfo = null;
-  for (let i = 0; i < lines.length; i++) {
-    if (!/#EXT-X-STREAM-INF:/i.test(lines[i])) continue;
-    const next = lines.slice(i + 1).find((l) => l && !l.startsWith('#'));
-    if (!next) continue;
-    const info = parseStreamInf(lines[i]);
-    let score = variantScore(info);
-    if (wantAudio && info.audio === wantAudio) score += 1e15;
-    if (score >= bestScore) {
-      bestScore = score;
-      best = next;
-      bestInfo = info;
-    }
-  }
-  if (!best || !bestInfo) return null;
-  let uri = best;
-  try {
-    uri = new URL(best, base).toString();
-  } catch (e) {
-    // keep the playlist-relative URI
-  }
-  return { h: bestInfo.h || 0, w: bestInfo.w || 0, uri };
-}
-
-function bestVariantUri(playlist, base) {
-  const info = bestVariantInfo(playlist, base);
-  const pick = (info && info.uri) || firstUri(playlist);
-  if (!pick) return null;
-  try {
-    return new URL(pick, base).toString();
-  } catch (e) {
-    return pick;
-  }
-}
-
-// The player picks its own rendition by ABR, and the window.Hls hook in
-// player-hook-preload never lands on bundlers that keep hls.js module-scoped
-// (vidfast). With several captures running at once ABR reads the contention as
-// low bandwidth and settles on 360-800p, so we harvest a downgraded stream.
-// Serving a master that advertises only the best variant removes the choice.
-// EXT-X-MEDIA rows stay so the variant's AUDIO/SUBTITLES groups still resolve.
-function trimMasterToBest(text, base) {
-  if (!isMasterPlaylist(text)) return '';
-  const best = bestVariantUri(text, base);
-  if (!best) return '';
-  const lines = String(text).split(/\r?\n/);
-  const out = [];
-  let kept = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (!/^#EXT-X-STREAM-INF:/i.test(lines[i].trim())) {
-      out.push(lines[i]);
-      continue;
-    }
-    let j = i + 1;
-    while (j < lines.length && (!lines[j].trim() || lines[j].trim().startsWith('#'))) j++;
-    if (j >= lines.length) break;
-    let abs = '';
-    try {
-      abs = new URL(lines[j].trim(), base).toString();
-    } catch (e) {
-      abs = '';
-    }
-    if (!kept && abs === best) {
-      out.push(lines[i].trim(), lines[j].trim());
-      kept = true;
-    }
-    i = j;
-  }
-  if (!kept) return '';
-  return `${out.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
-}
-
 // Replaying the upstream headers keeps CORS intact; the body length and any
 // content-encoding no longer describe what we are about to send.
 function fulfillHeadersFrom(headers) {
@@ -357,80 +237,6 @@ function fulfillHeadersFrom(headers) {
     out.push({ name: String(h.name), value: String(h.value) });
   }
   return out;
-}
-
-function playlistMediaDuration(text) {
-  let dur = 0;
-  for (const m of String(text || '').matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
-  return dur;
-}
-
-function mediaPlaylistScore(url, text) {
-  if (isMasterPlaylist(text)) return -1e9;
-  const n = (String(text).match(/^#EXTINF/gm) || []).length || 0;
-  let dur = 0;
-  for (const m of String(text).matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
-  let score = n * 10 + dur;
-  if (/\/r2\//i.test(url) || /index-s1080p/i.test(url)) score += 5000;
-  if (/index-s720p/i.test(url)) score += 2000;
-  if (/index-s480p/i.test(url)) score += 200;
-  if (/peakstorm\.top\/s\//i.test(url)) score -= 500;
-  return score;
-}
-
-function describeMediaPlaylist(url, text) {
-  const n = (String(text).match(/^#EXTINF/gm) || []).length;
-  let dur = 0;
-  for (const m of String(text).matchAll(/#EXTINF:([\d.]+)/gi)) dur += parseFloat(m[1]) || 0;
-  const inf = String(text).match(/#EXT-X-STREAM-INF:[^\n]+/i);
-  const info = inf ? parseStreamInf(inf[0]) : {};
-  const parts = [];
-  if (info.h) parts.push(`${info.w}x${info.h}`);
-  if (info.bw) parts.push(`${Math.round(info.bw / 1000)}kbps`);
-  if (n) parts.push(`${n} part(s)`);
-  if (dur) parts.push(`${Math.round(dur)}s`);
-  // Deliberately not claiming a quality here: this used to print "high-bitrate"
-  // for any /r2/ URL, which labelled 640x360 captures as high-bitrate and sent
-  // every quality investigation down the wrong path. A media playlist does not
-  // say what resolution it carries.
-  if (/\/r2\//i.test(url || '')) parts.push('vod');
-  return parts.join(', ') || String(url || '').slice(0, 80);
-}
-
-function rewritePlaylistUris(text, base) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map((line) => {
-      const t = line.trim();
-      if (!t) return line;
-      if (t.startsWith('#')) {
-        return t.replace(/URI=(["'])([^"']+)\1/gi, (_, q, u) => {
-          try {
-            return `URI=${q}${new URL(u, base).toString()}${q}`;
-          } catch (e) {
-            return `URI=${q}${u}${q}`;
-          }
-        });
-      }
-      try {
-        return new URL(t, base).toString();
-      } catch (e) {
-        return t;
-      }
-    })
-    .join('\n');
-}
-
-function notPlaylistError(kind, status) {
-  const err = new Error(
-    kind === 'html' || kind === 'json'
-      ? 'CDN returned a webpage instead of a playlist; will retry with a fresh stream'
-      : 'CDN did not return an HLS playlist'
-  );
-  err.code = 'not-playlist';
-  err.kind = kind || 'other';
-  err.status = status || 0;
-  return err;
 }
 
 // Full playlist body via Chromium (cookies/TLS) so ffmpeg does not have to
@@ -634,117 +440,6 @@ async function materializePlaylist(url, headers, destPath, signal = null) {
   const { text } = await loadMediaPlaylist(url, headers, signal);
   fs.writeFileSync(destPath, text, 'utf8');
   return destPath;
-}
-
-function isPng(buf) {
-  return (
-    buf &&
-    buf.length >= 8 &&
-    buf[0] === 0x89 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x4e &&
-    buf[3] === 0x47
-  );
-}
-
-function isFmp4At(buf, i) {
-  if (!buf || i + 8 > buf.length) return false;
-  const typ = buf.toString('ascii', i + 4, i + 8);
-  return typ === 'ftyp' || typ === 'moof' || typ === 'mdat' || typ === 'moov' || typ === 'sidx';
-}
-
-function isMediaAt(buf, i) {
-  return (buf && buf[i] === 0x47) || isFmp4At(buf, i);
-}
-
-// Chromium's CDP returns binary as a JS string. Decoding that as UTF-8 inserts
-// U+FFFD and ffmpeg then dies with "Invalid data found when processing input".
-function bufferFromCdpString(data, base64Encoded) {
-  const raw = data || '';
-  if (!raw) return Buffer.alloc(0);
-  if (base64Encoded) return Buffer.from(raw, 'base64');
-  if (raw.indexOf('\uFFFD') !== -1) return Buffer.alloc(0);
-  return Buffer.from(raw, 'latin1');
-}
-
-// Vidfast/peakstorm (and similar) prepend a 1x1 PNG so ffmpeg's HLS demuxer
-// probes "png" and dies with "Invalid data found when processing input".
-// The real media is MPEG-TS (0x47) or fMP4 after the PNG chunks.
-function stripPngWrapper(buf) {
-  if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf || []);
-  if (!isPng(buf)) return buf;
-  let i = 8;
-  while (i + 12 <= buf.length) {
-    if (isMediaAt(buf, i)) break;
-    const len = buf.readUInt32BE(i);
-    if (len > 10 * 1024 * 1024) break;
-    const type = buf.toString('ascii', i + 4, i + 8);
-    i += 12 + len;
-    if (type === 'IEND') break;
-  }
-  while (i < buf.length && !isMediaAt(buf, i)) i += 1;
-  return i > 0 && i < buf.length ? buf.subarray(i) : buf;
-}
-
-function isTokenCdn(url, embedUrl) {
-  const s = `${url || ''} ${embedUrl || ''}`;
-  if (/peakstorm\.|vidfast\.|megacloud\.|rabbitstream\.|vidcloud/i.test(s)) return true;
-  // SFlix/vidspark route their HLS through a Cloudflare Worker proxy that 403s
-  // the bare/FFmpeg client but 200s the in-browser session. netoda (playlist)
-  // and voxzer (segments) are the real hosts behind it, so pull them through
-  // the same Chromium "localize" download path as the token CDNs.
-  return /netoda\.|voxzer\.|\.workers\.dev\/\?url=/i.test(s);
-}
-
-// Vidfast/peakstorm playlists resolve, but Node/net.request cannot pull the
-// parts (partitioned cookies). The live player can. One-shot `/s/` tokens die
-// if anything besides playback fetches them. `/vd/` and `/r2/` are VOD: the
-// player page/worker can fetch remaining segments without burning a token.
-function isPlayerBoundCdn(url, embedUrl) {
-  const s = `${url || ''} ${embedUrl || ''}`;
-  if (CDN_PATH_RE.test(s)) return true;
-  return /peakstorm\.|vidfast\.|ashencloud\.|ashenlion\.|orbitnorth\.|hiddenmesa\.|solidbear\.|primecomet\.|calmcanvas\.|nobleember\.|plainorbit\.|nobletrail\.|rapidtree\.|metaldisk\.|thunderpencil\.|pearlmaple\.|novaoak\.|netocdn\./i.test(
-    s
-  );
-}
-
-// `/s/` tokens are spent by the first non-playback request. They are not always
-// hex: `/r6/s/ma9yIsUHLd1o…` is base64url, and treating those as VOD made the
-// main process refetch a spent token and get 400 on every segment.
-function isOneShotHls(url) {
-  const s = String(url || '');
-  if (/\/vd\/|\/r2\//i.test(s)) return false;
-  // Vidfast now serves these from moon.zenoak.top (and similar), not only
-  // peakstorm. Any /s/ token dies if something other than playback fetches it.
-  return /\/s\/[A-Za-z0-9_-]{6,}/.test(s);
-}
-
-function isVodHls(text, url) {
-  if (isOneShotHls(url)) return false;
-  const t = String(text || '');
-  const u = String(url || '');
-  if (/\/vd\/|\/r2\//i.test(u)) return true;
-  if (/#EXT-X-PLAYLIST-TYPE:\s*VOD/i.test(t)) return true;
-  if (/#EXT-X-ENDLIST/i.test(t) && /#EXT-X-ALLOW-CACHE:\s*YES/i.test(t)) return true;
-  return false;
-}
-
-function looksLikeSegment(buf) {
-  if (!buf || buf.length < 200) return false;
-  if (utf8ReplacementCount(buf, 4096) >= 3) return false;
-  if (isPng(buf)) return true;
-  if (buf[0] === 0x47) return true;
-  if (isFmp4At(buf, 0)) return true;
-  return false;
-}
-
-function utf8ReplacementCount(buf, limit) {
-  let n = 0;
-  const end = Math.min(buf.length - 2, limit || buf.length);
-  for (let i = 0; i < end; i++) {
-    if (buf[i] === 0xef && buf[i + 1] === 0xbf && buf[i + 2] === 0xbd) n += 1;
-  }
-  return n;
 }
 
 function cdpSegmentCount(wc) {
@@ -2889,139 +2584,6 @@ async function drainMseChunks(wc) {
   return out;
 }
 
-function splitMp4Boxes(buf) {
-  const boxes = [];
-  if (!buf || buf.length < 8) return boxes;
-  let i = 0;
-  while (i + 8 <= buf.length) {
-    let size = buf.readUInt32BE(i);
-    if (size === 1 && i + 16 <= buf.length) {
-      size = buf.readUInt32BE(i + 8) * 0x100000000 + buf.readUInt32BE(i + 12);
-    }
-    if (size < 8 || i + size > buf.length) {
-      if (i < buf.length) boxes.push(buf.subarray(i));
-      break;
-    }
-    boxes.push(buf.subarray(i, i + size));
-    i += size;
-  }
-  return boxes;
-}
-
-function classifyMseBuffers(buf) {
-  if (!buf || !buf.length) return [];
-  if (buf[0] === 0x47) return [{ kind: 'ts', buf }];
-  const parts = splitMp4Boxes(buf);
-  if (!parts.length) return [{ kind: isFmp4At(buf, 0) ? 'init' : 'media', buf }];
-  const out = [];
-  let init = [];
-  let frag = [];
-  const flushInit = () => {
-    if (!init.length) return;
-    out.push({ kind: 'init', buf: Buffer.concat(init) });
-    init = [];
-  };
-  const flushFrag = () => {
-    if (!frag.length) return;
-    out.push({ kind: 'media', buf: Buffer.concat(frag) });
-    frag = [];
-  };
-  for (const box of parts) {
-    if (box.length < 8) continue;
-    const typ = box.toString('ascii', 4, 8);
-    if (typ === 'ftyp' || typ === 'moov' || typ === 'mvex' || typ === 'sidx' || typ === 'styp') {
-      flushFrag();
-      init.push(box);
-    } else if (typ === 'moof' || typ === 'mdat' || typ === 'emsg') {
-      flushInit();
-      frag.push(box);
-    } else if (frag.length) {
-      frag.push(box);
-    } else {
-      init.push(box);
-    }
-  }
-  flushInit();
-  flushFrag();
-  return out.length ? out : [{ kind: 'media', buf }];
-}
-
-function forEachIsoBox(buf, fn, start = 0, end = buf.length) {
-  let i = start;
-  while (i + 8 <= end) {
-    const size = buf.readUInt32BE(i);
-    const typ = buf.toString('ascii', i + 4, i + 8);
-    if (size < 8 || i + size > end) break;
-    fn(typ, i, size);
-    i += size;
-  }
-}
-
-function tfhdTrackId(buf) {
-  let id = 0;
-  const visit = (from, to) => {
-    forEachIsoBox(
-      buf,
-      (typ, i, size) => {
-        if (typ === 'tfhd' && size >= 16) id = buf.readUInt32BE(i + 12);
-        else if (typ === 'moof' || typ === 'traf') visit(i + 8, i + size);
-      },
-      from,
-      to
-    );
-  };
-  visit(0, buf.length);
-  return id;
-}
-
-function tfdtBaseMediaDecodeTime(buf) {
-  let t = null;
-  const visit = (from, to) => {
-    forEachIsoBox(
-      buf,
-      (typ, i, size) => {
-        if (typ === 'tfdt' && size >= 16) {
-          const ver = buf[i + 8];
-          t =
-            ver === 1 && size >= 24
-              ? buf.readUInt32BE(i + 12) * 0x100000000 + buf.readUInt32BE(i + 16)
-              : buf.readUInt32BE(i + 12);
-        } else if (typ === 'moof' || typ === 'traf') visit(i + 8, i + size);
-      },
-      from,
-      to
-    );
-  };
-  visit(0, buf.length);
-  return t;
-}
-
-function tkhdTrackId(buf) {
-  let id = 0;
-  const visit = (from, to) => {
-    forEachIsoBox(
-      buf,
-      (typ, i, size) => {
-        if (typ === 'tkhd' && size >= 24) {
-          const ver = buf[i + 8];
-          id = ver === 1 ? buf.readUInt32BE(i + 28) : buf.readUInt32BE(i + 20);
-        } else if (typ === 'moov' || typ === 'trak') visit(i + 8, i + size);
-      },
-      from,
-      to
-    );
-  };
-  visit(0, buf.length);
-  return id;
-}
-
-function initStreamKind(buf) {
-  const s = buf.toString('latin1');
-  if (s.indexOf('soun') !== -1 || s.indexOf('SoundHandler') !== -1) return 'audio';
-  if (s.indexOf('vide') !== -1 || s.indexOf('VideoHandler') !== -1) return 'video';
-  return 'video';
-}
-
 function writeMseHlsPlaylist(dir, initName, mediaNames, durationSec, fileName) {
   if (!mediaNames.length) return null;
   const each = durationSec && mediaNames.length ? durationSec / mediaNames.length : 4;
@@ -3812,22 +3374,6 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       (stats.internal ? ` with ${stats.internal} hole(s) in the middle` : '') +
       (mseCount() ? ` and ${mseCount()} MSE fragment(s)` : '')
   );
-}
-
-// A whole MPEG-TS segment is a run of 188-byte packets, each starting with
-// the 0x47 sync byte; a part cut off mid-transfer ends in a partial packet,
-// which plays as a glitch / skip. Only data that is clearly TS is judged
-// (sync bytes at packets 0, 1 and 2): encrypted, fMP4 or wrapped segments
-// get no opinion.
-function tsLooksTruncated(head, size, lastPacketFirstByte) {
-  if (!head || head.length < 377 || size < 377) return false;
-  if (head[0] !== 0x47 || head[188] !== 0x47 || head[376] !== 0x47) return false;
-  if (size % 188 !== 0) return true;
-  return lastPacketFirstByte !== 0x47;
-}
-function bufferTsTruncated(buf) {
-  if (!buf || buf.length < 377) return false;
-  return tsLooksTruncated(buf, buf.length, buf.length >= 188 ? buf[buf.length - 188] : -1);
 }
 
 function jobFileOk(dir, job) {
