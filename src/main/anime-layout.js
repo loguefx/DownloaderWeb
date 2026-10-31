@@ -179,6 +179,63 @@ async function aniwaveSeasons(tmdbId, opts = {}) {
   return out;
 }
 
+// Tier 1b: Aniwave's CATALOG, the way downloads use it. Each Aniwave entry is
+// one season, named "<Title>", "<Title> Season 2", ... (aniwave_api.seasonInfo
+// picks the entry whose title names the season). The DUB/SUB downloads and the
+// dub badges always read these entries, so this is the numbering the files on
+// disk follow. When it disagrees with TMDB, the season list must follow it:
+// Link Click's TMDB "Season 3" is the 6-episode Bridon Arc and its "Season 4"
+// the new season, while Aniwave's "Link Click Season 3" IS the new season -
+// showing TMDB's numbers matched the new season's files against the Bridon
+// Arc ("6 have") and offered the same episodes again as "Season 4".
+//
+// Returns [{ season, episodes:[{episode}], dubEpisodes, aniwaveId }] for
+// seasons 1..N (stops at the first season with no entry), or null when the
+// catalog does not know season 1.
+async function aniwaveCatalogSeasons(title, opts = {}) {
+  const t = String(title || '').trim();
+  if (t.length < 2) return null;
+  const key = 'awcat:' + t.toLowerCase();
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  const api = opts.aniwaveApi || require('./sites/aniwave_api');
+  const out = [];
+  const seenIds = new Set();
+  for (let n = 1; n <= MAX_SEASONS; n++) {
+    let info = null;
+    try {
+      info = await api.seasonInfo(t, n);
+    } catch (e) {
+      info = null;
+    }
+    const eps = info && Array.isArray(info.episodes) ? info.episodes.filter((e) => e && e.episode > 0) : [];
+    if (!eps.length) break;
+    const id = String((info.show && info.show.id) || '');
+    if (id && seenIds.has(id)) break; // same entry again: no separate season
+    if (id) seenIds.add(id);
+    out.push({
+      season: n,
+      episodes: eps.map((e) => ({ episode: e.episode, name: '' })),
+      dubEpisodes: eps.filter((e) => e.dub).length,
+      aniwaveId: id,
+      year: ''
+    });
+  }
+  const value = out.length ? out : null;
+  // A network failure answers null; only cache a real answer so a retry can
+  // still find it.
+  if (value) cacheSet(key, value);
+  return value;
+}
+
+// Does a catalog layout disagree with TMDB's numbered seasons? (Same season
+// numbers with the same counts = nothing to change.)
+function layoutDiffers(layout, tmdbSeasons) {
+  const A = (layout || []).filter((s) => s && s.season > 0);
+  const T = new Map((tmdbSeasons || []).filter((s) => s && s.season > 0).map((s) => [s.season, countOf(s)]));
+  return A.some((s) => T.get(s.season) !== countOf(s));
+}
+
 // ---------------------------------------------------------------------------
 // Tier 2: AniList
 // ---------------------------------------------------------------------------
@@ -493,6 +550,18 @@ async function resolveLayout(tmdbId, title, opts = {}) {
       if (aw) return { source: 'aniwave', seasons: aw };
     } catch (e) { /* tier is best-effort */ }
   }
+  // The catalog entries downloads use (anime only: a title search could hit
+  // a different work for live-action TV). Used when it knows at least two
+  // seasons and numbers them differently from TMDB; a single-season answer
+  // or one that matches TMDB changes nothing.
+  if (title && opts.catalog) {
+    try {
+      const cat = await aniwaveCatalogSeasons(title, opts);
+      if (cat && cat.length >= 2 && layoutDiffers(cat, opts.tmdbSeasons)) {
+        return { source: 'aniwave', seasons: cat, catalog: true };
+      }
+    } catch (e) { /* tier is best-effort */ }
+  }
   if (title && (opts.anime || opts.allowAnilist)) {
     const al = await anilistLayout(tmdbId, title, opts);
     if (al) return { source: 'anilist', seasons: al };
@@ -719,6 +788,8 @@ module.exports = {
   anilistGql,
   anilistIdFor,
   resolveLayout,
+  aniwaveCatalogSeasons,
+  layoutDiffers,
   anilistLayout,
   splitLumpedSeasons,
   mapEpisode,

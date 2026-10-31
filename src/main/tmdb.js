@@ -134,7 +134,15 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   const tmdbNumbered = tmdbSeasons.filter((s) => s.season > 0).length;
   const allowAnilist = !!(opts && opts.anime) || tmdbNumbered === 0;
   const firstYear = Number(String(body.first_air_date || '').slice(0, 4)) || 0;
-  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId, year: firstYear });
+  const animeish = allowAnilist || looksAnime(body);
+  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', {
+    anime: allowAnilist,
+    anilistId,
+    year: firstYear,
+    // Anime only: the Aniwave catalog entries the downloads use.
+    catalog: animeish,
+    tmdbSeasons
+  });
   if (resolved) {
     if (resolved.source === 'aniwave' || tmdbNumbered === 0) {
       layout = resolved.source;
@@ -165,8 +173,9 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   // layout exactly, split it. Asked for anime, and for animation from
   // JP/CN/KR/TW opened from the TV tab (the partition check keeps a
   // live-action show that shares an anime's title out of it).
-  if (allowAnilist || looksAnime(body)) {
-    const baseLayout = layout === 'aniwave' ? seasons : tmdbSeasons;
+  // Never re-split an Aniwave layout: it IS the numbering the files follow.
+  if ((allowAnilist || looksAnime(body)) && layout !== 'aniwave') {
+    const baseLayout = tmdbSeasons;
     const al = resolved && resolved.source === 'anilist'
       ? resolved.seasons
       : await animelayout.anilistLayout(String(body.id), body.name || '', { anilistId, year: firstYear });
@@ -196,6 +205,9 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     overview: (body.overview || '').slice(0, 300),
     seasons,
     layout,
+    // true when the layout came from Aniwave's catalog entries (title-named
+    // seasons) rather than its TMDB-keyed episode API.
+    catalog: !!(resolved && resolved.catalog),
     tmdbSeasons
   };
 }
@@ -259,8 +271,21 @@ async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   // is anime-only and keyed by this TMDB id), so they keep the old behavior.
   let layout = 'tmdb';
   let authoritative = null;
+  // The season list came from Aniwave's catalog: serve that season's entry.
+  let catalogInfo = null;
+  try { catalogInfo = await tmdbInfo(tmdbId, 'tv', opts); } catch (e) { catalogInfo = null; }
+  if (catalogInfo && catalogInfo.catalog && Number(seasonNo) > 0) {
+    try {
+      const cat = await animelayout.aniwaveCatalogSeasons(catalogInfo.title || '');
+      const hit = cat && cat.find((s) => s.season === Number(seasonNo));
+      if (hit && hit.episodes.length) {
+        authoritative = hit;
+        layout = 'aniwave-catalog';
+      }
+    } catch (e) { /* fall through */ }
+  }
   try {
-    const aw = await animelayout.aniwaveSeasons(String(tmdbId));
+    const aw = authoritative ? null : await animelayout.aniwaveSeasons(String(tmdbId));
     if (aw) {
       const hit = aw.find((s) => s.season === Number(seasonNo));
       if (hit && (hit.episodes || []).length) {
@@ -298,7 +323,24 @@ async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
 
   let episodes;
   if (authoritative) {
-    const byNum = new Map(tmdbEps.map((e) => [e.episode_number, e]));
+    // TMDB names/air dates only from a TMDB season with the SAME episodes:
+    // the same number when the counts agree, else the first later TMDB season
+    // whose count matches (Link Click: Aniwave S3 = TMDB S4). Never borrow a
+    // different season's titles (TMDB S3 is the Bridon Arc).
+    let named = tmdbEps;
+    const want = (authoritative.episodes || []).length;
+    if (tmdbEps.length !== want) {
+      named = [];
+      const counts = (catalogInfo && catalogInfo.tmdbSeasons) || [];
+      const match = counts.find((c) => c.season > Number(seasonNo) && c.episodes === want);
+      if (match) {
+        try {
+          const other = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${match.season}?language=en-US`, key);
+          named = ((other && other.episodes) || []).filter((e) => e && e.episode_number > 0);
+        } catch (e) { named = []; }
+      }
+    }
+    const byNum = new Map(named.map((e) => [e.episode_number, e]));
     episodes = (authoritative.episodes || []).map((e) => {
       const t = byNum.get(e.episode);
       return {

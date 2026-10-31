@@ -85,6 +85,27 @@ const TV = {
     genres: [{ id: 16 }], origin_country: ['JP'],
     seasons: [{ season_number: 1, episode_count: 36, air_date: '2024-10-05' }]
   },
+  // 126318: Link Click (Chinese donghua). TMDB counts the 6-episode Bridon
+  // Arc as Season 3 and the 2026 season as Season 4; Aniwave's catalog names
+  // the 2026 season "Link Click Season 3" (the numbering downloads use).
+  126318: {
+    id: 126318, name: 'LINK CLICK', first_air_date: '2021-04-30', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }, { id: 18 }], origin_country: ['CN'],
+    seasons: [
+      { season_number: 0, episode_count: 28, air_date: '2021-06-01' },
+      { season_number: 1, episode_count: 11, air_date: '2021-04-30' },
+      { season_number: 2, episode_count: 12, air_date: '2023-07-14' },
+      { season_number: 3, episode_count: 6, air_date: '2024-06-27' },
+      { season_number: 4, episode_count: 12, air_date: '2026-08-14' },
+      { season_number: 5, episode_count: 0, air_date: null }
+    ]
+  },
+  // 127000: an anime whose Aniwave catalog AGREES with TMDB - unchanged.
+  127000: {
+    id: 127000, name: 'Agreeing Anime', first_air_date: '2022-01-01', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }], origin_country: ['JP'],
+    seasons: [{ season_number: 1, episode_count: 12, air_date: '2022-01-01' }, { season_number: 2, episode_count: 12, air_date: '2023-01-01' }]
+  },
   // 789: a plain TV show (2 seasons) - the anime tiers must not touch it.
   789: {
     id: 789, name: 'Plain TV Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
@@ -108,6 +129,15 @@ global.fetch = async (url) => {
     return { ok: true, json: async () => ({ results: [wp], flatrate: wp }) };
   }
   if (!TV[m[1]]) return { ok: false, status: 404 };
+  const lcSeason = u.match(/\/tv\/126318\/season\/(\d+)/);
+  if (lcSeason) {
+    const counts = { 0: 28, 1: 11, 2: 12, 3: 6, 4: 12 };
+    const n = Number(lcSeason[1]);
+    if (!counts[n]) return { ok: false, status: 404 };
+    const label = n === 3 ? 'Bridon' : 'LC S' + n;
+    return { ok: true, json: async () => ({ name: 'Season ' + n, episodes: Array.from({ length: counts[n] }, (_, i) => ({
+      episode_number: i + 1, name: label + 'E' + (i + 1), runtime: 20, air_date: '2025-01-01' })) }) };
+  }
   const seasonPath = u.match(/\/tv\/259140\/season\/(\d+)/);
   if (seasonPath) {
     if (seasonPath[1] !== '1') return { ok: false, status: 404 };
@@ -157,6 +187,35 @@ animelayout._internals.cacheSet('anilistid:6010', [
   { season: 2, episodes: eps(11), year: '2025' }
 ]);
 animelayout._internals.cacheSet('aniwave:602', null);
+// Aniwave's catalog (title search) is never asked live in tests: every
+// anime title here gets a seeded answer (null = the catalog does not know it).
+for (const t of ['test anime', 'aniwave anime', 'missing season anime', 'aniwave with specials', 'anilist specials anime', 'ranma1/2']) {
+  animelayout._internals.cacheSet('awcat:' + t, null);
+}
+animelayout._internals.cacheSet('aniwave:126318', null);
+animelayout._internals.cacheSet('anilistid:126318', '');
+animelayout._internals.cacheSet('anilist:link click|2021', null);
+animelayout._internals.cacheSet('anilist:link click', null);
+const awEps = (n, dub) => Array.from({ length: n }, (_, i) => ({ episode: i + 1, name: '' }));
+animelayout._internals.cacheSet('awcat:link click', [
+  { season: 1, episodes: awEps(11), dubEpisodes: 11, aniwaveId: '1', year: '' },
+  { season: 2, episodes: awEps(12), dubEpisodes: 12, aniwaveId: '2', year: '' },
+  { season: 3, episodes: awEps(12), dubEpisodes: 9, aniwaveId: '3', year: '' }
+]);
+animelayout._internals.cacheSet('aniwave:127000', null);
+animelayout._internals.cacheSet('anilistid:127000', '');
+animelayout._internals.cacheSet('anilist:agreeing anime|2022', null);
+animelayout._internals.cacheSet('anilist:agreeing anime', null);
+animelayout._internals.cacheSet('awcat:agreeing anime', [
+  { season: 1, episodes: awEps(12), aniwaveId: 'a', year: '' },
+  { season: 2, episodes: awEps(12), aniwaveId: 'b', year: '' }
+]);
+// A live-action show must never be looked up in the anime catalog: seed a
+// WRONG answer for it and check it is ignored.
+animelayout._internals.cacheSet('awcat:plain tv show', [
+  { season: 1, episodes: awEps(99), aniwaveId: 'x', year: '' },
+  { season: 2, episodes: awEps(99), aniwaveId: 'y', year: '' }
+]);
 animelayout._internals.cacheSet('aniwave:259140', null);
 animelayout._internals.cacheSet('anilist:ranma1/2|2024', [
   { season: 1, episodes: eps(12), year: 2024 },
@@ -246,6 +305,36 @@ animelayout._internals.cacheSet('aniwave:603', null);
     check('season 1 is TMDB S1E1-E12 only', s1 && s1.episodes.length === 12 && s1.episodes[11].name === 'Ep 12', s1 && s1.episodes.length);
   } catch (e) {
     check('tmdbSeason did not throw', false, e.constructor.name + ': ' + e.message);
+  }
+
+  console.log('\n[4c] Link Click: the season list follows the Aniwave catalog downloads use');
+  for (const anime of [true, false]) {
+    try {
+      const info = await tmdb.tmdbInfo('126318', 'tv', { anime });
+      const shape = info && info.seasons.map((s) => s.season + ':' + s.episodes).join('|');
+      check(`Specials + S1 11, S2 12, S3 12 (${anime ? 'Anime tab' : 'TV tab'})`, shape === '0:28|1:11|2:12|3:12', shape);
+      check(`layout is the Aniwave catalog (${anime ? 'Anime tab' : 'TV tab'})`, info && info.layout === 'aniwave' && info.catalog === true, info && info.layout + '/' + info.catalog);
+    } catch (e) {
+      check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
+    }
+  }
+  try {
+    const s3 = await tmdb.tmdbSeason('126318', 3, { anime: true });
+    const e = (s3 && s3.episodes) || [];
+    check('Season 3 lists the 12 episodes of the new season', e.length === 12, e.length);
+    check("Season 3 names come from TMDB S4 (same episodes), never the Bridon Arc's", e[0] && e[0].name === 'LC S4E1', e[0] && e[0].name);
+    const s1 = await tmdb.tmdbSeason('126318', 1, { anime: true });
+    check('Season 1 keeps TMDB S1 names (counts agree)', s1 && s1.episodes.length === 11 && s1.episodes[0].name === 'LC S1E1', s1 && s1.episodes[0] && s1.episodes[0].name);
+  } catch (e) {
+    check('tmdbSeason did not throw', false, e.constructor.name + ': ' + e.message);
+  }
+  try {
+    const ag = await tmdb.tmdbInfo('127000', 'tv', { anime: true });
+    check('catalog that agrees with TMDB changes nothing', ag && ag.layout === 'tmdb' && ag.seasons.map((s) => s.episodes).join(',') === '12,12', ag && ag.layout);
+    const tv = await tmdb.tmdbInfo('789', 'tv', { anime: false });
+    check('live-action TV never uses the anime catalog', tv && tv.layout === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.layout);
+  } catch (e) {
+    check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }
 
   console.log('\n[5] Total-failure diagnostic (licensed-exclusive explanation)');

@@ -442,6 +442,34 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('Attack on Titan S4E1 downloads TMDB S4E1 (no AniList remap)', a41.season === 4 && a41.episode === 1, a41);
   }
 
+  console.log('\n[10] Aniwave catalog layout (the entries downloads use)');
+  {
+    mod._resetCache();
+    const entries = { 1: { id: '10', n: 11 }, 2: { id: '20', n: 12 }, 3: { id: '30', n: 12 } };
+    const api = { seasonInfo: async (title, n) => entries[n]
+      ? { show: { id: entries[n].id }, episodes: Array.from({ length: entries[n].n }, (_, i) => ({ episode: i + 1, sub: true, dub: i < 9 })) }
+      : null };
+    const cat = await mod.aniwaveCatalogSeasons('LINK CLICK', { aniwaveApi: api });
+    check('catalog seasons 1-3 with their episode counts', cat && cat.map((s) => s.season + ':' + s.episodes.length).join('|') === '1:11|2:12|3:12', cat);
+    check('per-season dub counts kept', cat && cat[2].dubEpisodes === 9, cat && cat[2]);
+    mod._resetCache();
+    const same = { seasonInfo: async () => ({ show: { id: '1' }, episodes: [{ episode: 1 }] }) };
+    const one = await mod.aniwaveCatalogSeasons('Repeats', { aniwaveApi: same });
+    check('the same entry returned for every season counts once', one && one.length === 1, one && one.length);
+    mod._resetCache();
+    check('unknown title -> null', (await mod.aniwaveCatalogSeasons('Nope', { aniwaveApi: { seasonInfo: async () => null } })) === null);
+    check('layoutDiffers: Bridon Arc numbering differs', mod.layoutDiffers(cat || [], [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }]));
+    check('layoutDiffers: same numbering -> false', !mod.layoutDiffers([mk(1, 12), mk(2, 12)], [{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }]));
+    // resolveLayout: the catalog tier only answers when asked (anime) and only when it differs.
+    mod._resetCache();
+    mod._internals.cacheSet('aniwave:126318', null);
+    const r1 = await mod.resolveLayout('126318', 'LINK CLICK', { catalog: true, aniwaveApi: api,
+      tmdbSeasons: [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }] });
+    check('resolveLayout uses the catalog when it differs from TMDB', r1 && r1.source === 'aniwave' && r1.catalog === true && r1.seasons.length === 3, r1 && r1.source);
+    const r2 = await mod.resolveLayout('126318', 'LINK CLICK', { catalog: false, aniwaveApi: api, tmdbSeasons: [] });
+    check('resolveLayout never asks the catalog for non-anime', r2 === null, r2 && r2.source);
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => {
