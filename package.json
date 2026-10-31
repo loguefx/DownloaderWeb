@@ -6,6 +6,7 @@
   "author": "WebVideoDownloader <dev@webvideodownloader.local>",
   "license": "MIT",
   "scripts": {
+    "test": "node scripts/run-tests.js",
     "start": "node scripts/start.js",
     "start:engine": "node scripts/start.js --engine",
     "test:library": "node scripts/test-library.js",

@@ -272,6 +272,63 @@ async function main() {
   manager.removeByIds([yid]);
   await sleep(150);
 
+  // ---- 5. Removing a parked item frees its worker -----------------------------
+  // A paused / VPN-held / slot-waiting item that is removed must not keep its
+  // worker forever (that site would lose a download slot until restart).
+  console.log('\n[5] Removing a parked item frees its worker');
+  manager.pause();
+  const pid = manager.add({
+    label: 'Parked Show S1E1',
+    series: 'Parked Show',
+    season: 1,
+    episode: 1,
+    url: 'https://example.invalid/parked',
+    outputRoot: path.join(DATA_DIR, 'staging'),
+    discover: () => Promise.resolve({ status: 'failed', reason: 'never reached' })
+  });
+  await sleep(100);
+  check('item is parked at the gate (worker running)', manager._active.size === 1, String(manager._active.size));
+  manager.removeByIds([pid]);
+  await sleep(100);
+  check('removing it frees the worker', manager._active.size === 0, String(manager._active.size));
+  manager.resume();
+
+  // ---- 6. Download errors with no progress stop retrying -----------------------
+  console.log('\n[6] A download that fails the same way every time gives up');
+  const http = require('http');
+  const srv = http.createServer((req, res) => { res.statusCode = 500; res.end('nope'); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  config.download.maxRetries = 2; // streak cap = 4
+  const glogs = [];
+  const realLog3 = manager._log.bind(manager);
+  manager._log = (m) => { glogs.push(m); realLog3(m); };
+  const gid = manager.add({
+    label: 'Broken Show S1E1',
+    series: 'Broken Show',
+    season: 1,
+    episode: 1,
+    url: 'https://example.invalid/broken',
+    outputRoot: path.join(DATA_DIR, 'staging'),
+    discover: () => Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${port}/x.mp4`, type: 'mp4' } })
+  });
+  const gitem = manager.items.find((x) => x.id === gid);
+  for (let i = 0; i < 100 && !(gitem && gitem.status === 'failed'); i++) await sleep(100);
+  check('gave up after 4 no-progress failures', gitem && gitem.status === 'failed' && gitem.attempts === 4,
+    JSON.stringify(gitem && [gitem.status, gitem.attempts, gitem.error]));
+  check('log says why', glogs.some((m) => /Gave up on "Broken Show S1E1" after 4 tries in a row with no progress/.test(m)), glogs.slice(-3).join(' | '));
+  await sleep(50);
+  check('worker freed after giving up', manager._active.size === 0, String(manager._active.size));
+  check('retry() puts it back with a fresh budget', manager.retry(gid) === true && gitem.attempts === 0 && gitem._failStreak === 0);
+  await sleep(30);
+  check('retry() refuses an item that is still active', manager.retry(gid) === null);
+  check('retry() of an unknown id is false', manager.retry(987654) === false);
+  manager.removeByIds([gid]);
+  await sleep(150);
+  manager._log = realLog3;
+  srv.close();
+  config.download.maxRetries = 6;
+
   if (manager._watchdogTimer) clearInterval(manager._watchdogTimer);
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

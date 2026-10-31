@@ -465,7 +465,7 @@ app.whenReady().then(() => {
 
 app.on('before-quit', () => {
   try {
-    manager._persist();
+    manager.persist();
   } catch (e) {
     // ignore
   }

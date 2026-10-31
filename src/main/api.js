@@ -274,6 +274,10 @@ async function handle(req, res, u) {
       const type = (u.searchParams.get('type') || 'tv').trim(); // tv | movie | anime
       const category = (u.searchParams.get('category') || 'trending').trim(); // trending | popular
       const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10) || 1);
+      if (!['tv', 'movie', 'anime'].includes(type) || !['trending', 'popular'].includes(category)) {
+        json(res, 400, { error: 'type must be tv|movie|anime and category trending|popular' });
+        return;
+      }
       const key = getTmdbKey();
       if (!key) {
         json(res, 503, { error: 'TMDB API key not configured on the engine' });
@@ -687,6 +691,10 @@ async function handle(req, res, u) {
 let server = null;
 
 function start() {
+  // Each open /api/events stream adds listeners to the queue and VPN monitor;
+  // several dashboard tabs would trip Node's 10-listener leak warning.
+  manager.setMaxListeners(100);
+  vpn.setMaxListeners(100);
   return new Promise((resolve, reject) => {
     const c = engineconfig.get();
     server = http.createServer((req, res) => {

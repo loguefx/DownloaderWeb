@@ -176,7 +176,42 @@ class DownloadManager extends EventEmitter {
       if (set.has(it.id) && it._controller) it._controller.abort();
     }
     this.items = this.items.filter((it) => !set.has(it.id));
+    // Wake workers parked at the pause/VPN gate or waiting for a download
+    // slot: their loops see the item is gone and exit. Without this a removed
+    // "ready"/paused item kept its worker forever, and that site lost a slot
+    // until restart.
+    this._releaseGate();
     this._emit();
+  }
+
+  // Put a finished item (failed / cancelled / waiting / skipped) back on the
+  // queue with a fresh retry budget. An item that is still being worked on is
+  // left alone: resetting it would corrupt the running worker's state.
+  // Returns false when the id is unknown, null when the item is still active.
+  retry(id) {
+    const it = this.items.find((x) => x.id === Number(id));
+    if (!it) return false;
+    if (this._active.has(it)) return null;
+    it.attempts = 0;
+    it._failStreak = 0;
+    it.error = null;
+    it.status = 'queued';
+    this._stopRequested = null;
+    this._emit();
+    this._kick();
+    return true;
+  }
+
+  // Re-check every parked worker (after read-only mode or a setting that
+  // gates downloads changes).
+  wake() {
+    this._releaseGate();
+    this._kick();
+  }
+
+  // Write the restart manifest now (app quit).
+  persist() {
+    this._persist();
   }
 
   // Remove everything and abort all active downloads.
@@ -961,6 +996,14 @@ class DownloadManager extends EventEmitter {
         this._releaseDownloadSlot(item);
         item.attempts += 1;
         item.error = err.message;
+        // Consecutive failures that made NO progress. A long download that
+        // keeps resuming (expired CDN token -> fresh token -> next part) moves
+        // forward every time and is never cut off; one that fails the same
+        // way every time is.
+        const progressed = (item.progress || 0) > (item._progressAtLastFail || 0) || (item.bytes || 0) > (item._bytesAtLastFail || 0);
+        item._failStreak = progressed ? 1 : (item._failStreak || 0) + 1;
+        item._progressAtLastFail = item.progress || 0;
+        item._bytesAtLastFail = item.bytes || 0;
         this._log(`Error on "${item.label}" (attempt ${item.attempts}): ${err.message}`);
         item.status = 'queued';
         this._emit();
@@ -1006,6 +1049,23 @@ class DownloadManager extends EventEmitter {
           continue;
         }
         const rateLimited = /429|too many requests/i.test(err.message || '');
+        // Endless retries on one dead episode held a worker for hours (the
+        // 190-try S2E03). Rate limits are waited out, never counted.
+        const maxStreak = Math.max(1, (config.download.maxRetries || 6) * 2);
+        if (!rateLimited && item._failStreak >= maxStreak) {
+          const idx = this.items.indexOf(item);
+          if (idx >= 0 && idx < this.items.length - 1) {
+            this.items.splice(idx, 1);
+            this.items.push(item);
+          }
+          item.status = 'failed';
+          this._emit();
+          this._log(
+            `Gave up on "${item.label}" after ${item._failStreak} tries in a row with no progress (${err.message}). ` +
+              'Use Retry to try again; other downloads continue.'
+          );
+          return { fatal: false };
+        }
         const wait = rateLimited
           ? Math.min(90000, (config.download.rateLimitCooldownMs || 30000) * Math.min(item.attempts, 3))
           : Math.min(

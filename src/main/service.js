@@ -463,15 +463,9 @@ function queueRemove(id) {
 }
 function queueRetry(id) {
   // A failed item: reset its attempts and put it back in the queue.
-  const items = manager.items;
-  const it = items.find((x) => x.id === Number(id));
-  if (!it) throw Object.assign(new Error('queue item not found: ' + id), { code: 'NOT_FOUND', status: 404 });
-  it.attempts = 0;
-  it.error = null;
-  it.status = 'queued';
-  manager._emit();
-  manager._kick();
-  return { retried: true };
+  const r = manager.retry(id);
+  if (r === false) throw Object.assign(new Error('queue item not found: ' + id), { code: 'NOT_FOUND', status: 404 });
+  return { retried: r === true, active: r === null };
 }
 
 // ---- waiting for dub ----
@@ -618,7 +612,7 @@ function settingsPut(patch) {
   if (Object.keys(allowed).length) engineconfig.set(allowed);
   if (patch && typeof patch.readOnly === 'boolean') {
     library.setReadOnly(patch.readOnly);
-    manager._releaseGate(); // wake workers parked in read-only mode
+    manager.wake(); // wake workers parked in read-only mode
   }
   return settingsGet();
 }
