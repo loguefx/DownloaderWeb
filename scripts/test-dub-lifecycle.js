@@ -54,9 +54,12 @@ async function main() {
   const vpn = M('vpn');
   vpn._setStatus(true, 'test', 'test');
   const dubstatus = M('dubstatus');
-  // Aniwave is the second dub source; these cases are about Vidsrc's answers,
-  // and nothing may reach the real site.
+  // Anime dub status comes from the anime sources (Aniwave, Anime Village).
+  // Aniwave answers nothing here; Anime Village is faked below. Nothing may
+  // reach a real site.
   dubstatus._setAniwaveForTests(async () => null);
+  const avDubbed = new Set(['Dub Show|1|1', 'Dub Show|1|2']);
+  dubstatus._setAnimevillageForTests(async (title, season, episodes) => new Map(episodes.map((e) => [e, avDubbed.has(`${title}|${season}|${e}`)])));
   const pending = M('pending');
   const schedule = M('schedule');
   const bulk = M('bulk');
@@ -64,7 +67,7 @@ async function main() {
   const watcher = M('watcher');
   const service = M('service');
 
-  // Fake source: which (tmdb, season, episode) are dubbed releases.
+  // Fake Vidsrc (TV/movie badge): which (tmdb, season, episode) are dubbed releases.
   const dubbed = new Set(['500|1|1', '500|1|2']);
   let lookups = 0;
   dubstatus._setLookupForTests(async (ref) => {
@@ -73,7 +76,7 @@ async function main() {
     return { status: 'ok', fileName: `Show.S0${ref.season}E0${ref.episode}.${d ? 'DUBBED.' : ''}1080p.WEB.H264-GRP.mkv` };
   });
 
-  console.log('\n[1] Dub count from the source, cached');
+  console.log('\n[1] Dub count from Vidsrc (TV/movies), cached');
   dubstatus._resetForTests();
   const r1 = await dubstatus.checkSeason('500', 1, [1, 2, 3, 4]);
   check('2 of 4 episodes dubbed', r1.dubbed === 2 && r1.notDubbed === 2 && r1.total === 4, JSON.stringify(r1));
@@ -126,7 +129,7 @@ async function main() {
   await watcher.checkNow();
   check('nothing queued while still not dubbed', added.length === 0, JSON.stringify(added.map((a) => a.episode)));
   check('log says episodes are still waiting', logs.some((m) => /"Dub Show" season 1: no new English-dubbed episodes; 2 episode\(s\) still waiting/.test(m)), logs.join(' | '));
-  dubbed.add('500|1|3'); // E3's dub comes out ...
+  avDubbed.add('Dub Show|1|3'); // E3's dub comes out ...
   dubstatus._resetForTests(); // ... and the next daily pass runs a day later (cache aged out)
   logs.length = 0;
   await watcher.checkNow();
@@ -153,7 +156,7 @@ async function main() {
   check('...and nothing parked on the waiting list', !pending.list().some((x) => x.series === 'Watch Show'));
   check('...the log says it is watching until the dub starts', logs.some((m) => /"Watch Show" season 2: 3 aired episode\(s\) not dubbed yet - the English dub has not started/.test(m)), logs.join(' | '));
   // First dub of season 2 arrives (E1).
-  dubbed.add('600|2|1');
+  avDubbed.add('Watch Show|2|1');
   dubstatus._resetForTests();
   r4 = await watcher.queueMissingEps(s, 2, eps, null, template, roots, false, 0);
   check('first dub out: E1 queued', JSON.stringify(queued2) === '[1]', JSON.stringify(queued2));

@@ -354,6 +354,11 @@ async function main() {
       const origDirect = vs.directResolve;
       let directCalls = 0;
       vs.directResolve = async () => { directCalls += 1; return { status: 'wrong_audio', reason: 'audio is Japanese (audio stream tags), not an English dub' }; };
+      // Anime Village (asked first for anime): no dub of this show yet.
+      const avMod = M('sites/animevillage');
+      const origAv = avMod.resolveForJob;
+      let avCalls = 0;
+      avMod.resolveForJob = async () => { avCalls += 1; return { status: 'none', reason: 'Anime Village has no English dub of "Dub Show" E1 yet', notDubbed: true }; };
       let discovers = 0;
       const liveFlags = [];
       const dlogs = [];
@@ -379,17 +384,37 @@ async function main() {
       });
       const ditem = manager.items.find((x) => x.id === did);
       for (let i = 0; i < 150 && !(discovers >= 2 && ditem.attempts >= 2); i++) await sleep(100);
-      check('Vidsrc wrong audio -> dub-aware discovery runs', discovers >= 1 && directCalls >= 1, 'discovers=' + discovers + ' directCalls=' + directCalls);
-      check('...and says why', dlogs.some((m) => /trying sites with a DUB option/.test(m)), dlogs.slice(0, 4).join(' | '));
+      check('anime: Anime Village first, then Aniwave discovery', avCalls >= 1 && discovers >= 1, 'avCalls=' + avCalls + ' discovers=' + discovers);
+      check('anime never asks Vidsrc', directCalls === 0, 'directCalls=' + directCalls);
       check('the Japanese-only file was rejected, not kept', dlogs.some((m) => /downloaded audio is Japanese, not an English dub/.test(m)), dlogs.slice(-4).join(' | '));
       check('nothing was saved for the episode', !fs.existsSync(path.join(DATA_DIR, 'staging', 'Dub Show', 'Season 1', 'Dub Show S1E1.mp4')));
       check('the server that served it is skipped next time', (ditem.skipSources || []).includes('japaneseserver'), JSON.stringify(ditem.skipSources));
-      check('later attempts do not ask Vidsrc again', directCalls === 1, 'directCalls=' + directCalls);
       // manager.add() copies the record: discovery must get the LIVE item,
       // or "skip the Vidsrc page" never reaches it (live run: 54 s wasted).
       check('discovery receives the live item with the skip-source flag set', liveFlags.length > 0 && liveFlags[0] === true, JSON.stringify(liveFlags));
       manager.removeByIds([did]);
       await sleep(200);
+
+      // Anime Village's own file turns out not to be English: it is skipped
+      // for the series from then on (like any server caught that way).
+      avCalls = 0;
+      avMod.resolveForJob = async () => {
+        avCalls += 1;
+        return { status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'animevillage', dubEvidence: 'separate-dub-file' } };
+      };
+      let avDiscovers = 0;
+      const aid = manager.add({
+        label: 'Av Show S1E1', series: 'Av Show', season: 1, episode: 1, mode: 'dub', anime: true, minHeight: 0,
+        url: 'https://vidsrc.sh/embed/tv/125-1-1', outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: () => { avDiscovers += 1; return Promise.resolve({ status: 'unavailable', reason: 'test' }); }
+      });
+      const aitem = manager.items.find((x) => x.id === aid);
+      for (let i = 0; i < 150 && avDiscovers < 1; i++) await sleep(100);
+      check('Anime Village file with Japanese audio: rejected, Anime Village skipped next', avCalls === 1 && avDiscovers >= 1 && (aitem.skipSources || []).includes('animevillage'), 'avCalls=' + avCalls + ' discovers=' + avDiscovers + ' skip=' + JSON.stringify(aitem.skipSources));
+      check('...nothing was saved', !fs.existsSync(path.join(DATA_DIR, 'staging', 'Av Show', 'Season 1', 'Av Show S1E1.mp4')));
+      manager.removeByIds([aid]);
+      await sleep(150);
+      avMod.resolveForJob = async () => ({ status: 'none', reason: 'test' });
 
       // The NEXT episode of the same series starts with that server skipped
       // (live: Aniwave's "MyCloud" DUB-row server served Chinese audio for
@@ -429,6 +454,7 @@ async function main() {
       manager.removeByIds([uid]);
       await sleep(150);
       vs.directResolve = origDirect;
+      avMod.resolveForJob = origAv;
       manager._log = realLog4;
       msrv.close();
     }

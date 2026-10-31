@@ -339,8 +339,11 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             // fall back to the Cloudflare-gated sites as a last resort (one more
             // chance to find 1080p). The user only sees the CF checkbox if every
             // CF-free source has already failed.
+            // Anime: only the anime sources (Aniwave here; Anime Village is
+            // resolved headlessly by the queue before discovery).
             const allCands = sites.profiles
               .filter((c) => c && c.id !== (profile && profile.id) && typeof c.findTitle === 'function')
+              .filter((c) => !ref.anime || c.animeSource)
               .sort((a, b) => rank(a) - rank(b));
             // Phase 1: CF-free sites only
             let cands = allCands.filter((c) => !c.cloudflare);

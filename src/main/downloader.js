@@ -384,7 +384,7 @@ async function sweepStaleHlsCaches(maxAgeMs = 3 * 24 * 3600 * 1000, dir = os.tmp
 //     (instead of ffmpeg churning for 30 minutes); the queue re-resolves a
 //     FRESH token and the next pass resumes from the last saved part;
 //   - per-segment timeouts, so a wedged socket errors in ~60s, not forever.
-function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } = {}) {
+function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0, headers = null } = {}) {
   // timeoutMs  - socket-IDLE timeout (fires when the wire goes fully silent).
   // deadlineMs - ABSOLUTE cap for the whole fetch: it fires even if bytes keep
   //              trickling. Without it, a CDN that holds the connection open
@@ -424,7 +424,10 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } =
       }
       fail(e);
     };
-    const rq = lib.get(url, { headers: { 'User-Agent': ua || 'webvideodownloader' }, timeout: timeoutMs }, (rs) => {
+    // headers: extra request headers a CDN insists on (Anime Village's needs
+    // its player's Referer/Origin); never cookies.
+    const reqHeaders = Object.assign({}, headers || {}, { 'User-Agent': ua || 'webvideodownloader' });
+    const rq = lib.get(url, { headers: reqHeaders, timeout: timeoutMs }, (rs) => {
       const code = rs.statusCode || 0;
       if (code >= 400) {
         const e = new Error('HTTP ' + code);
@@ -500,7 +503,7 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } =
   });
 }
 
-async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, onLog } = {}) {
+async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, onLog, headers = null } = {}) {
   const lines = String(text || '').split(/\r?\n/);
   const jobs = [];
   let segN = 0;
@@ -619,7 +622,8 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       try {
         const buf = await plainHttpBuffer(job.abs, ua, SEG_IDLE_MS, {
           signal: runCtrl.signal,
-          deadlineMs: SEG_DEADLINE_MS
+          deadlineMs: SEG_DEADLINE_MS,
+          headers
         });
         if (!buf || !buf.length) throw new Error('empty part');
         if (hlscheck.bufferTsTruncated(buf)) throw new Error('part cut short (partial TS packet); will refetch');
@@ -938,6 +942,11 @@ async function downloadHls(detection, partPath, opts = {}) {
   const ua =
     Object.entries(headers).find(([k]) => k.toLowerCase() === 'user-agent')?.[1] ||
     config.download.userAgent;
+  // plainHttp: the detection's own headers besides User-Agent (Vidsrc has
+  // none; Anime Village's CDN needs its player's Referer/Origin).
+  const plainHeaders = detection.plainHttp
+    ? Object.fromEntries(Object.entries(detection.headers || {}).filter(([k]) => k.toLowerCase() !== 'user-agent'))
+    : null;
 
   const treatAsHls =
     detection.type !== 'mp4' &&
@@ -1035,7 +1044,7 @@ async function downloadHls(detection, partPath, opts = {}) {
             // Same approach as vidsrc_dl.js verification which works reliably.
             buf = await new Promise((resolve, reject) => {
               const lib = firstSeg.startsWith('http:') ? require('http') : require('https');
-              const rq = lib.get(firstSeg, { headers: { 'User-Agent': ua }, timeout: 20000 }, (rs) => {
+              const rq = lib.get(firstSeg, { headers: Object.assign({}, plainHeaders, { 'User-Agent': ua }), timeout: 20000 }, (rs) => {
                 const c = [];
                 rs.on('data', (d) => c.push(d));
                 rs.on('end', () => resolve(Buffer.concat(c)));
@@ -1091,7 +1100,8 @@ async function downloadHls(detection, partPath, opts = {}) {
         localPlaylist = await localizePlainSegments(loaded.text, loaded.base, dir, ua, {
           signal,
           onProgress,
-          onLog
+          onLog,
+          headers: plainHeaders
         });
         // The master listed the audio as a separate track (#EXT-X-MEDIA with
         // a URI): the video segments carry no sound, so fetch the chosen
@@ -1099,10 +1109,10 @@ async function downloadHls(detection, partPath, opts = {}) {
         if (detection.audioUrl) {
           const audioDir = path.join(dir, 'audio');
           fs.mkdirSync(audioDir, { recursive: true });
-          const audioText = (await plainHttpBuffer(detection.audioUrl, ua, 30000, { signal, deadlineMs: 60000 })).toString('utf8');
+          const audioText = (await plainHttpBuffer(detection.audioUrl, ua, 30000, { signal, deadlineMs: 60000, headers: plainHeaders })).toString('utf8');
           if (!/#EXTINF:/i.test(audioText)) throw new Error('audio track playlist is empty or not HLS');
           if (onLog) onLog(`Fetching the separate ${detection.audioLabel || 'audio'} track.`);
-          detection._localAudioPlaylist = await localizePlainSegments(audioText, detection.audioUrl, audioDir, ua, { signal, onLog });
+          detection._localAudioPlaylist = await localizePlainSegments(audioText, detection.audioUrl, audioDir, ua, { signal, onLog, headers: plainHeaders });
         }
       } else {
         fs.mkdirSync(dir, { recursive: true });
@@ -1305,7 +1315,7 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
     }
 
     const hasExternalSub = detection.embedSubs && detection.subtitleUrl;
-    if (hasExternalSub) args.push('-i', detection.subtitleUrl);
+    if (hasExternalSub) args.push('-i', /^https?:/i.test(detection.subtitleUrl) ? detection.subtitleUrl : ffmpegFileArg(detection.subtitleUrl));
     // Input order: 0 = video (+ muxed audio), [1 = separate audio], [next = subtitles].
     const subInput = hasMseAudio ? 2 : 1;
     const fmp4Hls = /mse-(index|video)\.m3u8$/i.test(String(inputUrl || ''));

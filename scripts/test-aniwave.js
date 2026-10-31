@@ -6,8 +6,8 @@
 //      (fixtures shaped like the live pages, Oct 2026);
 //   2. the right entry per title + season; spin-offs never picked;
 //   3. findTitle: anime only; DUB only for an episode Aniwave flags dubbed;
-//   4. an episode is dubbed when Vidsrc has an English release OR Aniwave
-//      flags it (Vidsrc often streams only the Japanese track);
+//   4. an anime episode is dubbed when Aniwave flags it OR Anime Village has
+//      its dub file (Vidsrc is not asked for anime);
 //   5. the watcher queues an episode only Aniwave has dubbed.
 // No network: the catalog's HTTP layer is stubbed.
 
@@ -99,6 +99,20 @@ async function main() {
   check('another show never matches', aw.pickShow(res, 'Solo', 1) === null);
   check('"2nd Season" naming is read as season 2', aw.seasonOfTitle('Golden Kamuy 2nd Season') === 2);
 
+  console.log('\n[2b] Listed only under its original name');
+  aw._setGetForTests(async (p) => {
+    if (p === '/filter?keyword=Shiguang+Dailiren') return filterPage([['shiguang-dailiren-iii-82741', 'Shiguang Dailiren III', 'Shiguang Dailiren III']]);
+    if (p === '/ajax/episode/list/82741') return episodeList(12, [1, 2]);
+    return Object.prototype.hasOwnProperty.call(SITE, p) ? SITE[p] : null;
+  }, async (title) => (title === 'Link Click' ? ['Shiguang Dailiren', '时光代理人'] : []));
+  const lc = await aw.seasonInfo('Link Click', 3);
+  check('"Link Click" S3 found as "Shiguang Dailiren III" via its AniList name', lc && lc.show.id === '82741' && lc.episodes.filter((e) => e.dub).length === 2, lc && JSON.stringify(lc.show));
+  check('roman-numeral seasons are read', aw.seasonOfTitle('Shiguang Dailiren III') === 3);
+  aw._setGetForTests(async (p) => {
+    requests += 1;
+    return Object.prototype.hasOwnProperty.call(SITE, p) ? SITE[p] : null;
+  });
+
   console.log('\n[3] findTitle (cross-site fallback)');
   const sites = M('sites');
   sites.init(DATA_DIR);
@@ -117,14 +131,24 @@ async function main() {
   u = await awProfile.findTitle({ title: 'Solo Leveling', season: 9, episode: 1, displaySeason: 1, displayEpisode: 3, anime: true, mode: 'dub' }, {}, log);
   check("the job's own numbering wins over the TMDB numbering", /76040\/ep-3$/.test(String(u)), u);
 
-  console.log('\n[4] Dubbed = Vidsrc English release OR Aniwave flag');
+  console.log('\n[4] Dubbed = Aniwave flag OR Anime Village dub file (no Vidsrc)');
   const dubstatus = M('dubstatus');
   dubstatus._resetForTests();
-  dubstatus._setLookupForTests(async (ref) => ({ status: 'ok', fileName: `Show.S01E0${ref.episode}.${ref.episode === 1 ? 'DUBBED.' : ''}1080p.mkv` }));
+  let vidsrcAsked = 0;
+  dubstatus._setLookupForTests(async () => { vidsrcAsked += 1; return { status: 'ok', fileName: 'Show.S01E01.DUBBED.1080p.mkv' }; });
+  // Anime Village: Smoking Behind E1-E2 dubbed; "Nowhere Show" is not there.
+  dubstatus._setAnimevillageForTests(async (title, season, eps) =>
+    /^Smoking/.test(title) ? new Map(eps.map((e) => [e, e <= 2])) : null);
   const job = (title, season, episode) => dubstatus.isDubbedForJob({ tmdb: '127532', srcSeason: season, srcEpisode: episode, title, season, episode });
-  check('Vidsrc dubbed (E1) -> dubbed', (await job('Solo Leveling', 1, 1)) === true);
-  check('Vidsrc Japanese-only but Aniwave dubbed (E3) -> dubbed', (await job('Solo Leveling', 1, 3)) === true);
+  check('Aniwave dubbed (Solo Leveling E3) -> dubbed', (await job('Solo Leveling', 1, 3)) === true);
+  check('Aniwave not dubbed but Anime Village has the dub file -> dubbed', (await job('Smoking Behind the Supermarket with You', 1, 2)) === true);
   check('neither has a dub -> not dubbed', (await job('Smoking Behind the Supermarket with You', 1, 3)) === false);
+  check('nothing answers -> unknown', (await job('Nowhere Show', 1, 1)) === null);
+  // Aniwave lists Smoking Behind with 0 dubs; Anime Village unreachable.
+  dubstatus._resetForTests();
+  dubstatus._setAnimevillageForTests(async () => null);
+  check('Aniwave "no dub" + Anime Village unreachable -> unknown (queued, not parked)', (await job('Smoking Behind the Supermarket with You', 1, 5)) === null);
+  check('Vidsrc is never asked for anime', vidsrcAsked === 0, 'asked ' + vidsrcAsked);
 
   console.log('\n[5] The watcher queues an episode only Aniwave has dubbed');
   const engineconfig = M('engineconfig');

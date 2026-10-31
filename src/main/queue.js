@@ -730,7 +730,32 @@ class DownloadManager extends EventEmitter {
         }
         let outcome;
         let noQuality = false;
-        {
+        if (item.anime) {
+          // Anime comes from the anime sites only: Anime Village (headless,
+          // a separate English-dub file per episode) first, then Aniwave
+          // through discovery. Vidsrc and its page are not used for anime.
+          item._wrongAudio = true;
+          if (!(item.skipSources || []).includes('animevillage')) {
+            try {
+              // Bounded: its API retries when busy, and the watchdog kills an
+              // item stuck in "resolving" for a minute.
+              let capTimer = null;
+              outcome = await Promise.race([
+                require('./sites/animevillage').resolveForJob(
+                  { title: item.series, season: item.season, episode: item.episode, mode: item.mode || 'dub' },
+                  { onLog: (m) => this._log(m) }
+                ),
+                new Promise((res) => {
+                  capTimer = setTimeout(() => res({ status: 'none', reason: 'Anime Village did not answer in 40 s' }), 40000);
+                })
+              ]).finally(() => clearTimeout(capTimer));
+              if (outcome && outcome.status !== 'resolved' && /40 s/.test(outcome.reason || '')) this._log(`${outcome.reason}; trying Aniwave.`);
+            } catch (e) {
+              this._log('Anime Village lookup failed (' + ((e && e.message) || e) + '); trying Aniwave.');
+              outcome = null;
+            }
+          }
+        } else {
           const _prof = sites.resolve(item.url || item.baseUrl || '');
           // After Vidsrc showed it has no copy in the requested audio, later
           // attempts go straight to the dub/sub-aware sites.

@@ -562,49 +562,47 @@ async function handle(req, res, u) {
         return;
       }
       const dubstatus = require('./dubstatus');
-      // anime=1: the plugin's seasons may follow the anime layout while the
-      // source numbers episodes the TMDB way - translate exactly like the
-      // download URLs do, so each chip counts what a download would fetch.
-      let map = null;
-      if (['1', 'true', 'yes'].includes(String(u.searchParams.get('anime') || '').toLowerCase())) {
-        try { map = await animelayout.urlMapFor(tmdb, u.searchParams.get('title') || '', { anime: true }); } catch (e) { map = null; }
-      }
-      const pairs = episodes.map((ep) => {
-        let p = { season, episode: ep };
-        if (map) {
-          try {
-            const m = map(season, ep);
-            if (m && m.season != null && m.episode != null) p = { season: m.season, episode: m.episode };
-          } catch (e) { /* identity */ }
-        }
-        return { ep, s: p.season, e: p.episode };
-      });
-      const groups = new Map();
-      for (const p of pairs) {
-        if (!groups.has(p.s)) groups.set(p.s, []);
-        groups.get(p.s).push(p.e);
-      }
-      const check = u.searchParams.get('check') !== '0';
-      const rows = new Map();
-      let pending = false;
-      for (const [s, eps] of groups) {
-        let part = dubstatus.peekSeason(tmdb, s, eps);
-        if (check && part.episodes.some((e) => e.stale)) {
-          dubstatus.checkSeason(tmdb, s, eps, { onLog: service.onLog }).catch(() => {});
-          part = dubstatus.peekSeason(tmdb, s, eps);
-        }
-        if (part.pending) pending = true;
-        for (const row of part.episodes) rows.set(`${s}|${row.episode}`, row);
-      }
-      // Aniwave flags dubs per episode in the plugin's own numbering; an
-      // episode it has dubbed counts even where Vidsrc only has the Japanese.
       const title = String(u.searchParams.get('title') || '').trim();
-      const aw = title ? await dubstatus.aniwaveDubMap(title, season) : null;
-      const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending, episodes: [], aniwave: !!aw };
+      const isAnime = ['1', 'true', 'yes'].includes(String(u.searchParams.get('anime') || '').toLowerCase());
+      const check = u.searchParams.get('check') !== '0';
+      // Anime: the anime sources the downloads use - Aniwave's dub flags
+      // (one request) and Anime Village's separate dub files (looked up in
+      // the background; pending:true until done) - in the plugin's own
+      // numbering. Vidsrc is not used for anime.
+      if (isAnime && title) {
+        const aw = await dubstatus.aniwaveDubMap(title, season);
+        let av = dubstatus.peekAnimevillage(title, season, episodes);
+        const needAv = episodes.filter((ep) => !(aw && aw.get(ep) === true));
+        if (check && av.stale && needAv.length) {
+          dubstatus.animevillageDubMap(title, season, needAv).catch(() => {});
+          av = dubstatus.peekAnimevillage(title, season, episodes);
+        }
+        const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending: av.pending, episodes: [], aniwave: !!aw, animevillage: av.map.size > 0 };
+        for (const ep of episodes) {
+          const a = aw ? aw.get(ep) : undefined;
+          const v = av.map.get(ep);
+          const dubbed = a === true || v === true ? true : v === false ? false : null;
+          if (a !== undefined || v !== undefined) out.checked += 1;
+          if (dubbed === true) out.dubbed += 1;
+          else if (dubbed === false) out.notDubbed += 1;
+          else out.unknown += 1;
+          out.episodes.push({ episode: ep, dubbed, via: a === true ? 'aniwave' : v === true ? 'animevillage' : undefined, sourceSeason: season, sourceEpisode: ep });
+        }
+        json(res, 200, out);
+        return;
+      }
+      // TV / movies: Vidsrc's release names.
+      const pairs = episodes.map((ep) => ({ ep, s: season, e: ep }));
+      const rows = new Map();
+      let part = dubstatus.peekSeason(tmdb, season, episodes);
+      if (check && part.episodes.some((e) => e.stale)) {
+        dubstatus.checkSeason(tmdb, season, episodes, { onLog: service.onLog }).catch(() => {});
+        part = dubstatus.peekSeason(tmdb, season, episodes);
+      }
+      for (const row of part.episodes) rows.set(`${season}|${row.episode}`, row);
+      const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending: part.pending, episodes: [] };
       for (const p of pairs) {
-        const row0 = rows.get(`${p.s}|${p.e}`) || { dubbed: null, at: 0 };
-        const awDub = aw ? aw.get(p.ep) : undefined;
-        const row = awDub === true ? Object.assign({}, row0, { dubbed: true, at: row0.at || Date.now(), via: 'aniwave' }) : row0;
+        const row = rows.get(`${p.s}|${p.e}`) || { dubbed: null, at: 0 };
         if (row.at) out.checked += 1;
         if (row.dubbed === true) out.dubbed += 1;
         else if (row.dubbed === false) out.notDubbed += 1;

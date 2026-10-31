@@ -53,6 +53,9 @@ let get = (pathAndQuery, { ajax = false } = {}) =>
     req.on('error', () => resolve(null));
   });
 
+// Injectable for tests: (title, season) -> [other names of the work]
+let getNames = (title, season) => require('../animenames').namesFor(title, season);
+
 const decode = (s) =>
   String(s || '')
     .replace(/&amp;/g, '&')
@@ -106,26 +109,19 @@ function episodes(id) {
 
 const norm = (s) => String(s || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
 
-// The season number an Aniwave title names ("Season 2", "2nd Season",
-// "Part 2" is NOT a season), or 1 when it names none.
-function seasonOfTitle(t) {
-  const s = norm(t);
-  const m = s.match(/\bseason (\d+)\b/) || s.match(/\b(\d+)(?:st|nd|rd|th) season\b/);
-  return m ? Number(m[1]) : 1;
-}
+// The season number a title names ("Season 2", "2nd Season", a trailing
+// "III"; "Part 2" is NOT a season), or 1 when it names none - and the title
+// with its season markers removed. Shared with Anime Village.
+const { seasonOfTitle, baseName } = require('./animevillage_api');
 
 // The entry for (title, season): the base title must match exactly (after
 // removing a season suffix and anything after a colon), and the season
 // number named in the title must be the one asked for. Movies, specials and
 // spin-offs whose base title differs are never picked.
 function pickShow(results, title, season = 1) {
-  const want = norm(title);
+  const want = baseName(title);
   const wantSeason = Number(season) > 0 ? Number(season) : 1;
-  const base = (t) =>
-    norm(String(t || '').split(':')[0])
-      .replace(/\b(season \d+|\d+(?:st|nd|rd|th) season)\b/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+  const base = baseName;
   const candidates = (results || []).filter((r) => {
     const names = [r.title, r.jp].filter(Boolean);
     const sameWork = names.some((n) => base(n) === want || norm(n) === want);
@@ -140,7 +136,23 @@ function pickShow(results, title, season = 1) {
 // -> { show, episodes } or null
 async function seasonInfo(title, season = 1) {
   const results = await search(title);
-  const show = pickShow(results, title, season);
+  let show = pickShow(results, title, season);
+  if (!show) {
+    // Not under the English title: try the work's other names from AniList
+    // (romaji / Chinese romanization), each matched the same strict way.
+    let names = [];
+    try {
+      names = await getNames(title, season);
+    } catch (e) {
+      names = [];
+    }
+    for (const n of names.filter((x) => /[a-z]/i.test(x)).slice(0, 4)) {
+      const q = String(n).split(':')[0].trim();
+      const res = await search(q);
+      show = pickShow(res, n, season) || pickShow(res, q, season);
+      if (show) break;
+    }
+  }
   if (!show) return null;
   const eps = await episodes(show.id);
   if (!eps) return null;
@@ -159,8 +171,9 @@ module.exports = {
   seasonOfTitle,
   seasonInfo,
   episodeUrl,
-  _setGetForTests(fn) {
+  _setGetForTests(fn, names = async () => []) {
     get = fn;
+    getNames = names;
     cache.clear();
   },
   _clearCache() {

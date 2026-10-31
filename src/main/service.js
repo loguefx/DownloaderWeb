@@ -340,24 +340,15 @@ async function runJob(job) {
     } catch (e) {
       urlMap = null; // best effort: keep the requested numbering
     }
-    // Anime DUB: look the whole selection's dub status up FIRST, one batch
-    // per source season (one shared token, paced like every API call). The
-    // per-episode loop below then reads the cache. Looking episodes up one by
-    // one fetched a new token each time (~80 requests in half a minute) and
-    // got the IP throttled right before the download.
-    if (anime && mode === 'dub' && /^\d+$/.test(dubTmdb)) {
-      const bySourceSeason = new Map();
+    // Anime DUB: look the selection's dub status up FIRST on the anime
+    // sources, one batch per season (Aniwave's list is one request; Anime
+    // Village checks each episode once). The per-episode loop below then
+    // reads the cache.
+    if (anime && mode === 'dub') {
       for (const sel of job.selections) {
         const season = sel.season != null ? sel.season : (ref && ref.season) || 1;
-        for (const ep of sel.episodes) {
-          const m = urlMap ? urlMap(season, ep) : { season, episode: ep };
-          if (!bySourceSeason.has(m.season)) bySourceSeason.set(m.season, []);
-          bySourceSeason.get(m.season).push(m.episode);
-        }
-      }
-      for (const [srcSeason, eps] of bySourceSeason) {
         try {
-          await require('./dubstatus').checkSeason(dubTmdb, srcSeason, eps, { onLog });
+          await require('./dubstatus').animevillageDubMap(series, season, sel.episodes.map(Number));
         } catch (e) {
           // per-episode lookups below fall back to "unknown"
         }
@@ -372,12 +363,11 @@ async function runJob(job) {
         const epUrl =
           require('./urltemplate').buildEpisodeUrl({ baseUrl: url, season: m.season, series }, m.episode) || url;
         const epName = selNames[ep] || selNames[String(ep)] || '';
-        // Anime DUB: only episodes whose source release IS an English dub are
-        // downloaded now. The others wait for their dub (checked every 24 h),
-        // instead of downloading the Japanese release. Unknown (not on the
-        // source, network) is queued: the strict resolver still refuses a
-        // non-English copy and parks it if no dub turns up.
-        if (anime && mode === 'dub' && /^\d+$/.test(dubTmdb)) {
+        // Anime DUB: only episodes an anime source has dubbed are downloaded
+        // now. The others wait for their dub (checked every 24 h), instead of
+        // downloading the Japanese release. Unknown (network) is queued: the
+        // download still refuses anything without proof of the English dub.
+        if (anime && mode === 'dub') {
           let dubbed = null;
           try {
             dubbed = await require('./dubstatus').isDubbedForJob({

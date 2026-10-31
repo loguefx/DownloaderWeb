@@ -43,6 +43,9 @@ module.exports = {
   // the source that actually has English dubs where Vidsrc only streams the
   // Japanese track (e.g. Solo Leveling S1: Vidsrc dub E1-E2, Aniwave E1-E12).
   fallbackRank: 1,
+  // One of the anime sources (with Anime Village): the only catalog the
+  // cross-site search asks for an anime episode.
+  animeSource: true,
 
   // Finds the episode page through Aniwave's own catalog (plain HTTP, no
   // browser). Anime only. In DUB mode only an episode Aniwave flags as

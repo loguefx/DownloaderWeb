@@ -1,11 +1,12 @@
 'use strict';
 
-// Which episodes of an anime season are English-dubbed - on the source the
-// engine downloads from (Vidsrc), judged by the same rule the DUB download
-// uses (audiolang.isEnglishDub: a release must be marked as a dub). So the
-// plugin's "EN DUB n/m" badge, the "send undubbed episodes to the waiting
-// list" decision at queue time and the daily waiting-list pass all agree with
-// what a DUB download would actually get.
+// Which episodes of a season are English-dubbed on the sources the engine
+// downloads from, so the plugin's "EN DUB n/m" badge, the "send undubbed
+// episodes to the waiting list" decision at queue time and the daily
+// waiting-list pass all agree with what a DUB download would actually get.
+//   anime     - Aniwave's per-episode dub flags and Anime Village's separate
+//               dub files (the anime sources; Vidsrc is not used for anime)
+//   TV/movies - Vidsrc's release name (audiolang.isEnglishDub)
 //
 // Results are cached on disk (<userData>/dubstatus.json):
 //   dubbed      kept 7 days  (a dub does not go away)
@@ -131,6 +132,66 @@ async function isDubbed(tmdb, season, episode, { maxAgeMs = null } = {}) {
   return row ? row.dubbed : null;
 }
 
+// ---- Anime Village: a separate dub file per episode ----------------------
+// Looked up by title + the job's own season/episode numbering, cached on disk
+// with the same TTLs as above (a "not dubbed" is re-checked after 12 h, so
+// the daily waiting-list pass always asks again).
+
+// Injectable for tests: (title, season, episodes) -> Map(episode -> bool) | null
+let animevillageLookup = (title, season, episodes) =>
+  require('./sites/animevillage_api').dubMap(title, season, { only: episodes });
+
+const avKey = (title, season, ep) =>
+  `av|${String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${Number(season) || 1}|${ep}`;
+const avRunning = new Map(); // "title|season" -> promise
+
+// Cached answers only: { map: Map(episode -> true/false), stale, pending }
+function peekAnimevillage(title, season, episodes) {
+  const c = load();
+  const map = new Map();
+  let stale = false;
+  for (const ep of episodes) {
+    const hit = c[avKey(title, season, ep)];
+    if (hit && hit.dubbed != null) map.set(Number(ep), hit.dubbed);
+    if (!fresh(hit)) stale = true;
+  }
+  return { map, stale, pending: avRunning.has(avKey(title, season, '')) };
+}
+
+// Episode -> dubbed for the episodes asked; stale ones are looked up (one
+// run per title + season at a time). null when Anime Village answered nothing.
+function animevillageDubMap(title, season, episodes, { force = false } = {}) {
+  if (!title || !episodes || !episodes.length) return Promise.resolve(null);
+  const rk = avKey(title, season, '');
+  const run = async () => {
+    const c = load();
+    const need = episodes.filter((ep) => force || !fresh(c[avKey(title, season, ep)]));
+    if (need.length) {
+      let m = null;
+      try {
+        m = await animevillageLookup(title, Number(season) || 1, need.map(Number));
+      } catch (e) {
+        m = null;
+      }
+      if (m) {
+        for (const ep of need) {
+          if (!m.has(Number(ep))) continue;
+          c[avKey(title, season, ep)] = { dubbed: m.get(Number(ep)), at: Date.now(), v: RULE_VERSION };
+        }
+        saveSoon();
+      }
+    }
+    const { map } = peekAnimevillage(title, season, episodes);
+    return map.size ? map : null;
+  };
+  const p = (avRunning.get(rk) || Promise.resolve()).catch(() => {}).then(run);
+  const tracked = p.finally(() => {
+    if (avRunning.get(rk) === tracked) avRunning.delete(rk);
+  });
+  avRunning.set(rk, tracked);
+  return p;
+}
+
 // ---- Aniwave: the per-episode dub flags of its catalog -------------------
 // Vidsrc often streams only the Japanese track of a dual release, while
 // Aniwave serves the English dub as its own stream (and flags data-dub per
@@ -151,26 +212,24 @@ async function aniwaveDubMap(title, season) {
   }
 }
 
-// One episode of a job: dubbed on ANY source the engine downloads from.
-//   true  - Vidsrc has an English release, or Aniwave flags it dubbed
-//   false - a source answered and neither has a dub
-//   null  - nothing could be checked
-// { tmdb, srcSeason, srcEpisode } = Vidsrc (TMDB) numbering;
-// { title, season, episode }      = the job's own (Aniwave) numbering.
-async function isDubbedForJob({ tmdb, srcSeason, srcEpisode, title, season, episode }) {
-  let vid = null;
-  if (/^\d+$/.test(String(tmdb || ''))) {
-    try {
-      vid = await isDubbed(String(tmdb), srcSeason, srcEpisode);
-    } catch (e) {
-      vid = null;
-    }
-  }
-  if (vid === true) return true;
+// One ANIME episode of a job: dubbed on an anime source the engine
+// downloads from (Vidsrc is not used for anime).
+//   true  - Aniwave flags it dubbed, or Anime Village has its dub file
+//   false - Anime Village answered "no dub" (no dub file / not listed) and
+//           Aniwave does not flag it either
+//   null  - Anime Village could not be checked: Aniwave's "no" alone is not
+//           enough (Smoking Behind: 0 dubs on Aniwave, all 12 on Anime
+//           Village) - the episode is queued and the download decides
+// { title, season, episode } = the job's own numbering (the anime sites'
+// layout). tmdb/srcSeason/srcEpisode are accepted for older callers.
+async function isDubbedForJob({ title, season, episode }) {
   const aw = await aniwaveDubMap(title, season);
   const a = aw ? aw.get(Number(episode)) : undefined;
   if (a === true) return true;
-  if (vid === false || a === false) return false;
+  const av = await animevillageDubMap(title, season, [Number(episode)]);
+  const v = av ? av.get(Number(episode)) : undefined;
+  if (v === true) return true;
+  if (v === false) return false;
   return null;
 }
 
@@ -180,8 +239,13 @@ module.exports = {
   isDubbed,
   isDubbedForJob,
   aniwaveDubMap,
+  animevillageDubMap,
+  peekAnimevillage,
   _setAniwaveForTests(fn) {
     aniwaveSeason = fn;
+  },
+  _setAnimevillageForTests(fn) {
+    animevillageLookup = fn;
   },
   TTL,
   _setLookupForTests(fn) {
@@ -190,5 +254,6 @@ module.exports = {
   _resetForTests(reloadFromDisk = false) {
     cache = reloadFromDisk ? null : {};
     running.clear();
+    avRunning.clear();
   }
 };

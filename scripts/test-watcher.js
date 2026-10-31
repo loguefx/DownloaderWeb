@@ -91,6 +91,9 @@ async function main() {
   // every episode counts as dubbed, and NOTHING may reach the real source.
   M('dubstatus')._setLookupForTests(async (ref) => ({ status: 'ok', fileName: `fixture.S${ref.season}E${ref.episode}.DUBBED.mkv` }));
   M('dubstatus')._setAniwaveForTests(async () => null);
+  // Anime dub status comes from the anime sources: every fixture episode is
+  // dubbed on Anime Village (no network).
+  M('dubstatus')._setAnimevillageForTests(async (title, season, eps) => new Map(eps.map((e) => [Number(e), true])));
   const schedule = M('schedule');
   const pending = M('pending');
   const manager = M('queue');

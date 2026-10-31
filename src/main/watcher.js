@@ -437,19 +437,9 @@ class Watcher {
     // episode is already owned, so none may be re-queued and none is missed.
     const floor = this.seriesFlatFloor(roots, s.series);
     const floorActive = floor != null && sourceTotal != null && floor >= sourceTotal;
-    // Anime DUB: which aired episodes are English-dubbed on the source (one
-    // batched, cached check per season, TMDB numbering like the source URL).
-    const pairOf = (ep) => {
-      if (!urlMap) return { season, episode: ep };
-      try {
-        const m = urlMap(season, ep);
-        if (m && m.season != null && m.episode != null) return { season: m.season, episode: m.episode };
-      } catch (err) {
-        // identity
-      }
-      return { season, episode: ep };
-    };
-    const dubGate = !!(s.anime && (s.mode || 'dub') === 'dub' && /^\d+$/.test(String(s.tmdb || '')));
+    // Anime DUB: which aired episodes are English-dubbed on the anime sources
+    // (Aniwave, Anime Village; cached), in the job's own numbering.
+    const dubGate = !!(s.anime && (s.mode || 'dub') === 'dub');
     // Episodes of this season already waiting for their dub = the user asked
     // for this season in DUB: any other missing, undubbed episode waits too
     // (e.g. one deleted because it was not the dub).
@@ -460,12 +450,6 @@ class Watcher {
     let parked = 0;
     if (dubGate && eps.length) {
       const dubstatus = require('./dubstatus');
-      const bySeason = new Map();
-      for (const e of eps) {
-        const p = pairOf(e.episode);
-        if (!bySeason.has(p.season)) bySeason.set(p.season, []);
-        bySeason.get(p.season).push({ ep: e.episode, urlEp: p.episode });
-      }
       const aw = await dubstatus.aniwaveDubMap(s.series, season);
       if (aw) {
         for (const e of eps) {
@@ -475,20 +459,22 @@ class Watcher {
           }
         }
       }
-      for (const [urlSeason, list] of bySeason) {
-        let res = null;
-        try {
-          res = await dubstatus.checkSeason(s.tmdb, urlSeason, list.map((x) => x.urlEp), { onLog: this.onLog });
-        } catch (err) {
-          res = null;
-        }
-        for (const x of list) {
-          const row = res && res.episodes.find((r) => r.episode === x.urlEp);
-          const d = row ? row.dubbed : null;
-          // Aniwave's "dubbed" (set above) wins over Vidsrc's "no".
-          if (dubbedOf.get(x.ep) !== true) dubbedOf.set(x.ep, d);
-          if (d === true) dubStarted = true;
-        }
+      // Anime Village: a separate dub file per episode (the episodes
+      // Aniwave did not already show dubbed). Vidsrc is not used for anime.
+      const rest = eps.filter((e) => dubbedOf.get(e.episode) !== true).map((e) => Number(e.episode));
+      let av = null;
+      try {
+        av = rest.length ? await dubstatus.animevillageDubMap(s.series, season, rest) : null;
+      } catch (err) {
+        av = null;
+      }
+      for (const e of eps) {
+        if (dubbedOf.get(e.episode) === true) continue;
+        const v = av ? av.get(Number(e.episode)) : undefined;
+        // Only Anime Village's answer makes it "not dubbed" (see isDubbedForJob).
+        const d = v === true ? true : v === false ? false : null;
+        dubbedOf.set(e.episode, d);
+        if (d === true) dubStarted = true;
       }
     }
     for (const e of eps) {
@@ -711,7 +697,7 @@ class Watcher {
       // spending anything on it. Not out -> stays on the list (checked again
       // in 24 h). Out -> queued even in report-only mode: these are episodes
       // the user already asked for, not the scanner's guesses.
-      const dubEntry = spec.anime && (spec.mode || 'dub') === 'dub' && spec.tmdb;
+      const dubEntry = spec.anime && (spec.mode || 'dub') === 'dub';
       if (dubEntry) {
         let dubbed = null;
         try {
