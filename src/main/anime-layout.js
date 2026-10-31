@@ -384,6 +384,23 @@ function titlesMatch(a, b) {
   return prefix >= 12;
 }
 
+// The TMDB API key: $TMDB_API_KEY, else the engine's engine.json
+// ("tmdbApiKey") - where the engine keeps it. It used to be read ONLY from
+// opts.engineconfig, which no caller passed: on a real engine every lookup
+// here had no key, so the TMDB <-> anime-site plan was never built (Link
+// Click in an AniDB library fell back to TMDB's seasons, downloads were never
+// translated, the rename preview could never compare).
+function tmdbKey(opts = {}) {
+  if (process.env.TMDB_API_KEY) return String(process.env.TMDB_API_KEY).trim();
+  try {
+    const ec = (opts && opts.engineconfig) || require('./engineconfig');
+    const c = (ec && typeof ec.get === 'function' && ec.get()) || {};
+    return String(c.tmdbApiKey || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
 // TMDB -> AniList id (deterministic; no title guessing). Cached.
 async function anilistIdFor(tmdbId, opts = {}) {
   const key = 'anilistid:' + String(tmdbId || '');
@@ -391,11 +408,10 @@ async function anilistIdFor(tmdbId, opts = {}) {
   if (cached !== undefined) return cached;
   const id = String(tmdbId || '').trim();
   if (!/^\d+$/.test(id)) return null;
-  const c = (opts.engineconfig && opts.engineconfig.get && opts.engineconfig.get()) || {};
-  const apiKey = String(process.env.TMDB_API_KEY || c.tmdbApiKey || '').trim();
+  const apiKey = tmdbKey(opts);
   if (!apiKey) return null;
   const get = opts.fetcher || ((u) => httpJson(u, 10000));
-  const body = await get('https://api.themoviedb.org/3/tv/' + id + '/external_ids');
+  const body = await get('https://api.themoviedb.org/3/tv/' + id + '/external_ids?api_key=' + encodeURIComponent(apiKey));
   const aid = body && body.anilist_id ? String(body.anilist_id) : '';
   cacheSet(key, aid);
   return aid || null;
@@ -510,14 +526,14 @@ async function tmdbSeasonCounts(tmdbId, opts = {}) {
   if (cached !== undefined) return cached;
   const id = String(tmdbId || '').trim();
   if (!/^\d+$/.test(id)) return null;
-  const c = (opts.engineconfig && opts.engineconfig.get && opts.engineconfig.get()) || {};
-  const apiKey = String(process.env.TMDB_API_KEY || c.tmdbApiKey || '').trim();
+  const apiKey = tmdbKey(opts);
   if (!apiKey) return null;
   const get = opts.fetcher || ((u) => httpJson(u, 10000));
-  const body = await get('https://api.themoviedb.org/3/tv/' + id + '?language=en-US');
+  // The key must go WITH the request (it used to be checked, then never
+  // sent: TMDB answered 401 and the failure was cached for an hour).
+  const body = await get('https://api.themoviedb.org/3/tv/' + id + '?language=en-US&api_key=' + encodeURIComponent(apiKey));
   if (!body || !Array.isArray(body.seasons)) {
-    cacheSet(key, null);
-    return null;
+    return null; // not cached: a network hiccup must not stick for an hour
   }
   const seasons = body.seasons
     .filter((s) => s.season_number > 0)

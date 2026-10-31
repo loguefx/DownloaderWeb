@@ -431,6 +431,31 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
 
   }
 
+  console.log('\n[12] TMDB key from engine.json (no env var), sent with the request');
+  {
+    const os = require('os');
+    const saved = process.env.TMDB_API_KEY;
+    delete process.env.TMDB_API_KEY;
+    const engineconfig = require(path.join(__dirname, '..', 'src', 'main', 'engineconfig.js'));
+    const prevDir = engineconfig.dataDir;
+    engineconfig.dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'al-key-'));
+    engineconfig.set({ tmdbApiKey: 'KEY-FROM-ENGINE-JSON' });
+    mod._resetCache();
+    const urls = [];
+    try {
+      const counts = await mod.tmdbSeasonCounts('126318', { fetcher: async (u) => { urls.push(u); return { first_air_date: '2021-04-30', seasons: [{ season_number: 1, episode_count: 11 }] }; } });
+      check('key read from engine.json when no env var is set (the live engine case)', counts && counts.length === 1, counts);
+      check('the key is SENT with the TMDB request', urls[0] && urls[0].includes('api_key=KEY-FROM-ENGINE-JSON'), urls[0]);
+      mod._resetCache();
+      const miss = await mod.tmdbSeasonCounts('126318', { fetcher: async () => null });
+      const again = await mod.tmdbSeasonCounts('126318', { fetcher: async () => ({ seasons: [{ season_number: 1, episode_count: 11 }] }) });
+      check('a failed TMDB answer is not cached (next call retries)', miss === null && again && again.length === 1);
+    } finally {
+      engineconfig.dataDir = prevDir;
+      if (saved !== undefined) process.env.TMDB_API_KEY = saved;
+    }
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => {
