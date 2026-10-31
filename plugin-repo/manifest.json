@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.39",
+                "changelog": "Anime now uses TMDB's season numbering - the one Jellyfin shows - so episodes land in the right Jellyfin season (Link Click: Season 3 is the Bridon Arc, Season 4 the 2026 season). Downloads still come from the right anime-site entry. New: files saved in the anime sites' numbering are detected on the title page with a rename preview; nothing moves until you confirm. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v39/MediaDownloader.12.1.0.39.zip",
+                "checksum": "39fc303beb795c3b1fc6a15e6debdb49",
+                "timestamp": "2026-10-31T22:28:31.000Z"
+            },
+            {
                 "version": "12.1.0.38",
                 "changelog": "Library check follows \"Save to library\": it looks only in the chosen library's drives (plus staging and the queue) and re-checks when you switch; anime opens in your Anime library. Library check no longer times out on network drives (\"Engine is offline or did not answer in time\"); dropped engine connections are retried. Anime seasons TMDB lumps together are split (Ranma 1/2 2024 shows 3 seasons); no phantom AniList seasons (Attack on Titan). Announced seasons with no episodes are labelled. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",
@@ -304,6 +312,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.39",
+                "changelog": "Anime now uses TMDB's season numbering - the one Jellyfin shows - so episodes land in the right Jellyfin season (Link Click: Season 3 is the Bridon Arc, Season 4 the 2026 season). Downloads still come from the right anime-site entry. New: files saved in the anime sites' numbering are detected on the title page with a rename preview; nothing moves until you confirm. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v39/MediaDownloader.10.11.0.39.zip",
+                "checksum": "5c1f5003394bf3133b11b8ee47e41b67",
+                "timestamp": "2026-10-31T22:28:31.000Z"
+            },
+            {
                 "version": "10.11.0.38",
                 "changelog": "Library check follows \"Save to library\": it looks only in the chosen library's drives (plus staging and the queue) and re-checks when you switch; anime opens in your Anime library. Library check no longer times out on network drives (\"Engine is offline or did not answer in time\"); dropped engine connections are retried. Anime seasons TMDB lumps together are split (Ranma 1/2 2024 shows 3 seasons); no phantom AniList seasons (Attack on Titan). Announced seasons with no episodes are labelled. Needs the matching engine update.",
                 "targetAbi": "10.11.0.0",
@@ -598,6 +614,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.39",
+                "changelog": "Anime now uses TMDB's season numbering - the one Jellyfin shows - so episodes land in the right Jellyfin season (Link Click: Season 3 is the Bridon Arc, Season 4 the 2026 season). Downloads still come from the right anime-site entry. New: files saved in the anime sites' numbering are detected on the title page with a rename preview; nothing moves until you confirm. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v39/MediaDownloader.10.10.0.39.zip",
+                "checksum": "71be614789c7df598bb95acd0d5cf3fe",
+                "timestamp": "2026-10-31T22:28:31.000Z"
             },
             {
                 "version": "10.10.0.38",
