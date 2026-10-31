@@ -99,6 +99,18 @@ async function main() {
   // Make discovery pass so accepted jobs are not held.
   vpn._setStatus(true, 'itg', 'test');
 
+  // Record every item the engine ACCEPTS into its queue. The queue keeps
+  // working while the C# harness runs and drops a finished/skipped series
+  // group, so reading manager.items afterwards was timing-dependent (it
+  // occasionally found 0 items for a job that had been queued exactly once).
+  const added = [];
+  const realAdd = manager.add.bind(manager);
+  manager.add = (rec) => {
+    const ok = realAdd(rec);
+    if (ok) added.push({ jobId: rec.jobId, library: rec.library });
+    return ok;
+  };
+
   await api.start();
   const KEY = engineconfig.get().apiKey;
   const ENGINE_URL = `http://127.0.0.1:${PORT}`;
@@ -134,8 +146,7 @@ async function main() {
   // ---- engine-side exactly-once assertion ----------------------------------
   // Use the full internal items (manager.items), not service.queueSnapshot(),
   // which returns a reduced shape that omits jobId/library.
-  const items = manager.items || [];
-  const byJob = (id) => items.filter((x) => x.jobId === id);
+  const byJob = (id) => added.filter((x) => x.jobId === id);
   check('engine: delivered job "itg-1" queued EXACTLY once', byJob('itg-1').length === 1, 'count=' + byJob('itg-1').length);
   check('engine: rejected job "itg-bad" NOT queued', byJob('itg-bad').length === 0, 'count=' + byJob('itg-bad').length);
   check('engine: queued item stamped with library', byJob('itg-1')[0] && byJob('itg-1')[0].library && byJob('itg-1')[0].library.name === 'Anime');
