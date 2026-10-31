@@ -39,24 +39,34 @@ function ensureExecutable(p) {
   return p;
 }
 
+// Looked up once per name for the life of the process: this runs before
+// every ffmpeg/ffprobe call, and on Windows a miss made `where` print
+// "INFO: Could not find files for the given pattern(s)." into the engine log
+// each time (its stderr was inherited).
+const pathCache = new Map();
 function findOnPath(name) {
+  if (pathCache.has(name)) return pathCache.get(name);
   // `which` is Unix-only; Windows needs `where`. execFile bypasses the shell so
   // PowerShell's `where` alias is not a problem.
   const cmd = process.platform === 'win32' ? 'where' : 'which';
+  let found = null;
   try {
     const out = execFileSync(cmd, [name], {
       encoding: 'utf8',
       timeout: 2000,
-      windowsHide: true
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore']
     });
-    const first = String(out || '')
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .find((s) => s && fs.existsSync(s));
-    return first || null;
+    found =
+      String(out || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s && fs.existsSync(s)) || null;
   } catch (e) {
-    return null;
+    found = null;
   }
+  pathCache.set(name, found);
+  return found;
 }
 
 function unpackAsar(p) {
