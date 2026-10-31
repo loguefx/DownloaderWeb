@@ -1097,38 +1097,22 @@
                 };
                 const BLOCKED = { 'in-library': true, 'queued': true, 'unaired': true };
 
-                function libDefault(kind) {
+                function libDefault(kind, anime) {
                     const c = S.config || {};
                     const libs = S.libraries || [];
                     const has = (n) => n && libs.some((l) => l.name === n);
+                    // Anime goes to the configured Anime library ("Same as TV"
+                    // = empty, then the TV default below).
+                    if (kind !== 'movie' && anime && has(c.AnimeLibrary)) return c.AnimeLibrary;
                     if (kind === 'movie') {
                         if (has(c.MoviesLibrary)) return c.MoviesLibrary;
                         const m = libs.find((l) => l.collectionType === 'movies');
                         return m ? m.name : (libs[0] ? libs[0].name : '');
                     }
                     if (has(c.TvLibrary)) return c.TvLibrary;
-                    if (has(c.AnimeLibrary)) return c.AnimeLibrary;
                     const t = libs.find((l) => l.collectionType === 'tvshows');
                     return t ? t.name : (libs[0] ? libs[0].name : '');
                 }
-                const normPath = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-                function libraryOfPath(p) {
-                    const n = normPath(p);
-                    let best = null, bestLen = -1;
-                    (S.libraries || []).forEach((l) => (l.locations || []).forEach((loc) => {
-                        const ln = normPath(loc);
-                        if (ln && n.indexOf(ln + '/') === 0 && ln.length > bestLen) { best = l.name; bestLen = ln.length; }
-                    }));
-                    if (best) return best;
-                    // Engine paths may be mapped (Z:\tv vs /mnt/tv): match on the
-                    // library folder's last segment as a weaker hint.
-                    (S.libraries || []).forEach((l) => (l.locations || []).forEach((loc) => {
-                        const tail = normPath(loc).split('/').pop();
-                        if (!best && tail && n.indexOf('/' + tail + '/') >= 0) best = l.name;
-                    }));
-                    return best;
-                }
-
                 function openTitle(r) {
                     const kind = r.type === 'movie' ? 'movie' : 'series';
                     // Anime: accept whatever resolution the source has (often
@@ -1147,7 +1131,7 @@
                         movieStatus: null,
                         found: [],              // existing paths (for library hint)
                         manual: { season: 1, from: 1, to: 1 },
-                        library: libDefault(kind),
+                        library: libDefault(kind, anime),
                         libraryLocked: false,
                         modeAudio: ((S.config && S.config.DefaultMode) || 'dub'),
                         quality: String((S.config && S.config.DefaultMinHeight != null) ? S.config.DefaultMinHeight : 1080),
@@ -1202,6 +1186,13 @@
                     get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv') + (t.anime ? '&anime=1' : '')).then((info) => {
                         if (stale()) return;
                         t.info = info || null;
+                        // Animation from Japan/China/Korea/Taiwan opened from the
+                        // TV tab is handled as anime by the engine: default it to
+                        // the Anime library too (before the library check runs).
+                        if (info && info.animeLike && !t.anime && !t.libraryLocked && t.kind === 'series') {
+                            const animeLib = libDefault('series', true);
+                            if (animeLib) t.library = animeLib;
+                        }
                         if (info && info.title) t.title = info.title;
                         if (info && info.year) t.year = info.year;
                         if (t.kind === 'series') {
@@ -1286,7 +1277,10 @@
                     // number ("Show - Pilot.mp4") still counts as in-library.
                     const epNames = {};
                     (s.eps || []).forEach((e) => { if (e && e.name) epNames[e.episode] = e.name; });
-                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, epNames: epNames, minHeight: Number(t.quality) || 0 })
+                    // Scoped to the library picked in "Save to library": that
+                    // library's drives (plus staging and the queue) are what
+                    // the engine itself checks before downloading into it.
+                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, epNames: epNames, minHeight: Number(t.quality) || 0, library: t.library })
                         .then((r) => {
                             ((r && r.episodes) || []).forEach((e) => {
                                 s.status[e.episode] = e.status;
@@ -1297,12 +1291,6 @@
                         .then(() => {
                             s.checked = true;
                             if (S.t !== t) return;
-                            // A series already filed somewhere: keep new episodes
-                            // in that library so the show is not split.
-                            if (!t.libraryLocked && t.found.length) {
-                                const lib = libraryOfPath(t.found[0]);
-                                if (lib) { t.library = lib; t.libraryFromDisk = true; }
-                            }
                             // Already in the library -> the engine adds it to
                             // the watch list automatically. Surface that here
                             // (and let the user opt out by unchecking).
@@ -1400,11 +1388,38 @@
                     return h;
                 }
 
+                // Re-run the library check from scratch (another library picked,
+                // or another quality floor): statuses from the old check would be
+                // wrong for the new one, so they are cleared first.
+                function checkedWhere(t) {
+                    const l = (S.libraries || []).find((x) => x.name === t.library);
+                    const n = l && l.locations ? l.locations.length : 0;
+                    return (t.library || 'the selected library') + (n ? ' (' + plural(n, 'drive folder') + ')' : '');
+                }
+
+                function recheckLibrary(t) {
+                    t.found = [];
+                    t.checkError = null;
+                    if (t.kind === 'movie') {
+                        t.onDiskMovie = false;
+                        t.moviePath = null;
+                        checkMovie(t);
+                    } else {
+                        t.seasons.forEach((s) => {
+                            if (!s.loaded) return;
+                            s.status = {};
+                            s.checked = false;
+                            checkSeason(t, s);
+                        });
+                    }
+                    renderTitle();
+                }
+
                 function checkMovie(t) {
                     if (!t.title) return;
                     t.movieStatus = 'checking';
                     renderTitle();
-                    post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'movie', minHeight: Number(t.quality) || 0 }).then((r) => {
+                    post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'movie', minHeight: Number(t.quality) || 0, library: t.library }).then((r) => {
                         if (S.t !== t) return;
                         const e = r && r.episodes && r.episodes[0];
                         t.movieStatus = e ? e.status : 'missing';
@@ -1413,8 +1428,6 @@
                         if (e && e.path) {
                             t.found.push(e.path);
                             t.onDiskMovie = true;
-                            const lib = libraryOfPath(e.path);
-                            if (lib && !t.libraryLocked) { t.library = lib; t.libraryFromDisk = true; }
                         }
                         renderTitle();
                     }).catch((err) => {
@@ -1545,9 +1558,11 @@
                     libSel.innerHTML = (S.libraries || []).map((l) => '<option value="' + esc(l.name) + '">' + esc(l.name) + ' (' + esc(l.collectionType) + ')</option>').join('') ||
                         '<option value="">No libraries - add one in Jellyfin</option>';
                     libSel.value = t.library;
-                    $('[data-library-hint]').textContent = t.libraryFromDisk && !t.libraryLocked
-                        ? 'Picked because this title is already on disk there, so it is not split across libraries.'
-                        : 'Files land in this library\'s current folders. Adding a drive in Jellyfin is all that is needed.';
+                    const libObj = (S.libraries || []).find((l) => l.name === t.library);
+                    const drives = libObj && libObj.locations ? libObj.locations.length : 0;
+                    $('[data-library-hint]').textContent = 'The library check looks in ' + (t.library || 'this library') +
+                        (drives ? ' (' + plural(drives, 'drive folder') + ')' : '') +
+                        ' only, plus the queue. Pick another library to check it instead. New files land in its current folders.';
                     $('[data-saved-as]').textContent = savedAs(t);
 
                     renderFoot();
@@ -1569,7 +1584,7 @@
                             ' Downloading again replaces it with a better copy under the same name.' + (t.moviePath ? '<div class="mono" style="margin-top:.3em;word-break:break-all;">' + esc(t.moviePath) + '</div>' : '') +
                             watchNote + '</div></div>';
                         if (t.movieStatus === 'queued') return '<div class="mdl-callout blue">' + ICON.list + '<div><b>Already in the queue.</b> It will land in your library when it finishes.</div></div>';
-                        return '<div class="mdl-callout">' + ICON.check + '<div><b>Not in your libraries yet.</b> <span class="muted">Checked every TV, Movies and Anime drive plus the queue · just now</span></div></div>';
+                        return '<div class="mdl-callout">' + ICON.check + '<div><b>Not in ' + esc(t.library || 'this library') + ' yet.</b> <span class="muted">Checked ' + esc(checkedWhere(t)) + ' plus the queue · just now</span></div></div>';
                     }
                     if (!t.seasons.length) return '';
                     const loaded = t.seasons.filter((s) => s.checked);
@@ -1600,14 +1615,14 @@
                         (where ? '<div class="small" style="margin-top:.2em;word-break:break-all;">' + where + '</div>' : '') +
                         (extra.length ? '<div class="small" style="margin-top:.2em;">' + esc(extra.join(' · ')) + '.</div>' : '') +
                         '<div class="mdl-bar" style="display:flex;"><i style="width:' + pctHave + '%;background:var(--md-green)"></i><i style="width:' + pctLow + '%;background:var(--md-amber,#e8a13c)"></i><i style="width:' + pctQ + '%;background:var(--md-purple)"></i></div>' +
-                        '<div class="small muted" style="margin-top:.35em;">Checked TV, Movies and Anime on every drive, plus the queue · just now</div></div></div>';
+                        '<div class="small muted" style="margin-top:.35em;">Checked ' + esc(checkedWhere(t)) + ', plus the queue · just now</div></div></div>';
                 }
 
                 function movieLeftHtml(t) {
                     const st = t.movieStatus;
                     const rows = [
                         ['Source', 'Vidsrc first, then the engine\'s other sources in fallback order'],
-                        ['Checked', 'Every TV, Movies and Anime drive, staging and the queue'],
+                        ['Checked', checkedWhere(t) + ', staging and the queue'],
                         ['Verified', 'ffprobe confirms the stream and duration before the file is placed']
                     ];
                     return '<h2 style="margin-bottom:.8em;">Download</h2>' +
@@ -1651,6 +1666,9 @@
                         const avail = availableEps(s).length;
                         let sub;
                         if (!s.loaded) sub = 'Loading…';
+                        // A season TMDB announces before listing any episode
+                        // (The Last of Us S3): say so instead of "0 on TMDB".
+                        else if (!s.count) sub = 'Announced · no episodes listed yet';
                         else if (t.mode === 'episodes') {
                             const set = t.sel[s.season] || {};
                             const n = availableEps(s).filter((e) => set[e]).length;
@@ -1692,6 +1710,10 @@
                     const s = t.seasons.find((x) => x.season === t.active) || t.seasons[0];
                     if (!s) return h;
                     if (!s.loaded) return h + '<div class="small muted"><span class="mdl-spin"></span> Loading ' + seasonLabel(s.season).toLowerCase() + '…</div>';
+                    if (!s.count || !(s.eps || []).length) {
+                        return h + '<div class="mdl-empty">' + esc(seasonLabel(s.season)) + ' is announced, but TMDB does not list any of its episodes yet. ' +
+                            'Turn on "Keep watching for new episodes" to queue them as they air.</div>';
+                    }
                     const set = t.sel[s.season] || {};
                     h += '<p class="small muted" style="margin-bottom:.7em;">' + seasonLabel(s.season) + ' has ' + plural(s.count, 'episode') + ' on TMDB. Greyed-out episodes are already in your library, already queued, or not out yet.</p>' +
                          '<div class="mdl-actions" style="margin-bottom:.8em;"><button type="button" class="mdl-btn sm" data-sel="all">Select all available</button><button type="button" class="mdl-btn sm" data-sel="none">Clear</button></div>';
@@ -2248,13 +2270,16 @@
                         renderTitle();
                         return;
                     }
-                    if (t && el.hasAttribute('data-library')) { t.library = el.value; t.libraryLocked = true; renderTitle(); return; }
+                    if (t && el.hasAttribute('data-library')) {
+                        t.library = el.value;
+                        t.libraryLocked = true;
+                        recheckLibrary(t);
+                        return;
+                    }
                     if (t && el.hasAttribute('data-quality')) {
                         t.quality = el.value;
                         // The quality floor changes what counts as "in library".
-                        if (t.kind === 'movie') checkMovie(t);
-                        else t.seasons.forEach((s) => { if (s.loaded) { s.checked = false; checkSeason(t, s); } });
-                        renderTitle();
+                        recheckLibrary(t);
                         return;
                     }
                     if (t && el.hasAttribute('data-watch')) { t.watch = el.checked; t.watchTouched = true; if (el.checked) t.watchAuto = false; return; }

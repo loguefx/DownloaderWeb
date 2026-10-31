@@ -547,8 +547,18 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
             if (!node.ContainsKey("locations"))
             {
+                // The page sends the library picked in "Save to library": only
+                // that library's drive folders are checked (the same folders
+                // the engine checks before downloading into it). No library =
+                // every TV/Movies/Anime library.
                 var libName = Str(node, "library");
                 var libs = ResolveLibraries(string.IsNullOrWhiteSpace(libName) ? null : new[] { libName });
+                if (!string.IsNullOrWhiteSpace(libName) && libs.Count == 0)
+                {
+                    // An unknown name would silently check nothing but staging
+                    // and report every episode as missing.
+                    return BadRequest(new { error = $"Library \"{libName}\" was not found on this server (renamed or removed?). Pick another one in \"Save to library\"." });
+                }
                 var all = new JsonArray();
                 foreach (var lib in libs)
                 {
@@ -592,8 +602,18 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
 
             if (!node.ContainsKey("locations"))
             {
+                // The page sends the library picked in "Save to library": only
+                // that library's drive folders are checked (the same folders
+                // the engine checks before downloading into it). No library =
+                // every TV/Movies/Anime library.
                 var libName = Str(node, "library");
                 var libs = ResolveLibraries(string.IsNullOrWhiteSpace(libName) ? null : new[] { libName });
+                if (!string.IsNullOrWhiteSpace(libName) && libs.Count == 0)
+                {
+                    // An unknown name would silently check nothing but staging
+                    // and report every episode as missing.
+                    return BadRequest(new { error = $"Library \"{libName}\" was not found on this server (renamed or removed?). Pick another one in \"Save to library\"." });
+                }
                 var all = new JsonArray();
                 foreach (var lib in libs)
                 {
