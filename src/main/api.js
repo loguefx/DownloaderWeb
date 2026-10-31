@@ -570,24 +570,62 @@ async function handle(req, res, u) {
       // the background; pending:true until done) - in the plugin's own
       // numbering. Vidsrc is not used for anime.
       if (isAnime && title) {
-        const aw = await dubstatus.aniwaveDubMap(title, season);
-        let av = dubstatus.peekAnimevillage(title, season, episodes);
-        const needAv = episodes.filter((ep) => !(aw && aw.get(ep) === true));
-        if (check && av.stale && needAv.length) {
-          dubstatus.animevillageDubMap(title, season, needAv).catch(() => {});
-          av = dubstatus.peekAnimevillage(title, season, episodes);
+        // The plugin's numbers are TMDB's (Jellyfin's); each episode is
+        // looked up where the anime sources list it (Link Click TMDB S4 =
+        // "Link Click Season 3", TMDB S3 = the "Bridon Arc" entry).
+        const animelayout = require('./anime-layout');
+        const srcs = await Promise.all(episodes.map((ep) =>
+          animelayout.animeSourceEpisode({ tmdb, title, season, episode: ep }).catch(() => ({ season, episode: ep, mapped: false }))));
+        const groups = new Map(); // key -> { season?, entry?, eps: [source episode] }
+        srcs.forEach((src) => {
+          const k = src.entry ? 'e:' + src.entry.id : 's:' + src.season;
+          if (!groups.has(k)) groups.set(k, { season: src.season, entry: src.entry || null, eps: [] });
+          groups.get(k).eps.push(src.episode);
+        });
+        const awByKey = new Map();
+        const avByKey = new Map();
+        let anyAw = false;
+        let anyAv = false;
+        let pending = false;
+        for (const [k, g] of groups) {
+          if (g.entry) {
+            let list = null;
+            try { list = await require('./sites/aniwave_api').episodes(g.entry.id); } catch (e) { list = null; }
+            awByKey.set(k, list ? new Map(list.map((x) => [x.episode, !!x.dub])) : null);
+            avByKey.set(k, { map: new Map(), pending: false });
+          } else {
+            const aw = await dubstatus.aniwaveDubMap(title, g.season);
+            awByKey.set(k, aw);
+            let av = dubstatus.peekAnimevillage(title, g.season, g.eps);
+            const needAv = g.eps.filter((ep) => !(aw && aw.get(ep) === true));
+            if (check && av.stale && needAv.length) {
+              dubstatus.animevillageDubMap(title, g.season, needAv).catch(() => {});
+              av = dubstatus.peekAnimevillage(title, g.season, g.eps);
+            }
+            avByKey.set(k, av);
+          }
+          if (awByKey.get(k)) anyAw = true;
+          if (avByKey.get(k).map.size > 0) anyAv = true;
+          if (avByKey.get(k).pending) pending = true;
         }
-        const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending: av.pending, episodes: [], aniwave: !!aw, animevillage: av.map.size > 0 };
-        for (const ep of episodes) {
-          const a = aw ? aw.get(ep) : undefined;
-          const v = av.map.get(ep);
+        const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending, episodes: [], aniwave: anyAw, animevillage: anyAv };
+        episodes.forEach((ep, i) => {
+          const src = srcs[i];
+          const k = src.entry ? 'e:' + src.entry.id : 's:' + src.season;
+          const aw = awByKey.get(k);
+          const av = avByKey.get(k);
+          const a = aw ? aw.get(src.episode) : undefined;
+          const v = av ? av.map.get(src.episode) : undefined;
           const dubbed = a === true || v === true ? true : v === false ? false : null;
           if (a !== undefined || v !== undefined) out.checked += 1;
           if (dubbed === true) out.dubbed += 1;
           else if (dubbed === false) out.notDubbed += 1;
           else out.unknown += 1;
-          out.episodes.push({ episode: ep, dubbed, via: a === true ? 'aniwave' : v === true ? 'animevillage' : undefined, sourceSeason: season, sourceEpisode: ep });
-        }
+          out.episodes.push({
+            episode: ep, dubbed, via: a === true ? 'aniwave' : v === true ? 'animevillage' : undefined,
+            sourceSeason: src.season, sourceEpisode: src.episode, sourceEntry: src.entry ? src.entry.title : undefined
+          });
+        });
         json(res, 200, out);
         return;
       }
@@ -749,6 +787,12 @@ async function handle(req, res, u) {
     // ---- library check (Part 6) ----
     if (req.method === 'POST' && seg === 'library' && parts[2] === 'check') {
       json(res, 200, await service.libraryCheck(await readBody(req)));
+      return;
+    }
+
+    // ---- renumber anime files to TMDB's seasons (preview / apply) ----
+    if (req.method === 'POST' && seg === 'library' && parts[2] === 'renumber') {
+      json(res, 200, await service.libraryRenumber(await readBody(req)));
       return;
     }
 

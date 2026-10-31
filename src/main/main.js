@@ -497,6 +497,7 @@ app.whenReady().then(() => {
           series: live.series,
           season: live.season,
           episode: live.episode,
+          tmdb: live.tmdb,
           skipSourceSite: !!(it && it._wrongAudio)
         };
       }),

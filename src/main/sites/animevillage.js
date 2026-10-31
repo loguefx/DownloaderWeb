@@ -58,9 +58,21 @@ function pickSubtitle(subtitles, mode) {
 //   { status: 'resolved', detection } | { status: 'none', reason }
 async function resolveForJob(ref = {}, { onLog = () => {} } = {}) {
   const mode = ref.mode === 'sub' ? 'sub' : 'dub';
-  const season = Number(ref.season) > 0 ? Number(ref.season) : 1;
-  const episode = Number(ref.episode);
-  if (!ref.title || !(episode > 0)) return { status: 'none', reason: 'no title/episode' };
+  const tmdbSeason = Number(ref.season) > 0 ? Number(ref.season) : 1;
+  const tmdbEpisode = Number(ref.episode);
+  if (!ref.title || !(tmdbEpisode > 0)) return { status: 'none', reason: 'no title/episode' };
+  // The job's numbers are TMDB's; Anime Village names seasons like Aniwave
+  // ("<Title> Season 3"). Translate per episode. An arc Aniwave lists under
+  // a name only (Link Click: Bridon Arc) is left to Aniwave.
+  const src = await require('../anime-layout').animeSourceEpisode({
+    tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
+  });
+  if (src.entry) return { status: 'none', reason: `TMDB S${tmdbSeason} is "${src.entry.title}" - looked up on Aniwave` };
+  const season = src.season != null ? src.season : tmdbSeason;
+  const episode = src.episode;
+  if (src.mapped && (season !== tmdbSeason || episode !== tmdbEpisode)) {
+    onLog(`Anime Village: TMDB S${tmdbSeason}E${tmdbEpisode} is season ${season} episode ${episode} there.`);
+  }
   onLog(`Anime Village: looking up "${ref.title}" S${season}E${episode} (${mode.toUpperCase()})...`);
   const r = await catalog.resolveEpisode({ title: ref.title, season, episode, mode, names: ref.names || [] });
   if (r.status !== 'resolved') {

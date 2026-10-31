@@ -179,15 +179,12 @@ async function aniwaveSeasons(tmdbId, opts = {}) {
   return out;
 }
 
-// Tier 1b: Aniwave's CATALOG, the way downloads use it. Each Aniwave entry is
-// one season, named "<Title>", "<Title> Season 2", ... (aniwave_api.seasonInfo
-// picks the entry whose title names the season). The DUB/SUB downloads and the
-// dub badges always read these entries, so this is the numbering the files on
-// disk follow. When it disagrees with TMDB, the season list must follow it:
-// Link Click's TMDB "Season 3" is the 6-episode Bridon Arc and its "Season 4"
-// the new season, while Aniwave's "Link Click Season 3" IS the new season -
-// showing TMDB's numbers matched the new season's files against the Bridon
-// Arc ("6 have") and offered the same episodes again as "Season 4".
+// Aniwave's CATALOG, the way downloads use it. Each Aniwave entry is one
+// season, named "<Title>", "<Title> Season 2", ... (aniwave_api.seasonInfo
+// picks the entry whose title names the season). The season list and file
+// names follow TMDB (Jellyfin's numbering); this catalog layout is only the
+// other side of the per-episode translation (buildSourcePlan): Link Click's
+// TMDB S4 is "Link Click Season 3" here, TMDB S3 the un-numbered "Bridon Arc".
 //
 // Returns [{ season, episodes:[{episode}], dubEpisodes, aniwaveId }] for
 // seasons 1..N (stops at the first season with no entry), or null when the
@@ -226,14 +223,6 @@ async function aniwaveCatalogSeasons(title, opts = {}) {
   // still find it.
   if (value) cacheSet(key, value);
   return value;
-}
-
-// Does a catalog layout disagree with TMDB's numbered seasons? (Same season
-// numbers with the same counts = nothing to change.)
-function layoutDiffers(layout, tmdbSeasons) {
-  const A = (layout || []).filter((s) => s && s.season > 0);
-  const T = new Map((tmdbSeasons || []).filter((s) => s && s.season > 0).map((s) => [s.season, countOf(s)]));
-  return A.some((s) => T.get(s.season) !== countOf(s));
 }
 
 // ---------------------------------------------------------------------------
@@ -550,18 +539,6 @@ async function resolveLayout(tmdbId, title, opts = {}) {
       if (aw) return { source: 'aniwave', seasons: aw };
     } catch (e) { /* tier is best-effort */ }
   }
-  // The catalog entries downloads use (anime only: a title search could hit
-  // a different work for live-action TV). Used when it knows at least two
-  // seasons and numbers them differently from TMDB; a single-season answer
-  // or one that matches TMDB changes nothing.
-  if (title && opts.catalog) {
-    try {
-      const cat = await aniwaveCatalogSeasons(title, opts);
-      if (cat && cat.length >= 2 && layoutDiffers(cat, opts.tmdbSeasons)) {
-        return { source: 'aniwave', seasons: cat, catalog: true };
-      }
-    } catch (e) { /* tier is best-effort */ }
-  }
   if (title && (opts.anime || opts.allowAnilist)) {
     const al = await anilistLayout(tmdbId, title, opts);
     if (al) return { source: 'anilist', seasons: al };
@@ -582,80 +559,6 @@ async function anilistLayout(tmdbId, title, opts = {}) {
   } catch (e) {
     return null; // tier is best-effort
   }
-}
-
-// PURE: TMDB (or a single-season Aniwave answer) often lumps several cours
-// into ONE season with continuous numbering - Ranma ½ (2024) is TMDB
-// "Season 1, 36 episodes" for three 12-episode seasons. AniList lists each
-// cour as its own season. When AniList's seasons PARTITION the base seasons
-// exactly (consecutive AniList counts add up to each base count), the base
-// season is split along those lines:
-//   base [S1:36] + AniList [12, 12, 12] -> S1:12, S2:12, S3:12
-// Each split season records where its episodes live in the base layout
-// (tmdbSeason + tmdbOffset), so names, air dates and source URLs map back
-// exactly. The airing season may have an unknown AniList count (null / 0):
-// it takes whatever the base season still has. A base season that lists
-// fewer episodes of the airing cour than AniList announces keeps the base's
-// count (only episodes the base knows are offered).
-//
-// Only the LAST base season is ever split (see below), and anything that
-// does not partition (AniList's counts are sometimes wrong: 24 where the
-// season has 12) returns null and the caller keeps its layout.
-// AniList seasons past the end of the base are appended like
-// addMissingSeasons would (no tmdbSeason: TMDB does not list them yet).
-function splitLumpedSeasons(baseSeasons, anilistSeasons) {
-  const B = (baseSeasons || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
-  const A = (anilistSeasons || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
-  if (!B.length || A.length <= B.length) return null;
-  const out = [];
-  let ai = 0;
-  let lumped = false;
-  for (let bi = 0; bi < B.length; bi++) {
-    const b = B[bi];
-    const bCount = countOf(b);
-    if (!(bCount > 0)) return null;
-    let used = 0;
-    let parts = 0;
-    while (used < bCount) {
-      const a = A[ai];
-      if (!a) return null;
-      let c = countOf(a);
-      const isLastA = ai === A.length - 1;
-      const isLastB = bi === B.length - 1;
-      const left = bCount - used;
-      if (!(c > 0)) {
-        // Unknown count (airing cour): only the very last season may absorb
-        // the remainder.
-        if (!isLastA || !isLastB) return null;
-        c = left;
-      } else if (c > left) {
-        // The base lists fewer episodes of the newest cour than AniList
-        // announces (TMDB adds them as they air): last season only.
-        if (!(isLastA && isLastB) || parts === 0) return null;
-        c = left;
-      }
-      out.push({ season: a.season, episodes: c, year: a.year || '', tmdbSeason: b.season, tmdbOffset: used });
-      used += c;
-      parts++;
-      ai++;
-    }
-    if (parts > 1) {
-      // Only the LAST base season may be split. TMDB grouping parts mid-run
-      // (Attack on Titan S3 = AniList "S3" + "S3 Part 2"; Spy x Family S1 =
-      // two cours) is the numbering Jellyfin and existing libraries use:
-      // splitting there would renumber every later season and orphan
-      // Season N folders already on disk. A show that keeps appending new
-      // cours to its last season (Ranma ½ 2024) is the case this is for.
-      if (bi !== B.length - 1) return null;
-      lumped = true;
-    }
-  }
-  if (!lumped) return null; // nothing was lumped: the layouts already agree
-  for (; ai < A.length; ai++) {
-    const a = A[ai];
-    if (countOf(a) > 0) out.push({ season: a.season, episodes: countOf(a), year: a.year || '' });
-  }
-  return out;
 }
 
 const countOf = (s) => (Array.isArray(s.episodes) ? s.episodes.length : Number(s.episodes) || 0);
@@ -731,26 +634,145 @@ function mapEpisode(authoritative, tmdbSeasons, season, episode) {
   return identity;
 }
 
+// ---------------------------------------------------------------------------
+// Anime sources in TMDB (Jellyfin) numbering
+// ---------------------------------------------------------------------------
+//
+// Seasons and files follow TMDB's numbering - the one Jellyfin shows. The
+// anime sources (Aniwave, Anime Village) list a work as separate entries
+// named "<Title>", "<Title> Season 2", ... plus un-numbered arcs/parts
+// ("Link Click: Bridon Arc"). This lines TMDB's seasons up with those
+// entries so each TMDB episode is fetched from the right one:
+//   Link Click  TMDB S1 11 | S2 12 | S3 6          | S4 12
+//   Aniwave     S1 11      | S2 12 | "Bridon Arc"  | "Season 3"
+//   Ranma ½     TMDB S1 36 = Aniwave S1 12 + S2 12 + S3 12
+//
+// PURE. T = TMDB numbered seasons, C = the catalog's numbered seasons (in
+// order), U = un-numbered entries [{ entry, count }]. Each TMDB season is
+// filled left to right, preferring, at every step:
+//   1. the next numbered entry when it covers exactly what is left,
+//   2. an un-numbered entry with exactly that many episodes (an arc),
+//   3. the next numbered entry when it is SHORTER (a TMDB season lumping
+//      several, or the airing season Aniwave has only partly listed).
+// Anything else stops that season (its episodes keep their own numbers).
+// -> { [tmdbSeason]: [{ start, count, awSeason?, entry?, open }] }
+function buildSourcePlan(tmdbSeasons, catalogSeasons, unnumbered) {
+  const T = (tmdbSeasons || []).filter((s) => s && s.season > 0 && countOf(s) > 0).sort((a, b) => a.season - b.season);
+  const C = (catalogSeasons || []).filter((s) => s && s.season > 0 && countOf(s) > 0).sort((a, b) => a.season - b.season);
+  const U = (unnumbered || []).map((u) => ({ entry: u.entry, count: Number(u.count) || 0, used: false })).filter((u) => u.count > 0);
+  const plan = {};
+  let ci = 0;
+  for (const t of T) {
+    const tc = countOf(t);
+    const list = [];
+    let used = 0;
+    while (used < tc) {
+      const left = tc - used;
+      const c = C[ci];
+      const open = ci === C.length - 1; // the newest catalog season may still grow
+      if (c && countOf(c) === left) {
+        list.push({ start: used, count: left, awSeason: c.season, open });
+        used += left;
+        ci += 1;
+        break;
+      }
+      const u = U.find((x) => !x.used && x.count === left);
+      if (u) {
+        u.used = true;
+        list.push({ start: used, count: left, entry: u.entry, open: false });
+        used += left;
+        break;
+      }
+      if (c && countOf(c) < left) {
+        list.push({ start: used, count: countOf(c), awSeason: c.season, open });
+        used += countOf(c);
+        ci += 1;
+        continue;
+      }
+      break;
+    }
+    if (list.length) plan[t.season] = list;
+  }
+  return plan;
+}
+
+// PURE: TMDB (season, episode) -> where the anime sources have it:
+// { season (catalog-numbered), episode } or { entry, episode } (an arc).
+// null = no mapping known (callers keep the TMDB numbers).
+function sourceEpisodeFromPlan(plan, season, episode) {
+  const list = plan && plan[Number(season)];
+  const ep = Number(episode);
+  if (!list || !(ep > 0)) return null;
+  for (const seg of list) {
+    if (ep > seg.start && ep <= seg.start + seg.count) {
+      return seg.entry ? { entry: seg.entry, episode: ep - seg.start } : { season: seg.awSeason, episode: ep - seg.start };
+    }
+  }
+  // Past what the catalog lists so far: the airing season keeps counting.
+  const last = list[list.length - 1];
+  if (last && last.open && last.awSeason != null && ep > last.start + last.count) {
+    return { season: last.awSeason, episode: ep - last.start };
+  }
+  return null;
+}
+
+// PURE: the reverse - a catalog-numbered (season, episode) -> TMDB's pair.
+// Used to rename files saved in the catalog's numbering.
+function tmdbEpisodeFromPlan(plan, awSeason, episode) {
+  const ep = Number(episode);
+  if (!(ep > 0)) return null;
+  for (const [ts, list] of Object.entries(plan || {})) {
+    for (const seg of list) {
+      if (seg.awSeason === Number(awSeason) && (ep <= seg.count || seg.open)) {
+        return { season: Number(ts), episode: seg.start + ep };
+      }
+    }
+  }
+  return null;
+}
+
+// The plan for one title (network: TMDB counts + Aniwave catalog), cached.
+async function animeSourcePlan(tmdbId, title, opts = {}) {
+  const id = String(tmdbId || '').trim();
+  const t = String(title || '').trim();
+  if (!/^\d+$/.test(id) || !t) return null;
+  const key = 'plan:' + id + '|' + t.toLowerCase();
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  let tmdbSeasons = null;
+  try { tmdbSeasons = await tmdbSeasonCounts(id, opts); } catch (e) { tmdbSeasons = null; }
+  const catalog = await aniwaveCatalogSeasons(t, opts);
+  if (!tmdbSeasons || !catalog) return null; // not cached: a later call may reach them
+  let unnumbered = [];
+  try {
+    const api = opts.aniwaveApi || require('./sites/aniwave_api');
+    const raw = await api.unnumberedEntries(t, catalog.map((c) => c.aniwaveId).filter(Boolean));
+    unnumbered = (raw || []).map((u) => ({ entry: { id: u.show.id, slug: u.show.slug, title: u.show.title }, count: (u.episodes || []).length }));
+  } catch (e) {
+    unnumbered = [];
+  }
+  const plan = buildSourcePlan(tmdbSeasons, catalog, unnumbered);
+  cacheSet(key, plan);
+  return plan;
+}
+
+// TMDB (season, episode) of an anime job -> what to ask the anime sources
+// for. Always answers: { season, episode, entry?, mapped }. Without a plan
+// (no TMDB key, catalog unreachable) the TMDB numbers are passed through.
+async function animeSourceEpisode({ tmdb, title, season, episode }, opts = {}) {
+  const identity = { season: Number(season), episode: Number(episode), mapped: false };
+  let plan = null;
+  try { plan = await animeSourcePlan(tmdb, title, opts); } catch (e) { plan = null; }
+  const m = plan ? sourceEpisodeFromPlan(plan, season, episode) : null;
+  if (!m) return identity;
+  return { season: m.season != null ? m.season : null, episode: m.episode, entry: m.entry || null, mapped: true };
+}
+
 // Build a URL-number mapper for one title: (season, episode) -> TMDB pair.
 // Returns null when no mapping is needed/possible (identity everywhere).
 async function urlMapFor(tmdbId, title, opts = {}) {
   let tmdbSeasons = null;
   try { tmdbSeasons = await tmdbSeasonCounts(tmdbId, opts); } catch (e) { /* ignore */ }
-  // Cour split (TMDB lumps several AniList seasons into one): the plugin
-  // shows - and the files use - the split numbering; the source URL needs
-  // TMDB's lumped numbers. S3E1 of Ranma ½ (2024) -> TMDB S1E25.
-  if (tmdbSeasons && opts.anime) {
-    const year = opts.year || cacheGet('tmdbyear:' + String(tmdbId || '').trim()) || 0;
-    const al = await anilistLayout(tmdbId, title, { ...opts, year });
-    const split = al ? splitLumpedSeasons(tmdbSeasons, al) : null;
-    if (split) {
-      return (season, episode) => {
-        const s = split.find((x) => x.season === Number(season));
-        if (!s || s.tmdbSeason == null || !(Number(episode) >= 1)) return { season, episode, mapped: false };
-        return { season: s.tmdbSeason, episode: s.tmdbOffset + Number(episode), mapped: true };
-      };
-    }
-  }
   const resolved = await resolveLayout(tmdbId, title, opts);
   if (!resolved) return null;
   if (!tmdbSeasons) return null;
@@ -789,9 +811,12 @@ module.exports = {
   anilistIdFor,
   resolveLayout,
   aniwaveCatalogSeasons,
-  layoutDiffers,
+  buildSourcePlan,
+  sourceEpisodeFromPlan,
+  tmdbEpisodeFromPlan,
+  animeSourcePlan,
+  animeSourceEpisode,
   anilistLayout,
-  splitLumpedSeasons,
   mapEpisode,
   addMissingSeasons,
   urlMapFor,

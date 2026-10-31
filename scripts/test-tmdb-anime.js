@@ -235,12 +235,12 @@ animelayout._internals.cacheSet('aniwave:603', null);
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }
 
-  console.log('\n[2] Anime known to Aniwave (Aniwave layout wins)');
+  console.log('\n[2] Anime Aniwave knows: seasons still follow TMDB (Jellyfin numbering)');
   try {
     const info = await tmdb.tmdbInfo('456', 'tv', { anime: true });
     check('tmdbInfo did not throw', !!info, 'returned null');
-    check('layout is aniwave', info && info.layout === 'aniwave', info && info.layout);
-    check('Aniwave\'s 10 episodes win over TMDB\'s 12', info && info.seasons[0].episodes === 10, JSON.stringify(info && info.seasons[0]));
+    check('layout is TMDB\'s', info && info.layout === 'tmdb', info && info.layout);
+    check('TMDB\'s 12 episodes kept (Aniwave\'s own layout never replaces them)', info && info.seasons[0].episodes === 12, JSON.stringify(info && info.seasons[0]));
   } catch (e) {
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }
@@ -269,8 +269,8 @@ animelayout._internals.cacheSet('aniwave:603', null);
   console.log('\n[6] Specials (Season 0) are listed, never renumber seasons');
   try {
     const a = await tmdb.tmdbInfo('600', 'tv', { anime: true });
-    check('Aniwave layout keeps TMDB\'s Specials (3) first, then S1=10',
-      a && JSON.stringify(a.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:3","1:10"]', JSON.stringify(a && a.seasons));
+    check('TMDB layout with TMDB\'s Specials (3) first, then S1=12',
+      a && JSON.stringify(a.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:3","1:12"]', JSON.stringify(a && a.seasons));
     const b = await tmdb.tmdbInfo('601', 'tv', { anime: true });
     check('AniList adds Specials (2) and the missing S2 (11); TMDB S1 stays 12',
       b && JSON.stringify(b.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:2","1:12","2:11"]', JSON.stringify(b && b.seasons));
@@ -284,55 +284,35 @@ animelayout._internals.cacheSet('aniwave:603', null);
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }
 
-  console.log('\n[4b] Ranma ½ (2024): TMDB\'s lumped 36-episode season is split into 3');
+  console.log('\n[4b] Ranma ½ (2024): TMDB\'s one 36-episode season, as Jellyfin shows it');
   for (const anime of [true, false]) {
-    try {
-      const info = await tmdb.tmdbInfo('259140', 'tv', { anime });
-      const shape = info && info.seasons.map((s) => s.season + ':' + s.episodes).join('|');
-      check(`three seasons of 12 (${anime ? 'Anime tab' : 'TV tab'})`, shape === '1:12|2:12|3:12', shape);
-      check(`layout marked as a cour split (${anime ? 'Anime tab' : 'TV tab'})`, info && info.layout === 'tmdb+cours', info && info.layout);
-    } catch (e) {
-      check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
-    }
+    const info = await tmdb.tmdbInfo('259140', 'tv', { anime });
+    const shape = info && info.seasons.map((x) => x.season + ':' + x.episodes).join('|');
+    check(`one season of 36 (${anime ? 'Anime tab' : 'TV tab'})`, shape === '1:36' && info.layout === 'tmdb', shape + ' ' + (info && info.layout));
   }
-  try {
-    const s3 = await tmdb.tmdbSeason('259140', 3, { anime: true });
-    const eps3 = (s3 && s3.episodes) || [];
-    check('season 3 lists 12 episodes numbered 1-12', eps3.length === 12 && eps3[0].episode === 1 && eps3[11].episode === 12, eps3.length);
-    check('season 3 E1 is TMDB S1E25 (name + air date carried over)', eps3[0] && eps3[0].name === 'Ep 25', eps3[0] && eps3[0].name);
-    check('season 3 E5+ keep their future air dates (greyed out as not aired)', eps3[4] && eps3[4].airDate === '2099-01-01' && eps3[3].airDate === '2025-01-01', JSON.stringify(eps3.slice(3, 5)));
+  {
     const s1 = await tmdb.tmdbSeason('259140', 1, { anime: true });
-    check('season 1 is TMDB S1E1-E12 only', s1 && s1.episodes.length === 12 && s1.episodes[11].name === 'Ep 12', s1 && s1.episodes.length);
-  } catch (e) {
-    check('tmdbSeason did not throw', false, e.constructor.name + ': ' + e.message);
+    const e = (s1 && s1.episodes) || [];
+    check('season 1 lists all 36 TMDB episodes with names + air dates', e.length === 36 && e[24].name === 'Ep 25' && e[28].airDate === '2099-01-01', e.length);
   }
 
-  console.log('\n[4c] Link Click: the season list follows the Aniwave catalog downloads use');
+  console.log('\n[4c] Link Click: TMDB numbering (S3 = Bridon Arc, S4 = the 2026 season)');
   for (const anime of [true, false]) {
-    try {
-      const info = await tmdb.tmdbInfo('126318', 'tv', { anime });
-      const shape = info && info.seasons.map((s) => s.season + ':' + s.episodes).join('|');
-      check(`Specials + S1 11, S2 12, S3 12 (${anime ? 'Anime tab' : 'TV tab'})`, shape === '0:28|1:11|2:12|3:12', shape);
-      check(`layout is the Aniwave catalog (${anime ? 'Anime tab' : 'TV tab'})`, info && info.layout === 'aniwave' && info.catalog === true, info && info.layout + '/' + info.catalog);
-    } catch (e) {
-      check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
-    }
+    const info = await tmdb.tmdbInfo('126318', 'tv', { anime });
+    const shape = info && info.seasons.map((x) => x.season + ':' + x.episodes).join('|');
+    check(`TMDB seasons as Jellyfin shows them (${anime ? 'Anime tab' : 'TV tab'})`, shape === '0:28|1:11|2:12|3:6|4:12|5:0' && info.layout === 'tmdb', shape);
   }
-  try {
+  {
     const s3 = await tmdb.tmdbSeason('126318', 3, { anime: true });
-    const e = (s3 && s3.episodes) || [];
-    check('Season 3 lists the 12 episodes of the new season', e.length === 12, e.length);
-    check("Season 3 names come from TMDB S4 (same episodes), never the Bridon Arc's", e[0] && e[0].name === 'LC S4E1', e[0] && e[0].name);
-    const s1 = await tmdb.tmdbSeason('126318', 1, { anime: true });
-    check('Season 1 keeps TMDB S1 names (counts agree)', s1 && s1.episodes.length === 11 && s1.episodes[0].name === 'LC S1E1', s1 && s1.episodes[0] && s1.episodes[0].name);
-  } catch (e) {
-    check('tmdbSeason did not throw', false, e.constructor.name + ': ' + e.message);
+    check('Season 3 is the Bridon Arc (6 episodes, its own names)', s3 && s3.episodes.length === 6 && s3.episodes[0].name === 'BridonE1', s3 && s3.episodes.length);
+    const s4 = await tmdb.tmdbSeason('126318', 4, { anime: true });
+    check('Season 4 is the 2026 season (12 episodes)', s4 && s4.episodes.length === 12 && s4.episodes[0].name === 'LC S4E1', s4 && s4.episodes.length);
   }
   try {
     const ag = await tmdb.tmdbInfo('127000', 'tv', { anime: true });
-    check('catalog that agrees with TMDB changes nothing', ag && ag.layout === 'tmdb' && ag.seasons.map((s) => s.episodes).join(',') === '12,12', ag && ag.layout);
+    check('anime with matching sources: TMDB seasons', ag && ag.layout === 'tmdb' && ag.seasons.map((s) => s.episodes).join(',') === '12,12', ag && ag.layout);
     const tv = await tmdb.tmdbInfo('789', 'tv', { anime: false });
-    check('live-action TV never uses the anime catalog', tv && tv.layout === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.layout);
+    check('live-action TV keeps TMDB seasons', tv && tv.layout === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.layout);
   } catch (e) {
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }

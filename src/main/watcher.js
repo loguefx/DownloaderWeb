@@ -327,13 +327,10 @@ class Watcher {
       return 0;
     }
 
-    // Anime: the file keeps the authoritative (Aniwave/AniList) numbers; the
-    // SOURCE URL may need TMDB numbers. urlMapFor answers that (identity when
-    // they already line up). TV: identity.
-    let urlMap = null;
-    if (anime) {
-      try { urlMap = await animelayout.urlMapFor(s.tmdb, s.series, { anime: true }); } catch (e) { urlMap = null; }
-    }
+    // Season/episode numbers are TMDB's (what Jellyfin shows) for anime and
+    // TV alike, so the source URL needs no translation; the anime sources
+    // translate per episode themselves (anime-layout.animeSourceEpisode).
+    const urlMap = null;
     const template = s.template || (s.baseUrl ? urltemplate.toTemplate(s.baseUrl).template : null);
     const roots = this.rootsFor(s);
 
@@ -760,6 +757,7 @@ class Watcher {
           series: live.series,
           season: live.season,
           episode: live.episode,
+          tmdb: live.tmdb,
           skipSourceSite: !!live._wrongAudio
         };
       });

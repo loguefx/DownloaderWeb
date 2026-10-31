@@ -195,6 +195,20 @@ async function main() {
     check('flat-library floor cache is cleared each pass', !watcher.__flatFloorCache || !watcher.__flatFloorCache.has('/somewhere'));
   }
 
+  // TMDB numbering: the dub check asks the anime sources about the episode
+  // they actually list (Link Click TMDB S4E7 = Aniwave "Season 3" E7; TMDB
+  // S3 = the "Bridon Arc" entry, whose dub flag is read from that entry).
+  {
+    console.log('\n[dub check] TMDB numbers translated to the anime sources');
+    const asked = [];
+    dubstatus._resetForTests();
+    dubstatus._setSourceEpisodeForTests(async () => ({ season: 3, episode: 7, mapped: true }));
+    dubstatus._setAniwaveForTests(async (title, season) => { asked.push(season); return { show: {}, episodes: [{ episode: 7, dub: season === 3 }] }; });
+    const d = await dubstatus.isDubbedForJob({ tmdb: '126318', title: 'LINK CLICK', season: 4, episode: 7 });
+    check('isDubbedForJob(TMDB S4E7) asks Aniwave about its season 3 E7', d === true && asked[0] === 3, JSON.stringify({ d, asked }));
+    dubstatus._setSourceEpisodeForTests((q) => require(path.join(REPO, 'src/main/anime-layout.js')).animeSourceEpisode(q));
+  }
+
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

@@ -367,81 +367,6 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('an empty AniList Season 0 is not added', !merged3.some((s) => s.season === 0), merged3);
   }
 
-  console.log('\n[9] Cour split: TMDB lumps several seasons into one (Ranma ½ 2024)');
-  {
-    const sh = (L) => JSON.stringify((L || []).map((s) => s.season + ':' + s.episodes + (s.tmdbSeason != null ? '@' + s.tmdbSeason + '+' + s.tmdbOffset : '')));
-    const tmdbRanma = [{ season: 1, episodes: 36 }];
-    const al = [mk(1, 12), mk(2, 12), mk(3, 12)];
-    const split = mod.splitLumpedSeasons(tmdbRanma, al);
-    check('TMDB S1:36 + AniList 12/12/12 -> three seasons', sh(split) === '["1:12@1+0","2:12@1+12","3:12@1+24"]', sh(split));
-    const airing = mod.splitLumpedSeasons(tmdbRanma, [mk(1, 12), mk(2, 12), { season: 3, episodes: [], year: '2026' }]);
-    check('airing season with unknown AniList count takes the remainder', sh(airing) === '["1:12@1+0","2:12@1+12","3:12@1+24"]', sh(airing));
-    const behind = mod.splitLumpedSeasons([{ season: 1, episodes: 28 }], al);
-    check('TMDB listing only part of the newest cour keeps TMDB\'s count', sh(behind) === '["1:12@1+0","2:12@1+12","3:4@1+24"]', sh(behind));
-    const twoBase = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }, { season: 2, episodes: 12 }], al);
-    check('a lumped EARLIER season is never split (would renumber later seasons)', twoBase === null, sh(twoBase));
-    const aot = mod.splitLumpedSeasons(
-      [{ season: 1, episodes: 25 }, { season: 2, episodes: 12 }, { season: 3, episodes: 22 }, { season: 4, episodes: 28 }],
-      [mk(1, 25), mk(2, 12), mk(3, 12), mk(4, 10), mk(5, 16), mk(6, 12)]);
-    check('Attack on Titan (TMDB groups parts mid-run) keeps TMDB seasons', aot === null, sh(aot));
-    const lastLumped = mod.splitLumpedSeasons([{ season: 1, episodes: 12 }, { season: 2, episodes: 24 }], al);
-    check('earlier seasons 1:1 and the last one lumped -> split the last', sh(lastLumped) === '["1:12@1+0","2:12@2+0","3:12@2+12"]', sh(lastLumped));
-    const extra = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }], al);
-    check('AniList season TMDB does not list yet is appended (no TMDB slot)', sh(extra) === '["1:12@1+0","2:12@1+12","3:12"]', sh(extra));
-    check('Apothecary case (AniList 24 vs TMDB 12) does not partition -> null',
-      mod.splitLumpedSeasons([{ season: 1, episodes: 24 }, { season: 2, episodes: 12 }], [mk(1, 24), mk(2, 24), mk(3, 12)]) === null);
-    check('layouts that already agree -> null', mod.splitLumpedSeasons([{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }], [mk(1, 12), mk(2, 12)]) === null);
-    check('unknown count before the last season -> null', mod.splitLumpedSeasons(tmdbRanma, [mk(1, 12), { season: 2, episodes: [] }, mk(3, 12)]) === null);
-    check('counts that overshoot an earlier base season -> null', mod.splitLumpedSeasons([{ season: 1, episodes: 20 }, { season: 2, episodes: 16 }], al) === null);
-
-    // AniList search: the 2024 remake, not the 1989 original with the same title.
-    const pick = await mod.anilistSeasons('Ranma1/2', { year: 2024, fetcher: async (q, v) => {
-      if (q.includes('search')) return { data: { Page: { media: [
-        { id: 1989, format: 'TV', title: { english: 'Ranma ½', romaji: 'Ranma ½' }, episodes: 161, seasonYear: 1989, startDate: { year: 1989 } },
-        { id: 2024, format: 'TV', title: { english: null, romaji: 'Ranma ½ (2024)' }, episodes: 12, seasonYear: 2024, startDate: { year: 2024 } }
-      ] } } };
-      if (q.includes('relations')) {
-        if (v.id === 2024) return { data: { Media: { relations: { edges: [{ relationType: 'SEQUEL', node: { id: 2025, type: 'ANIME', format: 'TV', episodes: 12, seasonYear: 2025 } }] } } } };
-        if (v.id === 2025) return { data: { Media: { relations: { edges: [{ relationType: 'SEQUEL', node: { id: 2026, type: 'ANIME', format: 'TV', episodes: null, seasonYear: 2026 } }] } } } };
-        return { data: { Media: { relations: { edges: [] } } } };
-      }
-      return null;
-    } });
-    const shp = (pick || []).filter((s) => s.season > 0).map((s) => s.season + ':' + s.episodes.length).join('|');
-    check('year narrows the AniList search to the 2024 remake (with its sequel chain)', shp === '1:12|2:12|3:0', shp);
-    check('"Ranma ½ (2024)" matches TMDB\'s "Ranma1/2"', mod.titlesMatch('Ranma ½ (2024)', 'Ranma1/2'));
-
-    // Download URLs: the split numbering maps back to TMDB's lumped season.
-    // The AniList answer is seeded (title search key incl. the TMDB year).
-    mod._resetCache();
-    mod._internals.cacheSet('anilist:ranma1/2|2024', [mk(1, 12), mk(2, 12), { season: 3, episodes: [], year: '2026' }]);
-    const map = await mod.urlMapFor('259140', 'Ranma1/2', { anime: true, fetcher: async (u) => {
-      if (String(u).includes('/external_ids')) return { anilist_id: null };
-      if (String(u).includes('/tv/259140')) return { first_air_date: '2024-10-05', seasons: [{ season_number: 1, episode_count: 36, air_date: '2024-10-05' }] };
-      return null;
-    } });
-    const r31 = map ? map(3, 1) : null;
-    const r212 = map ? map(2, 12) : null;
-    const r15 = map ? map(1, 5) : null;
-    check('S3E1 downloads TMDB S1E25', r31 && r31.season === 1 && r31.episode === 25, r31);
-    check('S2E12 downloads TMDB S1E24', r212 && r212.season === 1 && r212.episode === 24, r212);
-    check('S1E5 stays TMDB S1E5', r15 && r15.season === 1 && r15.episode === 5, r15);
-
-    // Attack on Titan: the plugin shows TMDB's 4 seasons (AniList's 6 are a
-    // finer split of the same episodes), so S4E1 must download TMDB S4E1 -
-    // not be "mapped" to TMDB S3E13 through AniList's numbering.
-    mod._resetCache();
-    const aotAl = [mk(1, 25), mk(2, 12), mk(3, 12), mk(4, 10), mk(5, 16), mk(6, 12)];
-    mod._internals.cacheSet('aniwave:1429', null);
-    mod._internals.cacheSet('anilistid:1429', '');
-    mod._internals.cacheSet('anilist:attack on titan|2013', aotAl);
-    mod._internals.cacheSet('anilist:attack on titan', aotAl);
-    const aotMap = await mod.urlMapFor('1429', 'Attack on Titan', { anime: true, fetcher: async (u) =>
-      String(u).includes('/tv/1429') ? { first_air_date: '2013-04-07', seasons: [25, 12, 22, 28].map((c, i) => ({ season_number: i + 1, episode_count: c })) } : null });
-    const a41 = aotMap ? aotMap(4, 1) : { season: 4, episode: 1 };
-    check('Attack on Titan S4E1 downloads TMDB S4E1 (no AniList remap)', a41.season === 4 && a41.episode === 1, a41);
-  }
-
   console.log('\n[10] Aniwave catalog layout (the entries downloads use)');
   {
     mod._resetCache();
@@ -458,16 +383,52 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('the same entry returned for every season counts once', one && one.length === 1, one && one.length);
     mod._resetCache();
     check('unknown title -> null', (await mod.aniwaveCatalogSeasons('Nope', { aniwaveApi: { seasonInfo: async () => null } })) === null);
-    check('layoutDiffers: Bridon Arc numbering differs', mod.layoutDiffers(cat || [], [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }]));
-    check('layoutDiffers: same numbering -> false', !mod.layoutDiffers([mk(1, 12), mk(2, 12)], [{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }]));
-    // resolveLayout: the catalog tier only answers when asked (anime) and only when it differs.
+  }
+
+  console.log('\n[11] TMDB (Jellyfin) numbering -> anime source entries');
+  {
+    const T = (arr) => arr.map((n, i) => ({ season: i + 1, episodes: n }));
+    const bridon = { entry: { id: 'b', slug: 'link-click-bridon-arc-b', title: 'Link Click: Bridon Arc' }, count: 6 };
+    const lc = mod.buildSourcePlan(T([11, 12, 6, 12]), T([11, 12, 12]), [bridon]);
+    const m = (plan, s, e) => mod.sourceEpisodeFromPlan(plan, s, e);
+    check('Link Click TMDB S1E5 -> Aniwave S1E5', JSON.stringify(m(lc, 1, 5)) === JSON.stringify({ season: 1, episode: 5 }), m(lc, 1, 5));
+    check('Link Click TMDB S3E2 -> the "Bridon Arc" entry E2', m(lc, 3, 2) && m(lc, 3, 2).entry && m(lc, 3, 2).entry.id === 'b' && m(lc, 3, 2).episode === 2, m(lc, 3, 2));
+    check('Link Click TMDB S4E7 -> "Link Click Season 3" E7', JSON.stringify(m(lc, 4, 7)) === JSON.stringify({ season: 3, episode: 7 }), m(lc, 4, 7));
+    check('reverse: a file saved as Aniwave S3E10 is TMDB S4E10', JSON.stringify(mod.tmdbEpisodeFromPlan(lc, 3, 10)) === JSON.stringify({ season: 4, episode: 10 }), mod.tmdbEpisodeFromPlan(lc, 3, 10));
+    check('reverse: Aniwave S2E3 stays TMDB S2E3', JSON.stringify(mod.tmdbEpisodeFromPlan(lc, 2, 3)) === JSON.stringify({ season: 2, episode: 3 }));
+
+    const ranma = mod.buildSourcePlan(T([36]), T([12, 12, 4]), []);
+    check('Ranma TMDB S1E13 -> Aniwave S2E1', JSON.stringify(m(ranma, 1, 13)) === JSON.stringify({ season: 2, episode: 1 }), m(ranma, 1, 13));
+    check('Ranma TMDB S1E27 -> Aniwave S3E3 (airing, partly listed)', JSON.stringify(m(ranma, 1, 27)) === JSON.stringify({ season: 3, episode: 3 }), m(ranma, 1, 27));
+    check('Ranma TMDB S1E33 (not on Aniwave yet) -> S3E9 (airing season keeps counting)', JSON.stringify(m(ranma, 1, 33)) === JSON.stringify({ season: 3, episode: 9 }), m(ranma, 1, 33));
+
+    const same = mod.buildSourcePlan(T([12, 12]), T([12, 12]), []);
+    check('layouts that agree map 1:1', JSON.stringify(m(same, 2, 5)) === JSON.stringify({ season: 2, episode: 5 }));
+    const odd = mod.buildSourcePlan(T([12, 12]), T([25]), []);
+    check('a catalog season LONGER than TMDB\'s cannot be split: unmapped (TMDB numbers kept)', m(odd, 1, 3) === null && m(odd, 2, 1) === null, odd);
+
+    // Full lookup with mocked TMDB + Aniwave catalog.
     mod._resetCache();
-    mod._internals.cacheSet('aniwave:126318', null);
-    const r1 = await mod.resolveLayout('126318', 'LINK CLICK', { catalog: true, aniwaveApi: api,
-      tmdbSeasons: [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }] });
-    check('resolveLayout uses the catalog when it differs from TMDB', r1 && r1.source === 'aniwave' && r1.catalog === true && r1.seasons.length === 3, r1 && r1.source);
-    const r2 = await mod.resolveLayout('126318', 'LINK CLICK', { catalog: false, aniwaveApi: api, tmdbSeasons: [] });
-    check('resolveLayout never asks the catalog for non-anime', r2 === null, r2 && r2.source);
+    const api = {
+      seasonInfo: async (title, n) => ({ 1: 11, 2: 12, 3: 12 }[n]
+        ? { show: { id: 'lc' + n, slug: 'link-click-' + n, title: 'Link Click' + (n > 1 ? ' Season ' + n : '') },
+            episodes: Array.from({ length: { 1: 11, 2: 12, 3: 12 }[n] }, (_, i) => ({ episode: i + 1, dub: true })) }
+        : null),
+      unnumberedEntries: async () => [{ show: bridon.entry, episodes: Array.from({ length: 6 }, (_, i) => ({ episode: i + 1 })) }]
+    };
+    const fetcher = async (u) => String(u).includes('/tv/126318')
+      ? { first_air_date: '2021-04-30', seasons: [0, 11, 12, 6, 12].map((c, i) => ({ season_number: i, episode_count: i === 0 ? 28 : c })) }
+      : null;
+    const q = (s2, e) => mod.animeSourceEpisode({ tmdb: '126318', title: 'LINK CLICK', season: s2, episode: e }, { aniwaveApi: api, fetcher });
+    const a1 = await q(4, 1);
+    check('animeSourceEpisode: TMDB S4E1 -> Aniwave season 3 E1 (mapped)', a1.season === 3 && a1.episode === 1 && a1.mapped === true, a1);
+    const a2 = await q(3, 6);
+    check('animeSourceEpisode: TMDB S3E6 -> Bridon Arc E6', a2.entry && a2.entry.title === 'Link Click: Bridon Arc' && a2.episode === 6, a2);
+    mod._resetCache();
+    const none = await mod.animeSourceEpisode({ tmdb: '1', title: 'Unknown', season: 2, episode: 3 },
+      { aniwaveApi: { seasonInfo: async () => null, unnumberedEntries: async () => [] }, fetcher: async () => null });
+    check('no plan (sources unreachable): TMDB numbers pass through', none.season === 2 && none.episode === 3 && none.mapped === false, none);
+
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

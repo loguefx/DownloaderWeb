@@ -1206,7 +1206,7 @@
                             t.active = firstNumbered ? firstNumbered.season : null;
                         }
                         renderTitle();
-                        if (t.kind === 'movie') checkMovie(t); else loadSeasons(t);
+                        if (t.kind === 'movie') checkMovie(t); else { loadSeasons(t); previewRenumber(t); }
                     }).catch((err) => {
                         if (stale()) return;
                         t.infoError = 'Could not load seasons from TMDB (' + err.message + '). Enter the season and episodes by hand.';
@@ -1411,8 +1411,74 @@
                             s.checked = false;
                             checkSeason(t, s);
                         });
+                        previewRenumber(t);
                     }
                     renderTitle();
+                }
+
+                // Anime saved in the anime sites' season numbering (Link Click's
+                // 2026 season as "Season 3") sits in the wrong Jellyfin season:
+                // seasons follow TMDB, where it is Season 4. The engine proposes
+                // the renames only on hard evidence; nothing moves until the
+                // user confirms the exact list.
+                function previewRenumber(t) {
+                    t.renumber = null;
+                    const animeish = t.anime || (t.info && t.info.animeLike);
+                    if (t.kind !== 'series' || !animeish || !t.tmdb || !t.library) return;
+                    const lib = t.library;
+                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: lib, apply: false })
+                        .then((r) => {
+                            if (S.t !== t || t.library !== lib) return;
+                            t.renumber = r && r.moves && r.moves.length ? r : null;
+                            renderTitle();
+                        })
+                        .catch(() => { /* optional: the library check still works */ });
+                }
+
+                function renumberHtml(t) {
+                    const r = t.renumber;
+                    if (!r || !r.moves.length) return '';
+                    const bySeason = {};
+                    r.moves.forEach((m) => {
+                        const k = m.fromLabel.replace(/E\d+$/, '') + ' → ' + m.toLabel.replace(/E\d+$/, '');
+                        bySeason[k] = (bySeason[k] || 0) + 1;
+                    });
+                    const summary = Object.keys(bySeason).map((k) => k.replace(/^S/, 'Season ').replace('→ S', '→ Season ') + ' (' + bySeason[k] + ')').join(', ');
+                    const rows = t.renumberOpen ? '<div class="mdl-path" style="margin-top:.6em;max-height:16em;overflow:auto;">' +
+                        r.moves.map((m) => esc(m.from) + '<br>&nbsp;&nbsp;→ ' + esc(m.to)).join('<br>') + '</div>' : '';
+                    const conflicts = (r.conflicts || []).length ? '<div class="small" style="margin-top:.4em;color:var(--md-red)">' +
+                        plural(r.conflicts.length, 'file') + ' skipped: a file already exists at the new name.</div>' : '';
+                    return '<div class="mdl-callout yellow" style="margin-top:.8em;">' + ICON.warn + '<div style="flex:1;min-width:0;">' +
+                        '<b>' + plural(r.moves.length, 'file') + ' in ' + esc(t.library) + ' use the anime sites\' season numbering.</b> ' +
+                        'Jellyfin numbers these seasons the TMDB way, so they show up in the wrong season: ' + esc(summary) + '.' +
+                        rows + conflicts +
+                        '<div class="mdl-actions" style="margin-top:.6em;">' +
+                        '<button type="button" class="mdl-btn sm" data-renumber="toggle">' + (t.renumberOpen ? 'Hide the list' : 'Show every rename') + '</button>' +
+                        '<button type="button" class="mdl-btn sm primary" data-renumber="apply"' + (t.renumberBusy ? ' disabled' : '') + '>' +
+                        (t.renumberBusy ? 'Renaming…' : 'Rename ' + plural(r.moves.length, 'file')) + '</button></div>' +
+                        '<div class="small muted" style="margin-top:.35em;">Same drive, same folder for the series; nothing is overwritten or deleted. Jellyfin is asked to rescan the folders.</div>' +
+                        '</div></div>';
+                }
+
+                function applyRenumber(t) {
+                    const r = t.renumber;
+                    if (!r || !r.moves.length || t.renumberBusy) return;
+                    const sample = r.moves.slice(0, 5).map((m) => m.fromLabel + ' → ' + m.toLabel).join(', ');
+                    if (!confirm('Rename ' + plural(r.moves.length, 'file') + ' of "' + t.title + '" in ' + t.library + ' to TMDB\'s season numbering?\n\n' + sample + (r.moves.length > 5 ? ', …' : '') + '\n\nNothing is overwritten or deleted.')) return;
+                    t.renumberBusy = true;
+                    renderTitle();
+                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: t.library, apply: true, confirm: r.moves.map((m) => m.from) })
+                        .then((res) => {
+                            const n = (res && res.applied && res.applied.length) || 0;
+                            const bad = (res && res.conflicts && res.conflicts.length) || 0;
+                            footMsg(n ? 'ok' : 'err', n ? '✓ Renamed ' + plural(n, 'file') + ' to TMDB\'s seasons' + (bad ? ' (' + bad + ' skipped)' : '') + '.' : 'Nothing was renamed' + (bad ? ': ' + esc(res.conflicts[0].reason) : '.'));
+                        })
+                        .catch((err) => footMsg('err', 'Rename failed: ' + esc(err.message)))
+                        .then(() => {
+                            t.renumberBusy = false;
+                            t.renumberOpen = false;
+                            if (S.t === t) recheckLibrary(t);
+                        });
                 }
 
                 function checkMovie(t) {
@@ -1569,6 +1635,10 @@
                 }
 
                 function titleStatusHtml(t) {
+                    return titleStatusCore(t) + (t.kind === 'series' ? renumberHtml(t) : '');
+                }
+
+                function titleStatusCore(t) {
                     if (t.checkError) {
                         return '<div class="mdl-callout yellow">' + ICON.warn + '<div><b>Could not check your libraries.</b> ' + esc(t.checkError) +
                             '<div class="small muted">The engine checks again before downloading, so nothing is fetched twice.</div></div></div>';
@@ -2244,6 +2314,11 @@
                         return;
                     }
                     if (el.hasAttribute('data-log-clear')) { S.log = []; renderLog(); return; }
+                    if (t && el.hasAttribute('data-renumber')) {
+                        if (el.getAttribute('data-renumber') === 'toggle') { t.renumberOpen = !t.renumberOpen; renderTitle(); }
+                        else applyRenumber(t);
+                        return;
+                    }
                 });
 
                 root.addEventListener('keydown', (ev) => {

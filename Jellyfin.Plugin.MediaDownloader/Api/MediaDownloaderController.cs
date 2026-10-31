@@ -577,6 +577,55 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         }
 
         /// <summary>
+        /// Rename files saved in the anime sites' season numbering to TMDB's
+        /// (what Jellyfin shows). Body: { "series", "tmdb", "library",
+        /// "apply": false } for the preview; { ..., "apply": true,
+        /// "confirm": [from paths] } renames only the confirmed moves. The
+        /// library's drive folders are filled in here, like LibraryCheck.
+        /// </summary>
+        [HttpPost("LibraryRenumber")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<IActionResult> LibraryRenumber()
+        {
+            JsonObject node;
+            try
+            {
+                node = JsonNode.Parse(await ReadBodyTextAsync().ConfigureAwait(false)) as JsonObject;
+            }
+            catch (Exception)
+            {
+                node = null;
+            }
+            if (node == null)
+            {
+                return BadRequest(new { error = "JSON object body required" });
+            }
+            var libName = Str(node, "library");
+            if (string.IsNullOrWhiteSpace(libName))
+            {
+                return BadRequest(new { error = "library is required (the one picked in \"Save to library\")" });
+            }
+            var libs = ResolveLibraries(new[] { libName });
+            if (libs.Count == 0)
+            {
+                return BadRequest(new { error = $"Library \"{libName}\" was not found on this server." });
+            }
+            var all = new JsonArray();
+            foreach (var lib in libs)
+            {
+                foreach (var loc in lib["locations"].AsArray())
+                {
+                    all.Add((JsonNode)loc.GetValue<string>());
+                }
+            }
+            node["locations"] = all;
+            node.Remove("library");
+            var el = JsonSerializer.Deserialize<JsonElement>(node.ToJsonString());
+            // NOT in EngineClient's read-only retry list: apply renames files.
+            return await ProxyAsync(() => _engine.PostAsync("api/library/renumber", el)).ConfigureAwait(false);
+        }
+
+        /// <summary>
         /// Dry-run report for the title page: for the selected episodes, which
         /// are already recognized on disk vs. missing, plus every on-disk file
         /// for that series and whether it lines up with the selection. Read-only.

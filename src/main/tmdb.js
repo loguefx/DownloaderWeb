@@ -117,80 +117,34 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     anilistId = String((ext && ext.anilist_id) || '');
   } catch (e) { /* optional */ }
 
-  // Anime season layout, additive-first (the user's rule: add on, never
-  // re-adjust):
-  //   - ANIWAVE answers -> use its layout wholesale (it is the user's source
-  //     of truth and keyed by this TMDB id - anime-only catalog);
-  //   - AniList is consulted ONLY when the caller flags the title as anime,
-  //     or when TMDB lists NO seasons at all (nothing to corrupt). It may
-  //     then only ADD seasons TMDB lacks (the "S2 exists but TMDB only
-  //     lists S1" case) - it NEVER overrides a TMDB count (its counts have
-  //     proven unreliable: 24 where the season has 12);
-  //   - TV shows and movies keep their TMDB layout untouched. A live-action
-  //     show that happens to share its exact title with an anime (e.g.
-  //     "One Piece") can therefore never inherit the anime's season list.
+  // Seasons follow TMDB's numbering - the numbering Jellyfin shows, so files
+  // named from it land in the right Jellyfin season (Link Click: S3 is the
+  // Bridon Arc, S4 the 2026 season; Ranma ½ 2024 is one 36-episode season).
+  // The anime sources number their entries differently; downloads translate
+  // TMDB's numbers per episode (anime-layout.animeSourceEpisode), the layout
+  // shown never changes.
+  //
+  // AniList only ADDS a season TMDB does not list at all yet (a sequel TMDB
+  // has not added), and only for anime (the caller's flag, or animation from
+  // JP/CN/KR/TW). It never renumbers or re-counts a TMDB season, and it is
+  // ignored when its seasons are a finer split of TMDB's (addMissingSeasons).
+  // With no TMDB seasons at all, AniList's layout is used as-is.
   const tmdbSeasons = seasons.slice();
   let layout = 'tmdb';
   const tmdbNumbered = tmdbSeasons.filter((s) => s.season > 0).length;
-  const allowAnilist = !!(opts && opts.anime) || tmdbNumbered === 0;
+  const allowAnilist = !!(opts && opts.anime) || looksAnime(body) || tmdbNumbered === 0;
   const firstYear = Number(String(body.first_air_date || '').slice(0, 4)) || 0;
-  const animeish = allowAnilist || looksAnime(body);
-  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', {
-    anime: allowAnilist,
-    anilistId,
-    year: firstYear,
-    // Anime only: the Aniwave catalog entries the downloads use.
-    catalog: animeish,
-    tmdbSeasons
-  });
-  if (resolved) {
-    if (resolved.source === 'aniwave' || tmdbNumbered === 0) {
-      layout = resolved.source;
-      seasons = resolved.seasons
-        .filter((s) => s && s.season > 0)
-        .map((s) => ({
-          season: s.season,
-          episodes: (s.episodes || []).length,
-          year: s.year || ''
-        }));
-      // The numbered seasons follow the resolved layout; Specials stay
-      // TMDB's when TMDB has them (TMDB-keyed sources number them that
-      // way), else the resolved layout's own Season 0.
-      const sp = tmdbSeasons.find((s) => s.season === 0) ||
-        resolved.seasons.filter((s) => s && s.season === 0 && (s.episodes || []).length)
-          .map((s) => ({ season: 0, episodes: s.episodes.length, year: '' }))[0];
-      if (sp) seasons.unshift(sp);
-    } else {
-      seasons = animelayout.addMissingSeasons(tmdbSeasons, resolved.seasons);
-      if (seasons.length > tmdbSeasons.length) layout = 'tmdb+anilist';
-    }
-  }
-
-  // Cour split: TMDB (or Aniwave) lists several seasons as ONE with
-  // continuous numbering - Ranma ½ (2024) is TMDB "Season 1, 36 episodes"
-  // for three 12-episode seasons, so the plugin showed one season and the
-  // newest season never appeared. When AniList's seasons partition that
-  // layout exactly, split it. Asked for anime, and for animation from
-  // JP/CN/KR/TW opened from the TV tab (the partition check keeps a
-  // live-action show that shares an anime's title out of it).
-  // Never re-split an Aniwave layout: it IS the numbering the files follow.
-  if ((allowAnilist || looksAnime(body)) && layout !== 'aniwave') {
-    const baseLayout = tmdbSeasons;
-    const al = resolved && resolved.source === 'anilist'
-      ? resolved.seasons
-      : await animelayout.anilistLayout(String(body.id), body.name || '', { anilistId, year: firstYear });
-    const split = al ? animelayout.splitLumpedSeasons(baseLayout, al) : null;
-    if (split) {
-      const sp = seasons.find((s) => s.season === 0);
-      seasons = (sp ? [sp] : []).concat(split.map((s) => ({
-        season: s.season,
-        episodes: s.episodes,
-        year: String(s.year || ''),
-        // Where these episodes sit in the lumped layout (the season endpoint
-        // and the download URL map read it).
-        ...(s.tmdbSeason != null && layout !== 'aniwave' ? { tmdbSeason: s.tmdbSeason, tmdbOffset: s.tmdbOffset } : {})
-      })));
-      layout = (layout === 'aniwave' ? 'aniwave' : 'tmdb') + '+cours';
+  if (allowAnilist) {
+    const al = await animelayout.anilistLayout(String(body.id), body.name || '', { anilistId, year: firstYear });
+    if (al) {
+      if (tmdbNumbered === 0) {
+        layout = 'anilist';
+        seasons = al.filter((s) => s && (s.season > 0 || (s.episodes || []).length))
+          .map((s) => ({ season: s.season, episodes: (s.episodes || []).length, year: s.year || '' }));
+      } else {
+        seasons = animelayout.addMissingSeasons(tmdbSeasons, al);
+        if (seasons.length > tmdbSeasons.length) layout = 'tmdb+anilist';
+      }
     }
   }
 
@@ -205,9 +159,6 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     overview: (body.overview || '').slice(0, 300),
     seasons,
     layout,
-    // true when the layout came from Aniwave's catalog entries (title-named
-    // seasons) rather than its TMDB-keyed episode API.
-    catalog: !!(resolved && resolved.catalog),
     tmdbSeasons
   };
 }
@@ -229,142 +180,41 @@ async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
 async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
-
-  // A season split out of a lumped TMDB season (see the cour split in
-  // tmdbInfoFetch): its episodes are a slice of that TMDB season, renumbered
-  // from 1, with TMDB's names and air dates (so unaired ones grey out).
-  if (Number(seasonNo) > 0) {
-    let info = null;
-    try { info = await tmdbInfo(tmdbId, 'tv', opts); } catch (e) { info = null; }
-    const sp = info && /\+cours$/.test(info.layout || '') && (info.seasons || []).find((s) => s.season === Number(seasonNo));
-    if (sp && sp.tmdbSeason != null) {
-      let lumped = null;
-      try {
-        lumped = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(sp.tmdbSeason)}?language=en-US`, key);
-      } catch (e) { lumped = null; }
-      const byNum = new Map(((lumped && lumped.episodes) || []).map((e) => [e.episode_number, e]));
-      const episodes = [];
-      for (let e = 1; e <= sp.episodes; e++) {
-        const t = byNum.get(sp.tmdbOffset + e);
-        episodes.push({ episode: e, name: (t && t.name) || '', runtime: (t && t.runtime) || null, airDate: (t && t.air_date) || null });
-      }
-      if (episodes.length) {
-        return { tmdb: String(tmdbId), season: Number(seasonNo), name: 'Season ' + seasonNo, layout: 'tmdb+cours', episodes };
-      }
-    }
-  }
-
+  // TMDB's own season - the numbering Jellyfin shows (see tmdbInfoFetch).
   let body = null;
   try {
     body = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(seasonNo)}?language=en-US`, key);
   } catch (e) {
-    // The season may not exist in TMDB when the anime layout differs (anime
-    // sequels, cour splits) - the authoritative layout below still answers.
+    body = null;
   }
   const tmdbEps = (body && Array.isArray(body.episodes))
     ? body.episodes.filter((e) => e && e.episode_number > 0)
     : [];
-
-  // The authoritative layout (Aniwave first, then AniList for anime) decides
-  // WHICH episodes this season has; TMDB fills in names/air dates where its
-  // numbering lines up. Non-anime shows never hit a tier (Aniwave's catalog
-  // is anime-only and keyed by this TMDB id), so they keep the old behavior.
-  let layout = 'tmdb';
-  let authoritative = null;
-  // The season list came from Aniwave's catalog: serve that season's entry.
-  let catalogInfo = null;
-  try { catalogInfo = await tmdbInfo(tmdbId, 'tv', opts); } catch (e) { catalogInfo = null; }
-  if (catalogInfo && catalogInfo.catalog && Number(seasonNo) > 0) {
-    try {
-      const cat = await animelayout.aniwaveCatalogSeasons(catalogInfo.title || '');
-      const hit = cat && cat.find((s) => s.season === Number(seasonNo));
-      if (hit && hit.episodes.length) {
-        authoritative = hit;
-        layout = 'aniwave-catalog';
-      }
-    } catch (e) { /* fall through */ }
+  if (tmdbEps.length) {
+    return {
+      tmdb: String(tmdbId),
+      season: Number(seasonNo),
+      name: (body && body.name) || '',
+      layout: 'tmdb',
+      episodes: tmdbEps.map((e) => ({
+        episode: e.episode_number,
+        name: e.name || '',
+        runtime: e.runtime || null,
+        airDate: e.air_date || null
+      }))
+    };
   }
-  try {
-    const aw = authoritative ? null : await animelayout.aniwaveSeasons(String(tmdbId));
-    if (aw) {
-      const hit = aw.find((s) => s.season === Number(seasonNo));
-      if (hit && (hit.episodes || []).length) {
-        authoritative = hit;
-        layout = 'aniwave';
-      }
-    }
-  } catch (e) { /* tier is best-effort */ }
-  // AniList may answer for a season TMDB does NOT have at all (a missing
-  // sequel). A season TMDB knows keeps TMDB's own episode list: AniList's
-  // counts have proven unreliable (24 where the season has 12) and must
-  // never override TMDB's correct one. (Aniwave, above, still wins when it
-  // answers - that is the user's source of truth.)
-  if (!authoritative && !tmdbEps.length && opts && opts.anime) {
-    try {
-      let title = (body && body.name) || '';
-      if (!title) {
-        const series = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}?language=en-US`, key);
-        title = (series && series.name) || '';
-      }
-      if (title) {
-        // resolveLayout uses the TMDB->AniList id when available (exact work,
-        // no title guessing) and falls back to the guarded title search.
-        const resolved = await animelayout.resolveLayout(String(tmdbId), title, { anime: true });
-        if (resolved) {
-          const hit = resolved.seasons.find((s) => s && s.season === Number(seasonNo));
-          if (hit && (hit.episodes || []).length) {
-            authoritative = hit;
-            layout = resolved.source;
-          }
-        }
-      }
-    } catch (e) { /* tier is best-effort */ }
-  }
-
-  let episodes;
-  if (authoritative) {
-    // TMDB names/air dates only from a TMDB season with the SAME episodes:
-    // the same number when the counts agree, else the first later TMDB season
-    // whose count matches (Link Click: Aniwave S3 = TMDB S4). Never borrow a
-    // different season's titles (TMDB S3 is the Bridon Arc).
-    let named = tmdbEps;
-    const want = (authoritative.episodes || []).length;
-    if (tmdbEps.length !== want) {
-      named = [];
-      const counts = (catalogInfo && catalogInfo.tmdbSeasons) || [];
-      const match = counts.find((c) => c.season > Number(seasonNo) && c.episodes === want);
-      if (match) {
-        try {
-          const other = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${match.season}?language=en-US`, key);
-          named = ((other && other.episodes) || []).filter((e) => e && e.episode_number > 0);
-        } catch (e) { named = []; }
-      }
-    }
-    const byNum = new Map(named.map((e) => [e.episode_number, e]));
-    episodes = (authoritative.episodes || []).map((e) => {
-      const t = byNum.get(e.episode);
-      return {
-        episode: e.episode,
-        name: (t && t.name) || e.name || '',
-        runtime: t ? t.runtime : null,
-        airDate: t ? t.air_date : null
-      };
-    });
-  } else {
-    episodes = tmdbEps.map((e) => ({
-      episode: e.episode_number,
-      name: e.name || '',
-      runtime: e.runtime || null,
-      airDate: e.air_date || null
-    }));
-  }
-  if (!episodes.length) return null;
+  // A season TMDB does not list yet, added from AniList (tmdbInfoFetch adds
+  // it only for anime): its episodes are a plain 1..N list.
+  const info = await tmdbInfo(tmdbId, 'tv', opts).catch(() => null);
+  const added = info && info.layout !== 'tmdb' && (info.seasons || []).find((x) => x.season === Number(seasonNo));
+  if (!added || !(added.episodes > 0)) return null;
   return {
     tmdb: String(tmdbId),
     season: Number(seasonNo),
-    name: (body && body.name) || '',
-    layout,
-    episodes
+    name: 'Season ' + seasonNo,
+    layout: info.layout,
+    episodes: Array.from({ length: added.episodes }, (_, i) => ({ episode: i + 1, name: '', runtime: null, airDate: null }))
   };
 }
 

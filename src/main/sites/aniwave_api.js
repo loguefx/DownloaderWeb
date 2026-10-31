@@ -163,6 +163,32 @@ async function seasonInfo(title, season = 1) {
   return { show, episodes: eps };
 }
 
+// Entries of the SAME work whose title names no season number - arcs and
+// parts ("Link Click: Bridon Arc"), never the plain season-1 entry (pass its
+// id in excludeIds). -> [{ show, episodes }] (episode lists read). These are
+// how a TMDB season that Aniwave lists under a name is found.
+async function unnumberedEntries(title, excludeIds = []) {
+  const want = baseName(title);
+  if (!want) return [];
+  const skip = new Set((excludeIds || []).map(String));
+  const results = (await search(title)) || [];
+  const picked = results.filter((r) => {
+    if (skip.has(String(r.id))) return false;
+    const names = [r.title, r.jp].filter(Boolean);
+    if (!names.some((n) => baseName(n) === want)) return false;
+    // Named season ("Season 2", "2nd Season", "III") -> a numbered entry.
+    if (seasonOfTitle(r.title) !== 1) return false;
+    // The plain title is season 1 itself; an arc/part has more after it.
+    return norm(r.title) !== want;
+  });
+  const out = [];
+  for (const show of picked.slice(0, 6)) {
+    const eps = await episodes(show.id);
+    if (eps && eps.length) out.push({ show, episodes: eps });
+  }
+  return out;
+}
+
 function episodeUrl(show, episode) {
   return `${BASE}/watch/${show.slug}/ep-${Number(episode)}`;
 }
@@ -174,6 +200,7 @@ module.exports = {
   pickShow,
   seasonOfTitle,
   seasonInfo,
+  unnumberedEntries,
   episodeUrl,
   _setGetForTests(fn, names = async () => []) {
     get = fn;

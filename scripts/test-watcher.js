@@ -223,7 +223,7 @@ async function main() {
   check('TMDB id + library survived the season bump', bumped && bumped.tmdb === '111' && bumped.library === library);
 
   // ---- 3. Anime: authoritative file numbers, TMDB URL numbers ----------------
-  console.log('\n[3] Anime: Aniwave-style numbering, mapped source URLs');
+  console.log('\n[3] Anime: TMDB (Jellyfin) numbering end to end');
   mkEp('Anime Show/Season 1/Anime Show S1E1.mp4');
   schedule.add({
     series: 'Anime Show', season: 1, mode: 'dub',
@@ -235,9 +235,12 @@ async function main() {
   queueCalls.length = 0;
   await watcher.checkSchedules();
   const animeCalls = queueCalls.filter((c) => c.series === 'Anime Show');
-  check('ep 1 recognized on disk (authoritative number)', animeCalls.every((c) => c.episode !== 1));
-  check('eps 2 and 3 queued with AUTHORITATIVE numbers (file naming)', JSON.stringify(animeCalls.map((c) => c.episode).sort((a, b) => a - b)) === JSON.stringify([2, 3]), JSON.stringify(animeCalls.map((c) => c.episode)));
-  check('URLs use the MAPPED TMDB numbers (ep 2 -> 102)', animeCalls.every((c) => c.url === vid('777', 1, c.episode + 100)), JSON.stringify(animeCalls.map((c) => c.url)));
+  check('ep 1 recognized on disk', animeCalls.every((c) => c.episode !== 1));
+  check('eps 2 and 3 queued with TMDB numbers (file naming = Jellyfin)', JSON.stringify(animeCalls.map((c) => c.episode).sort((a, b) => a - b)) === JSON.stringify([2, 3]), JSON.stringify(animeCalls.map((c) => c.episode)));
+  // Job numbers are TMDB's, so a TMDB-keyed URL is never renumbered (the
+  // anime sources translate per episode themselves). The old Aniwave-layout
+  // remap (ep 2 -> 102) must not come back.
+  check('URLs keep the TMDB numbers (no remap)', animeCalls.every((c) => c.url === vid('777', 1, c.episode)), JSON.stringify(animeCalls.map((c) => c.url)));
   check('anime flag travels to the queue (source floor off)', animeCalls.every((c) => c.anime === true && c.minHeight === 0));
 
   // ---- 4. Movie watch: presence check, single re-queue -----------------------

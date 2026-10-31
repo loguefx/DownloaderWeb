@@ -53,12 +53,29 @@ module.exports = {
   // is then picked by beforeResolve + the scanner as usual.
   async findTitle(ref, _hooks, onLog = () => {}) {
     if (!ref || !ref.anime || !ref.title) return null;
-    const season = Number(ref.displaySeason != null ? ref.displaySeason : ref.season) || 1;
-    const episode = Number(ref.displayEpisode != null ? ref.displayEpisode : ref.episode);
-    if (!(episode > 0)) return null;
-    const info = await catalog.seasonInfo(ref.title, season);
+    const tmdbSeason = Number(ref.displaySeason != null ? ref.displaySeason : ref.season) || 1;
+    const tmdbEpisode = Number(ref.displayEpisode != null ? ref.displayEpisode : ref.episode);
+    if (!(tmdbEpisode > 0)) return null;
+    // The job's numbers are TMDB's (Jellyfin's); Aniwave lists the work as
+    // separate entries. Translate: Link Click TMDB S4E7 -> "Link Click
+    // Season 3" E7, TMDB S3E2 -> "Link Click: Bridon Arc" E2.
+    const src = await require('../anime-layout').animeSourceEpisode({
+      tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
+    });
+    const season = src.season != null ? src.season : tmdbSeason;
+    const episode = src.episode;
+    let info = null;
+    if (src.entry) {
+      const eps = await catalog.episodes(src.entry.id);
+      info = eps ? { show: src.entry, episodes: eps } : null;
+    } else {
+      info = await catalog.seasonInfo(ref.title, season);
+    }
+    if (src.mapped) {
+      onLog(`Aniwave: TMDB S${tmdbSeason}E${tmdbEpisode} is "${src.entry ? src.entry.title : ref.title + (season > 1 ? ' Season ' + season : '')}" E${episode}.`);
+    }
     if (!info) {
-      onLog(`No Aniwave entry for "${ref.title}" season ${season}.`);
+      onLog(`No Aniwave entry for "${ref.title}" ${src.entry ? '"' + src.entry.title + '"' : 'season ' + season}.`);
       return null;
     }
     const ep = info.episodes.find((e) => e.episode === episode);

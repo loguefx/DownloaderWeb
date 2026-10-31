@@ -354,6 +354,61 @@ async function main() {
   check('POST /api/queue/stop -> 200', r.status === 200, r.body.slice(0, 120));
   check('stop parks the workers (sticky)', !!manager._stopRequested, String(manager._stopRequested));
 
+  // ---- renumber anime files to TMDB's seasons (Link Click) ----------------
+  {
+    console.log('\n[6b] renumber: anime sites\' season numbering -> TMDB (Jellyfin)');
+    const al = M('anime-layout');
+    const lib = path.join(DATA_DIR, 'lib', 'renumber');
+    const lc = path.join(lib, 'Link Click');
+    const put = (rel) => { const f = path.join(lc, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'.repeat(10 + rel.length)); return f; };
+    for (let e = 1; e <= 11; e++) put(`Season 1/Link Click - EP${e}.mp4`);
+    for (let e = 1; e <= 12; e++) put(`Season 2/Link Click Season 2 - EP${e}.mp4`);
+    for (const e of [1, 2, 3, 4, 5, 6, 7, 8, 10]) put(`Season 3/Link Click S3E${e}.mp4`);
+    // A file already sitting at one target name must never be overwritten.
+    put('Season 4/Link Click S4E10.mp4');
+    // TMDB: S3 = Bridon Arc (6), S4 = the 2026 season. Aniwave: S3 = 2026.
+    al._internals.cacheSet('tmdb:126318', [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }]);
+    al._internals.cacheSet('plan:126318|link click', al.buildSourcePlan(
+      [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }],
+      [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 12 }],
+      [{ entry: { id: 'b', title: 'Link Click: Bridon Arc' }, count: 6 }]));
+    const body = { series: 'Link Click', tmdb: '126318', locations: [lib] };
+    r = await req('POST', '/api/library/renumber', body, { authorization: `Bearer ${KEY}` });
+    const pv = r.json || {};
+    check('preview: 8 moves Season 3 -> Season 4 (E10 conflicts)', r.status === 200 && pv.moves && pv.moves.length === 8, r.body.slice(0, 300));
+    check('preview: S3E7 -> S4E7 in "Season 4"', pv.moves && pv.moves.some((m) => m.fromLabel === 'S3E7' && m.toLabel === 'S4E7' && m.to.endsWith(path.join('Link Click', 'Season 4', 'Link Click S4E7.mp4'))), JSON.stringify(pv.moves && pv.moves.slice(0, 2)));
+    check('preview: existing S4E10 reported as a conflict, not overwritten', pv.conflicts && pv.conflicts.length === 1 && /S3E10/.test(pv.conflicts[0].fromLabel), JSON.stringify(pv.conflicts));
+    check('preview: Seasons 1 and 2 untouched (same in both numberings)', pv.moves && pv.moves.every((m) => m.fromLabel.startsWith('S3')));
+    check('preview moved nothing', fs.existsSync(path.join(lc, 'Season 3', 'Link Click S3E7.mp4')));
+
+    // Apply only what was confirmed (two files), then the rest.
+    const pick = pv.moves.filter((m) => /S3E[12]$/.test(m.fromLabel)).map((m) => m.from);
+    r = await req('POST', '/api/library/renumber', Object.assign({}, body, { apply: true, confirm: pick }), { authorization: `Bearer ${KEY}` });
+    check('apply: only the 2 confirmed files renamed', r.json && r.json.applied && r.json.applied.length === 2 &&
+      fs.existsSync(path.join(lc, 'Season 4', 'Link Click S4E1.mp4')) && fs.existsSync(path.join(lc, 'Season 3', 'Link Click S3E3.mp4')), r.body.slice(0, 200));
+    r = await req('POST', '/api/library/renumber', body, { authorization: `Bearer ${KEY}` });
+    r = await req('POST', '/api/library/renumber', Object.assign({}, body, { apply: true, confirm: r.json.moves.map((m) => m.from) }), { authorization: `Bearer ${KEY}` });
+    check('apply: the remaining 6 renamed', r.json && r.json.applied && r.json.applied.length === 6, r.body.slice(0, 200));
+    check('the pre-existing S4E10 file is untouched; S3E10 stays put', fs.readFileSync(path.join(lc, 'Season 4', 'Link Click S4E10.mp4'), 'utf8').length === 10 + 'Season 4/Link Click S4E10.mp4'.length && fs.existsSync(path.join(lc, 'Season 3', 'Link Click S3E10.mp4')));
+    check('Season 1/2 files never moved', fs.existsSync(path.join(lc, 'Season 1', 'Link Click - EP11.mp4')) && fs.existsSync(path.join(lc, 'Season 2', 'Link Click Season 2 - EP12.mp4')));
+
+    // Ambiguous: a Season 3 whose episodes all fit TMDB's Season 3 is left alone.
+    const amb = path.join(lib, 'Other Show');
+    for (const e of [1, 2, 3]) { const f = path.join(amb, 'Season 3', `Other Show S3E${e}.mp4`); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); }
+    al._internals.cacheSet('tmdb:555001', [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }]);
+    al._internals.cacheSet('plan:555001|other show', al._internals.cacheGet('plan:126318|link click'));
+    r = await req('POST', '/api/library/renumber', { series: 'Other Show', tmdb: '555001', locations: [lib] }, { authorization: `Bearer ${KEY}` });
+    check('no evidence (E1-E3 fit TMDB S3): no moves, reported ambiguous', r.json && r.json.moves.length === 0 && r.json.ambiguous.length === 1, r.body.slice(0, 300));
+
+    // Read-only mode refuses to rename.
+    library.setReadOnly(true);
+    r = await req('POST', '/api/library/renumber', Object.assign({}, body, { apply: true, confirm: [path.join(lc, 'Season 3', 'Link Click S3E10.mp4')] }), { authorization: `Bearer ${KEY}` });
+    check('read-only mode: apply refused', r.status === 409, String(r.status));
+    library.setReadOnly(false);
+    r = await req('POST', '/api/library/renumber', { series: 'Link Click' }, { authorization: `Bearer ${KEY}` });
+    check('missing TMDB id -> 400', r.status === 400);
+  }
+
   // settings round-trip
   r = await req('PUT', '/api/settings', { fillMode: 'spread' }, { authorization: `Bearer ${KEY}` });
   check('settings PUT -> 200 + applied', r.status === 200 && r.json.fillMode === 'spread', r.body.slice(0, 120));
