@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.38",
+                "changelog": "Library check follows \"Save to library\": it looks only in the chosen library's drives (plus staging and the queue) and re-checks when you switch; anime opens in your Anime library. Library check no longer times out on network drives (\"Engine is offline or did not answer in time\"); dropped engine connections are retried. Anime seasons TMDB lumps together are split (Ranma 1/2 2024 shows 3 seasons); no phantom AniList seasons (Attack on Titan). Announced seasons with no episodes are labelled. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v38/MediaDownloader.12.1.0.38.zip",
+                "checksum": "0cb423de8f1ec36cc9d45b58c505d75b",
+                "timestamp": "2026-10-31T21:48:47.000Z"
+            },
+            {
                 "version": "12.1.0.37",
                 "changelog": "English-dub badge for anime (EN DUB n/m per season, EN DUB / SUB only per episode); anime DUB downloads only English-dubbed releases, undubbed episodes go to Waiting for dub (checked every 24 h) and the series is watched; SUB embeds English subtitles. Much faster, reliable downloads (CDN rate limits absorbed). Outbox and proxy fixes.",
                 "targetAbi": "12.1.0.0",
@@ -296,6 +304,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.38",
+                "changelog": "Library check follows \"Save to library\": it looks only in the chosen library's drives (plus staging and the queue) and re-checks when you switch; anime opens in your Anime library. Library check no longer times out on network drives (\"Engine is offline or did not answer in time\"); dropped engine connections are retried. Anime seasons TMDB lumps together are split (Ranma 1/2 2024 shows 3 seasons); no phantom AniList seasons (Attack on Titan). Announced seasons with no episodes are labelled. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v38/MediaDownloader.10.11.0.38.zip",
+                "checksum": "6cfa3e5ee4e97dbf8301ebbc11fdfef6",
+                "timestamp": "2026-10-31T21:48:47.000Z"
+            },
+            {
                 "version": "10.11.0.37",
                 "changelog": "English-dub badge for anime (EN DUB n/m per season, EN DUB / SUB only per episode); anime DUB downloads only English-dubbed releases, undubbed episodes go to Waiting for dub (checked every 24 h) and the series is watched; SUB embeds English subtitles. Much faster, reliable downloads (CDN rate limits absorbed). Outbox and proxy fixes.",
                 "targetAbi": "10.11.0.0",
@@ -582,6 +598,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.38",
+                "changelog": "Library check follows \"Save to library\": it looks only in the chosen library's drives (plus staging and the queue) and re-checks when you switch; anime opens in your Anime library. Library check no longer times out on network drives (\"Engine is offline or did not answer in time\"); dropped engine connections are retried. Anime seasons TMDB lumps together are split (Ranma 1/2 2024 shows 3 seasons); no phantom AniList seasons (Attack on Titan). Announced seasons with no episodes are labelled. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v38/MediaDownloader.10.10.0.38.zip",
+                "checksum": "1cd89e1fd8bea67f53223ecf14a0fbd6",
+                "timestamp": "2026-10-31T21:48:47.000Z"
             },
             {
                 "version": "10.10.0.37",
