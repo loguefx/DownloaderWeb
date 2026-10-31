@@ -1,9 +1,9 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const { EventEmitter } = require('events');
+const { writeJsonAtomic, readJson } = require('./jsonfile');
 
 // Persistent list of episodes whose dubbed version is not out yet. The watcher
 // re-checks these on a schedule and removes them once downloaded.
@@ -20,17 +20,14 @@ class PendingStore extends EventEmitter {
 
   load() {
     if (this._loaded) return;
-    try {
-      this.items = JSON.parse(fs.readFileSync(this._file(), 'utf8')) || [];
-    } catch (e) {
-      this.items = [];
-    }
+    const items = readJson(this._file(), []);
+    this.items = Array.isArray(items) ? items : [];
     this._loaded = true;
   }
 
   _save() {
     try {
-      fs.writeFileSync(this._file(), JSON.stringify(this.items, null, 2));
+      writeJsonAtomic(this._file(), this.items);
     } catch (e) {
       // non-fatal
     }

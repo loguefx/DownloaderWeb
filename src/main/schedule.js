@@ -1,9 +1,9 @@
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 const { EventEmitter } = require('events');
+const { writeJsonAtomic, readJson } = require('./jsonfile');
 
 // Persistent list of "scheduled" series. The watcher periodically re-detects the
 // episode count for each one and queues any episodes that are not already on
@@ -21,17 +21,14 @@ class ScheduleStore extends EventEmitter {
 
   load() {
     if (this._loaded) return;
-    try {
-      this.items = JSON.parse(fs.readFileSync(this._file(), 'utf8')) || [];
-    } catch (e) {
-      this.items = [];
-    }
+    const items = readJson(this._file(), []);
+    this.items = Array.isArray(items) ? items : [];
     this._loaded = true;
   }
 
   _save() {
     try {
-      fs.writeFileSync(this._file(), JSON.stringify(this.items, null, 2));
+      writeJsonAtomic(this._file(), this.items);
     } catch (e) {
       // non-fatal
     }

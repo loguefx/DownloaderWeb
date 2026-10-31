@@ -189,7 +189,6 @@ function anilistGql(query, variables) {
     const req = https.request(
       { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
         'Content-Type': 'application/json',
-        'Length-Content': Buffer.byteLength(payload),
         'Content-Length': Buffer.byteLength(payload),
         'User-Agent': UA
       } },
@@ -208,6 +207,48 @@ function anilistGql(query, variables) {
     req.write(payload);
     req.end();
   });
+}
+
+// Walk the SEQUEL chain from one AniList entry: S1 -> S2 -> S3 ... Each
+// entry's relations only list its DIRECT sequel, so reading S1's relations
+// alone stops at season 2. Movies / OVAs / specials in the chain are walked
+// through but not returned (a recap movie between two TV seasons is not a
+// season). Returns [{ id, episodes, seasonYear, title }] in order, excluding
+// the start entry; [] on any error.
+const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA']);
+async function anilistSequelChain(startId, gql = anilistGql, maxHops = 30) {
+  const out = [];
+  const seen = new Set([Number(startId)]);
+  let id = Number(startId);
+  for (let hop = 0; hop < maxHops; hop++) {
+    let rel;
+    try {
+      rel = await gql(
+        'query($id: Int) { Media(id: $id) { relations { edges { relationType node { id type format episodes seasonYear title { english romaji } } } } } }',
+        { id }
+      );
+    } catch (e) {
+      break;
+    }
+    const edges = (rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [];
+    const sequels = edges
+      .filter((e) => e && e.node && /SEQUEL|NEXT_SEASON/i.test(e.relationType || ''))
+      .filter((e) => (!e.node.type || e.node.type === 'ANIME') && !seen.has(e.node.id));
+    if (!sequels.length) break;
+    // When a season has both a sequel season and a sequel movie, follow the season.
+    const next = sequels.find((e) => SEASON_FORMATS.has(e.node.format)) || sequels[0];
+    seen.add(next.node.id);
+    if (!next.node.format || SEASON_FORMATS.has(next.node.format)) {
+      out.push({
+        id: next.node.id,
+        episodes: next.node.episodes,
+        seasonYear: next.node.seasonYear,
+        title: next.node.title
+      });
+    }
+    id = next.node.id;
+  }
+  return out;
 }
 
 // Strict guard against an AniList search returning a DIFFERENT work with a
@@ -314,24 +355,14 @@ async function anilistSeasons(title, opts = {}) {
     return eps;
   };
   let seasons = [{ season: 1, episodes: mk(media.episodes, media.seasonYear), year: media.seasonYear || '' }];
-  try {
-    const rel = await gql(
-      'query($id: Int) { Media(id: $id) { relations { edges { relationType node { id episodes seasonYear title { english romaji } } } } } }',
-      { id: media.id }
-    );
-    const edges = (rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [];
-    let n = 1;
-    for (const edge of edges) {
-      if (!edge.node || !edge.relationType) continue;
-      if (!/SEQUEL|NEXT_SEASON/i.test(edge.relationType)) continue;
-      n++;
-      seasons.push({
-        season: n,
-        episodes: mk(edge.node.episodes, edge.node.seasonYear),
-        year: edge.node.seasonYear || ''
-      });
-    }
-  } catch (e) { /* relations optional */ }
+  const chain = await anilistSequelChain(media.id, gql);
+  chain.forEach((node, i) => {
+    seasons.push({
+      season: i + 2,
+      episodes: mk(node.episodes, node.seasonYear),
+      year: node.seasonYear || ''
+    });
+  });
   if (!seasons[0].episodes.length && !seasons.some((s) => s.episodes.length)) {
     cacheSet(key, null);
     return null;
@@ -474,6 +505,8 @@ async function urlMapFor(tmdbId, title, opts = {}) {
 module.exports = {
   aniwaveSeasons,
   anilistSeasons,
+  anilistSequelChain,
+  anilistGql,
   anilistIdFor,
   resolveLayout,
   mapEpisode,

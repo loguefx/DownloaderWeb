@@ -173,9 +173,9 @@ async function searchTitles(q, type) {
           tmdb: String((it.ProviderIds && it.ProviderIds.Tmdb) || ''),
           imdb: String((it.ProviderIds && it.ProviderIds.Imdb) || ''),
           title: it.Name || it.OriginalTitle || q,
-          year: (it.PremiereDate || it.ProductionYear || '').slice(0, 4) || '',
+          year: String(it.PremiereDate || it.ProductionYear || '').slice(0, 4),
           type: (it.Type === 'Movie') ? 'movie' : 'tv',
-          poster: it.ImageTags && it.PrimaryImageTag
+          poster: it.ImageTags && it.ImageTags.Primary
             ? `${base}/Items/${it.Id}/Images/Primary?tag=${it.ImageTags.Primary}`
             : ''
         }));
@@ -273,7 +273,7 @@ async function handle(req, res, u) {
     if (req.method === 'GET' && seg === 'browse') {
       const type = (u.searchParams.get('type') || 'tv').trim(); // tv | movie | anime
       const category = (u.searchParams.get('category') || 'trending').trim(); // trending | popular
-      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10));
+      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10) || 1);
       const key = getTmdbKey();
       if (!key) {
         json(res, 503, { error: 'TMDB API key not configured on the engine' });
@@ -311,10 +311,10 @@ async function handle(req, res, u) {
     // ---- anime browse (AniList API - free, no key needed) ----
     if (req.method === 'GET' && seg === 'anime' && parts[2] === 'browse') {
       const category = (u.searchParams.get('category') || 'trending').trim();
-      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10));
+      const page = Math.max(1, parseInt(u.searchParams.get('page') || '1', 10) || 1);
       const perPage = 20;
       const sort = [category === 'popular' ? 'POPULARITY_DESC' : 'TRENDING_DESC'];
-      const graphqlQuery = JSON.stringify({
+      const gq = ({
         query: `query($page: Int, $perPage: Int, $sort: [MediaSort]) {
           Page(page: $page, perPage: $perPage) {
             pageInfo { currentPage total }
@@ -333,26 +333,7 @@ async function handle(req, res, u) {
         variables: { page, perPage, sort }
       });
       try {
-        const body = await new Promise((resolve, reject) => {
-          const https = require('https');
-          const req = https.request(
-            { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
-              'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(graphqlQuery)
-            }},
-            (res) => {
-              const chunks = [];
-              res.on('data', (d) => chunks.push(d));
-              res.on('end', () => {
-                try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-                catch (e) { reject(new Error('AniList returned non-JSON')); }
-              });
-            }
-          );
-          req.on('error', reject);
-          req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
-          req.write(graphqlQuery);
-          req.end();
-        });
+        const body = await animelayout.anilistGql(gq.query, gq.variables);
         const pg = body && body.data && body.data.Page;
         if (!pg || !Array.isArray(pg.media)) {
           json(res, 502, { error: 'AniList returned no results' });
@@ -381,7 +362,7 @@ async function handle(req, res, u) {
     if (req.method === 'GET' && seg === 'anime' && parts[2] === 'info') {
       const title = (u.searchParams.get('title') || '').trim();
       if (!title) { json(res, 400, { error: 'title is required' }); return; }
-      const graphqlQuery = JSON.stringify({
+      const gq = ({
         query: `query($title: String) {
           Media(search: $title, type: ANIME, sort: START_DATE) {
             id
@@ -392,32 +373,12 @@ async function handle(req, res, u) {
             season
             seasonYear
             averageScore
-            relations { edges { relationType node { id title { english romaji } episodes seasonYear } } }
           }
         }`,
         variables: { title }
       });
       try {
-        const body = await new Promise((resolve, reject) => {
-          const https = require('https');
-          const req = https.request(
-            { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
-              'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(graphqlQuery)
-            }},
-            (res) => {
-              const chunks = [];
-              res.on('data', (d) => chunks.push(d));
-              res.on('end', () => {
-                try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-                catch (e) { reject(new Error('AniList returned non-JSON')); }
-              });
-            }
-          );
-          req.on('error', reject);
-          req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
-          req.write(graphqlQuery);
-          req.end();
-        });
+        const body = await animelayout.anilistGql(gq.query, gq.variables);
         const media = body && body.data && body.data.Media;
         if (!media) { json(res, 404, { error: 'Anime not found on AniList' }); return; }
         let seasons = [{
@@ -427,21 +388,16 @@ async function handle(req, res, u) {
           title: (media.title && (media.title.english || media.title.romaji)) || '',
           anilist: String(media.id)
         }];
-        // Relations are already included in the query above
-        const edges = (media.relations && media.relations.edges) || [];
-        let seasonNum = 1;
-        for (const edge of edges) {
-          if (!edge.node || !edge.relationType) continue;
-          if (!/SEQUEL|NEXT_SEASON/i.test(edge.relationType)) continue;
-          seasonNum++;
+        const chain = await animelayout.anilistSequelChain(media.id);
+        chain.forEach((node, i) => {
           seasons.push({
-            season: seasonNum,
-            episodes: edge.node.episodes || 0,
-            year: edge.node.seasonYear || '',
-            title: (edge.node.title && (edge.node.title.english || edge.node.title.romaji)) || '',
-            anilist: String(edge.node.id)
+            season: i + 2,
+            episodes: node.episodes || 0,
+            year: node.seasonYear || '',
+            title: (node.title && (node.title.english || node.title.romaji)) || '',
+            anilist: String(node.id)
           });
-        }
+        });
 
         json(res, 200, {
           title: (media.title && (media.title.english || media.title.romaji)) || title,

@@ -15,6 +15,7 @@ const hlscheck = require('./hlscheck');
 const sites = require('./sites');
 const cfsolve = require('./cfsolve');
 const tmdb = require('./tmdb');
+const { writeJsonAtomic, readJson } = require('./jsonfile');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 let nextId = 1;
@@ -1064,7 +1065,6 @@ class DownloadManager extends EventEmitter {
           outputRoot: it.outputRoot,
           url: it.url,
           template: it.template,
-          baseUrl: it.baseUrl,
           key: it.key,
           stopRunOnFail: it.stopRunOnFail,
           library: it.library || null,
@@ -1077,7 +1077,7 @@ class DownloadManager extends EventEmitter {
           expectedDuration: it.expectedDuration || 0,
           baseUrl: it.baseUrl || it.url || null
         }));
-      fs.writeFileSync(this._manifestPath(), JSON.stringify(data, null, 2));
+      writeJsonAtomic(this._manifestPath(), data);
     } catch (e) {
       // non-fatal
     }
@@ -1099,12 +1099,7 @@ class DownloadManager extends EventEmitter {
   // returns the live `{ discover, onUnavailable }` for a record, or `{ skip:true }`
   // to drop it (e.g. the file already finished downloading between sessions).
   restore(rebuild) {
-    let data = [];
-    try {
-      data = JSON.parse(fs.readFileSync(this._manifestPath(), 'utf8'));
-    } catch (e) {
-      return 0;
-    }
+    const data = readJson(this._manifestPath(), []);
     if (!Array.isArray(data) || !data.length) return 0;
     let restored = 0;
     for (const rec of data) {
