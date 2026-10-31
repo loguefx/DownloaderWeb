@@ -158,8 +158,9 @@ async function main() {
     const dir = fs.mkdtempSync(path.join(DATA_DIR, 'resume-'));
     const base = `http://127.0.0.1:${srv._port}`;
     const text = playlistText(base);
-    // A previous (killed) attempt saved parts 1-3.
+    // A previous (killed) attempt at this same copy saved parts 1-3.
     for (let i = 1; i <= 3; i++) fs.writeFileSync(path.join(dir, partName(i)), SEG_BODY(i));
+    fs.writeFileSync(path.join(dir, dl.RESUME_STAMP), dl.segmentFingerprint(text));
     const logs = [];
     try {
       const pl = await localizePlainSegments(text, base, dir, 'test-ua', { onLog: (m) => logs.push(m) });
@@ -169,6 +170,34 @@ async function main() {
       check('log announces the resume', logs.some((m) => /Resuming download: 3\/5/.test(m)), logs.join(' | '));
       const idx = fs.readFileSync(pl, 'utf8');
       check('playlist still complete and local', (idx.match(/seg0000\d\.ts/g) || []).length === N, idx.slice(0, 160));
+    } finally {
+      srv.close();
+    }
+  }
+
+  // ---- [2b] parts from a DIFFERENT copy are never resumed ------------------
+  // Live: an old attempt's cache (another source's copy of the episode) was
+  // "resumed" into an Anime Village download -> the file played 172 s long.
+  console.log('\n[2b] Parts from a different copy of the episode are discarded');
+  {
+    const { srv, state } = await startCdn();
+    const dir = fs.mkdtempSync(path.join(DATA_DIR, 'foreign-'));
+    const base = `http://127.0.0.1:${srv._port}`;
+    const text = playlistText(base);
+    const other = text.replace(/#EXTINF:5\.0,/g, '#EXTINF:4.004,'); // another encoding
+    for (let i = 1; i <= 3; i++) fs.writeFileSync(path.join(dir, partName(i)), Buffer.from('FOREIGN' + i));
+    fs.writeFileSync(path.join(dir, dl.RESUME_STAMP), dl.segmentFingerprint(other));
+    // Caches from before the fingerprint existed are not trusted either.
+    const dir2 = fs.mkdtempSync(path.join(DATA_DIR, 'nostamp-'));
+    fs.writeFileSync(path.join(dir2, partName(1)), Buffer.from('OLD'));
+    const logs = [];
+    try {
+      await localizePlainSegments(text, base, dir, 'test-ua', { onLog: (m) => logs.push(m) });
+      check('all 5 parts fetched fresh', [...state.segRequests].sort().join(',') === '1,2,3,4,5', JSON.stringify(state.segRequests));
+      check('no foreign bytes kept', fs.readFileSync(path.join(dir, partName(2))).equals(SEG_BODY(2)));
+      check('log says why', logs.some((m) => /Discarded 3 cached part\(s\) from a different copy/.test(m)), logs.join(' | '));
+      await localizePlainSegments(text, base, dir2, 'test-ua', { onLog: () => {} });
+      check('an unstamped old cache is refetched', fs.readFileSync(path.join(dir2, partName(1))).equals(SEG_BODY(1)));
     } finally {
       srv.close();
     }

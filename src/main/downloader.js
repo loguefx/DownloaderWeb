@@ -503,6 +503,13 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0, he
   });
 }
 
+// Which encoding a media playlist is: its segment count + durations.
+const RESUME_STAMP = 'source.fingerprint';
+function segmentFingerprint(text) {
+  const durs = (String(text || '').match(/#EXTINF:\s*[\d.]+/gi) || []).map((x) => Number(x.replace(/[^\d.]/g, '')).toFixed(3));
+  return crypto.createHash('sha1').update(durs.length + '|' + durs.join(',')).digest('hex');
+}
+
 async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, onLog, headers = null } = {}) {
   const lines = String(text || '').split(/\r?\n/);
   const jobs = [];
@@ -534,6 +541,34 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
   }
   if (!jobs.length) throw new Error('HLS playlist has no segments');
   fs.mkdirSync(dir, { recursive: true });
+
+  // Parts on disk are only resumable when they come from the SAME encoding.
+  // Live: a cache left by an older attempt at the episode on another source
+  // was "resumed" into Anime Village's download (173 foreign parts -> the
+  // file played 172 s too long). The encoding is identified by its segment
+  // durations: the same on every mirror / token, different between releases.
+  const fingerprint = segmentFingerprint(text);
+  const stampFile = path.join(dir, RESUME_STAMP);
+  let oldStamp = '';
+  try {
+    oldStamp = fs.readFileSync(stampFile, 'utf8').trim();
+  } catch (e) {
+    oldStamp = '';
+  }
+  if (oldStamp !== fingerprint) {
+    let dropped = 0;
+    for (const n of fs.readdirSync(dir)) {
+      if (!/^(seg\d{5}\.ts|key\d+\.bin)(\.tmp)?$/.test(n)) continue;
+      try {
+        fs.unlinkSync(path.join(dir, n));
+        dropped += 1;
+      } catch (e) {
+        // a part we cannot remove is overwritten when fetched
+      }
+    }
+    if (dropped && onLog) onLog(`Discarded ${dropped} cached part(s) from a different copy of this episode; downloading fresh.`);
+    fs.writeFileSync(stampFile, fingerprint);
+  }
 
   // Resume: parts saved by a previous (killed) attempt stay valid.
   let have = 0;
@@ -1508,5 +1543,7 @@ module.exports = {
   lastFfmpegStderr,
   // Exported for the Vidsrc resume tests.
   localizePlainSegments,
-  plainHttpBuffer
+  plainHttpBuffer,
+  segmentFingerprint,
+  RESUME_STAMP
 };
