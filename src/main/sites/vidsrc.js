@@ -97,6 +97,24 @@ async function idsFromPage(hooks, onLog) {
   }
 }
 
+// Classify the audio of a Vidsrc file from its release name.
+//   'dub'     - an English-dubbed copy ("... English ...", "HULU", "DUB", "Multi")
+//   'sub'     - a non-English-audio copy ("CR" = Chinese release, "JP", "RAW", ...)
+//   'multi'   - both kinds of markers (multi-audio file)
+//   'unknown' - no marker (or no name): don't guess.
+const DUB_MARKERS = /\b(english|eng|dub|multi|hulu|crunchyroll|netflix|hidive)\b/i;
+const SUB_MARKERS = /\b(cr|jp|japanese|jap|chinese|korean|raw|original)\b/i;
+function classifyAudio(fileName) {
+  const n = String(fileName || '');
+  if (!n) return 'unknown';
+  const dub = DUB_MARKERS.test(n);
+  const sub = SUB_MARKERS.test(n);
+  if (dub && sub) return 'multi';
+  if (dub) return 'dub';
+  if (sub) return 'sub';
+  return 'unknown';
+}
+
 module.exports = {
   id: 'vidsrc',
   name: 'Vidsrc',
@@ -159,6 +177,15 @@ module.exports = {
     return url;
   },
 
+  // Vidsrc serves ONE fixed file per episode - the audio language is baked
+  // into that file and the site offers NO dub/sub toggle (verified: the player
+  // JS has no dub logic and the API returns a single file_name + CDN mirrors).
+  // The data API does expose the release name, so we can detect what we are
+  // about to download and say so when it contradicts the user's choice
+  // (e.g. "CR WEB-DL" = Chinese release / Japanese audio while the user asked
+  // for DUB - the English dub simply is not on Vidsrc for that show).
+  classifyAudio,
+
   // Headless PRIMARY resolver. Given a series + season/episode (and a title the
   // id can be recovered from), it finds a verified >=1080p Vidsrc stream and
   // returns a detection the app's existing ffmpeg downloader can pull directly
@@ -213,6 +240,28 @@ module.exports = {
       return { status: 'no_quality' };
     }
     onLog(`Vidsrc (headless): locked ${best.realWidth}x${best.realHeight} from ${best.host}.`);
+    // Audio honesty: Vidsrc has no dub/sub selection, so the user's mode
+    // choice (dub/sub dropdown) cannot be enforced here - but we CAN see which
+    // audio the file carries and must not stay silent about a mismatch
+    // ("Smoking Behind the Supermarket" = "CR WEB-DL" = Japanese audio while
+    // the user asked for DUB: the English dub is simply not on Vidsrc).
+    const mode = ref.mode === 'sub' ? 'sub' : 'dub';
+    const fileName = (best.meta && best.meta.fileName) || '';
+    if (fileName) onLog(`Vidsrc file: ${fileName}`);
+    const audio = classifyAudio(fileName);
+    if (mode === 'dub' && audio === 'sub') {
+      onLog(
+        `⚠ AUDIO: you chose DUB, but Vidsrc's only file for this episode is ` +
+          `"${fileName}" (non-English audio). Vidsrc has no dub/sub toggle and ` +
+          `no English-dub copy of this episode - an English dub (if it exists) ` +
+          `is not on Vidsrc for this show. Downloading this copy.`
+      );
+    } else if (mode === 'sub' && audio === 'dub') {
+      onLog(
+        `Note: you chose SUB, but Vidsrc's file is an English-dubbed copy ` +
+          `("${fileName}").`
+      );
+    }
     return {
       status: 'resolved',
       detection: {

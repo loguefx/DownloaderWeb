@@ -684,7 +684,11 @@ class DownloadManager extends EventEmitter {
                   episode: item.episode,
                   url: item.url || item.baseUrl || '',
                   baseUrl: item.baseUrl || item.url || '',
-                  anime: !!item.anime
+                  anime: !!item.anime,
+                  // The dub/sub choice the user made when queueing. Headless
+                  // resolvers can't toggle servers, but they can at least tell
+                  // us when the file they found contradicts that choice.
+                  mode: item.mode || 'dub'
                 },
                 { onLog: (m) => this._log(m) }
               );

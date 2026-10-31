@@ -9,6 +9,7 @@ const schedule = require('./schedule');
 const bulk = require('./bulk');
 const tmdb = require('./tmdb');
 const animelayout = require('./anime-layout');
+const anidb = require('./anidb');
 const engineconfig = require('./engineconfig');
 const placer = require('./placer');
 
@@ -329,6 +330,33 @@ class Watcher {
         (dryRun && missing.length ? `, ${missing.length} missing (${missing.map((n) => `E${n}`).join(', ')}) - report only, nothing queued` : '') +
         (notAired ? `, ${notAired} not out yet (skipped until they air)` : '') + '.'
     );
+
+    // Dub availability (AniDB) - the user chose a dub/sub mode when queueing,
+    // but source sites like Vidsrc have NO dub toggle: one fixed file per
+    // episode. So the daily check states plainly whether an English-dubbed
+    // release of this series even EXISTS, so a "dub" download that turns out
+    // to be Japanese audio is never a surprise. Best-effort: a network
+    // failure must never break the schedule check.
+    if (anime && s.tmdb) {
+      let d = null;
+      try {
+        d = await anidb.englishDubForTmdb(s.tmdb);
+      } catch (e) {
+        d = { available: null, reason: 'network' };
+      }
+      if (d && d.available === true) {
+        this.onLog(
+          `"${s.series}" AniDB: English dub EXISTS - ${d.englishDubReleases} release(s)` +
+            (d.sample ? ` (e.g. ${String(d.sample).slice(0, 90)})` : '') + '.'
+        );
+      } else if (d && d.available === false) {
+        this.onLog(
+          `"${s.series}" AniDB: no English-dub release found (${d.totalReleases} release(s) total) - expect Japanese/sub audio from source sites.`
+        );
+      } else {
+        this.onLog(`"${s.series}" AniDB: English-dub status unknown (${(d && d.reason) || 'lookup failed'}) - not counted against the show.`);
+      }
+    }
 
     // Caught up on this season? Check the next one (anime layout included -
     // info.seasons is authoritative for anime). In report-only mode the next

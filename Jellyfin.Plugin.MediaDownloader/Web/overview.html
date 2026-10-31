@@ -1849,12 +1849,20 @@
                             const what = x.movie ? 'Movie' : 'Season ' + (x.season != null ? x.season : '?');
                             const bits = [what, (x.mode || 'dub').toUpperCase()];
                             if (x.anime) bits.push('ANIME');
+                            // AniDB English-dub status (engine-attached; appears on
+                            // the render after the engine's background fetch lands).
+                            // null/absent = not known yet - say nothing rather
+                            // than guess.
+                            if (x.anidb && x.anidb.available === true) bits.push('ENG DUB: yes (' + (x.anidb.englishDubReleases || 0) + ' release' + ((x.anidb.englishDubReleases || 0) === 1 ? '' : 's') + ')');
+                            else if (x.anidb && x.anidb.available === false) bits.push('ENG DUB: none on AniDB');
                             if (x.library && x.library.name) bits.push(x.library.name);
                             if (x.minHeight) bits.push(x.minHeight + 'p+');
                             if (x.tmdb) bits.push('tmdb ' + x.tmdb);
                             bits.push(x.lastChecked ? 'checked ' + whenOf(x.lastChecked) : 'not checked yet');
                             return '<div class="mdl-row"><div class="grow"><div class="t">' + esc(x.series) + '</div><div class="sub">' + esc(bits.join(' · ')) + '</div></div>' +
                                 (x.anime ? '<span class="mdl-pill purple">anime</span>' : '') +
+                                (x.anidb && x.anidb.available === true ? '<span class="mdl-pill green" title="AniDB: an English-dub release of this series exists">eng dub</span>' : '') +
+                                (x.anidb && x.anidb.available === false ? '<span class="mdl-pill red" title="AniDB: no English-dub release - source sites will serve Japanese/sub audio">no eng dub</span>' : '') +
                                 '<button type="button" class="mdl-btn icon sm" title="Stop watching" data-w-del="' + esc(x.key) + '">✕</button></div>';
                         }).join('')
                             : '<div class="mdl-empty">Nothing is being watched. Queue a show and tick “Keep watching” - or re-open a title that is already in your library and it is added automatically.</div>';

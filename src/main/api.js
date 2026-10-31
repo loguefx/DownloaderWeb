@@ -577,6 +577,20 @@ async function handle(req, res, u) {
       }
     }
 
+    // ---- AniDB: English-dub availability for a TMDB id (plugin + debugging) ----
+    if (seg === 'anidb' && req.method === 'GET' && parts[2]) {
+      const anidbMod = require('./anidb');
+      const r = await anidbMod.englishDubForTmdb(decodeURIComponent(parts[2])).catch((e) => ({
+        tmdbId: decodeURIComponent(parts[2]),
+        available: null,
+        reason: 'network',
+        error: String((e && e.message) || e),
+        at: Date.now()
+      }));
+      json(res, 200, r);
+      return;
+    }
+
     // ---- schedules ----
     if (seg === 'schedules') {
       const key = parts[2];
@@ -584,8 +598,31 @@ async function handle(req, res, u) {
         // dryRun: watcher mode (report-only banner). riskSeries + frozen show
         // the opt-out safety net: which at-risk ids are set, and which of the
         // watched series are frozen and why (explicit vs policy).
+        // anidb: per-title English-dub status (best effort). Served from cache
+        // when present; a missing entry triggers a ONE-SHOT background fetch
+        // (deduped) so the next dashboard render shows it - the response
+        // itself never blocks on the network.
+        const anidbMod = require('./anidb');
+        const items = service.schedulesList().map((it) => {
+          if (!it || !it.tmdb) return it;
+          const hit = anidbMod.peek(it.tmdb);
+          if (hit) {
+            return Object.assign({}, it, {
+              anidb: {
+                available: hit.available,
+                englishDubReleases: hit.englishDubReleases || 0,
+                totalReleases: hit.totalReleases || 0,
+                sample: hit.sample || '',
+                anidbId: hit.anidbId || null,
+                reason: hit.reason || ''
+              }
+            });
+          }
+          anidbMod.ensure(it.tmdb).catch(() => {});
+          return it;
+        });
         json(res, 200, {
-          items: service.schedulesList(),
+          items,
           dryRun: service.watcherMode().dryRun,
           riskSeries: service.riskSeriesGet(),
           frozen: service.frozenReport()

@@ -395,7 +395,17 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } =
         return fail(e);
       }
       const c = [];
+      let received = 0;
+      // Integrity: the CDN announces the exact body size. Under rate-limit
+      // pressure it sometimes sends 200 then closes the connection EARLY;
+      // without this check a truncated segment would be written to disk,
+      // pass the resume's size>0 test, and mux into a glitch/skip in the
+      // final MP4 (the "skipping" episodes). Fail so the part is refetched.
+      const expectedLen = Number((rs.headers && rs.headers['content-length']) || 0) || 0;
+      const truncationErr = (got) =>
+        new Error(`segment truncated: got ${got} of ${expectedLen} bytes (CDN closed early); will refetch`);
       rs.on('data', (d) => {
+        received += d.length;
         c.push(d);
         // Any byte resets the idle timer; the absolute deadline still bounds it.
         if (idleTimer) clearTimeout(idleTimer);
@@ -408,9 +418,18 @@ function plainHttpBuffer(url, ua, timeoutMs, { signal = null, deadlineMs = 0 } =
           fail(new Error('timeout'));
         }, timeoutMs);
       });
-      rs.on('error', (e) => fail(e));
+      rs.on('error', (e) => {
+        // A hard reset mid-body also counts: some bytes + short of the
+        // announced length = the same truncated segment, named as such.
+        if (expectedLen && received > 0 && received < expectedLen) return fail(truncationErr(received));
+        fail(e);
+      });
       rs.on('end', () => {
         if (idleTimer) clearTimeout(idleTimer);
+        if (expectedLen && received !== expectedLen) {
+          fail(truncationErr(received));
+          return;
+        }
         ok(Buffer.concat(c));
       });
     });

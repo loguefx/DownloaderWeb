@@ -288,6 +288,11 @@ async function fetchStreamUrls(ref) {
       title: (j.data && j.data.title) || ref.title || '',
       season: (j.data && j.data.season) || ref.season || '',
       episode: (j.data && j.data.episode) || ref.episode || '',
+      // The release name (e.g. "... 1080p CR WEB-DL ...-Kitsune.mkv" = Chinese
+      // release / Japanese audio; "... HULU ... English ..." = English dub).
+      // Vidsrc serves ONE fixed file per episode with no dub/sub toggle, so
+      // this is the only way to know which audio we are about to download.
+      fileName: (j.data && j.data.file_name) || '',
     };
     if (typeof urls === 'string' && j.vs && j.vs.wasm_url) {
       urls = await decryptStreamUrls(urls, j.vs);
