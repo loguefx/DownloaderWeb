@@ -254,7 +254,7 @@ class Watcher {
   async checkSeriesTmdb(s, dryRun) {
     const anime = !!s.anime;
     const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime });
-    if (!info || !(info.seasons || []).length) {
+    if (!info || !(info.seasons || []).some((x) => x && x.season > 0)) {
       if (dryRun) {
         // The fallback downloads (startBatch) - report-only mode must not run it.
         this.onLog(`TMDB has no seasons for "${s.series}" yet - report mode skips the source page check (nothing downloaded).`);
@@ -269,7 +269,8 @@ class Watcher {
       .sort((a, b) => a - b);
     // Total episode count the source claims across all seasons - used by the
     // flat-library floor guard (only active when the disk holds at least this).
-    const sourceTotal = info.seasons.reduce((a, x) => a + ((x && x.episodes) || 0), 0);
+    // Specials (Season 0) are not part of the numbered run the guard compares.
+    const sourceTotal = info.seasons.reduce((a, x) => a + ((x && x.season > 0 && x.episodes) || 0), 0);
     let season = s.season != null && String(s.season).trim() !== '' ? Number(s.season) : null;
     if (!season || !seasonNums.includes(season)) {
       const fallback = seasonNums[seasonNums.length - 1];

@@ -35,7 +35,7 @@ class PendingStore extends EventEmitter {
   }
 
   static key(spec) {
-    return [spec.series, spec.season || '', spec.episode, spec.mode || 'dub', spec.template || spec.baseUrl || ''].join('|');
+    return [spec.series, (spec.season != null ? spec.season : ''), spec.episode, spec.mode || 'dub', spec.template || spec.baseUrl || ''].join('|');
   }
 
   add(spec) {

@@ -256,7 +256,21 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         // mirrors and alternates included) has no 1080p copy, so walk the rest
         // of the site registry in order and ask each for the same title. First
         // site that resolves a 1080p stream wins; only that one is downloaded.
+        //
+        // Specials (Season 0) are skipped here: the title-search catalogs have
+        // no season 0 and fall back to season 1, which would save S1's episode
+        // under the special's name. Specials only come from TMDB-keyed sources.
+        const isSpecial =
+          extra.season != null && String(extra.season).trim() !== '' && Number(extra.season) === 0;
         if (
+          isSpecial &&
+          (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
+          !controller.signal.aborted
+        ) {
+          log('Specials (Season 0) are only taken from TMDB-numbered sources; not searching other sites for this one.');
+        }
+        if (
+          !isSpecial &&
           (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
           !controller.signal.aborted
         ) {
@@ -945,7 +959,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         skipSources: [],
         onUnavailable: () => pending.add(spec)
       };
-      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series }));
+      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series, season: rec.season }));
       const added = manager.add(rec);
       if (added) queued += 1;
     }
@@ -1012,7 +1026,7 @@ async function queueOne(entry, onLog = () => {}) {
     skipSources: [],
     onUnavailable: () => pending.add(spec)
   };
-  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series }));
+  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series, season: rec.season }));
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {

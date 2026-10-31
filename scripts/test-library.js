@@ -604,6 +604,53 @@ async function main() {
     check('multi-root: mislabeled series -> still HELD', organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2).mode === 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2)));
   }
 
+  console.log('\n[specials] Season 0 placement and recognition');
+  {
+    const lib = path.join(work, 'specials');
+    const put = (rel) => {
+      const p = path.join(lib, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, 'x'.repeat(2048));
+      return p;
+    };
+    check('"Specials" folder reads as season 0', organizer.seasonFromName('Specials') === 0);
+    check('"Season 00" folder reads as season 0', organizer.seasonFromName('Season 00') === 0);
+    check('"Holiday Specials" is NOT season 0', organizer.seasonFromName('Holiday Specials') == null);
+
+    const fresh = organizer.buildOutputPath(lib, { series: 'NewShow', season: 0, episode: 1 });
+    check('a new special is filed under <Series>/Specials as S0E1',
+      fresh === path.join(lib, 'NewShow', 'Specials', 'NewShow S0E1.mp4'), fresh);
+
+    put('OldShow/Season 00/OldShow S00E01.mkv');
+    const reuse = organizer.expectedPath(lib, { series: 'OldShow', season: 0, episode: 2 });
+    check('an existing "Season 00" folder is reused for new specials',
+      reuse === path.join(lib, 'OldShow', 'Season 00', 'OldShow S0E2.mp4'), reuse);
+    check('S00E01 in Season 00 counts as present for S0E1',
+      !!organizer.existingEpisodeFile(lib, { series: 'OldShow', season: 0, episode: 1 }));
+
+    // Flat anime with a Specials folder: root bare numbers must STILL count
+    // (they did before Specials was read as season 0).
+    put('FlatShow/FlatShow 05.mp4');
+    put('FlatShow/Specials/FlatShow OVA 01.mp4');
+    check('flat series + Specials folder is still "flat" (no real season folders)',
+      organizer.seriesHasSeasonFolders(lib, { series: 'FlatShow' }) === false);
+    check('root bare "05" still counts as S1E5 next to a Specials folder',
+      !!organizer.existingEpisodeFile(lib, { series: 'FlatShow', season: 1, episode: 5 }));
+    check('"OVA 01" in Specials counts as S0E1',
+      !!organizer.existingEpisodeFile(lib, { series: 'FlatShow', season: 0, episode: 1 }));
+    check('"OVA 01" in Specials does NOT count as S1E1',
+      !organizer.existingEpisodeFile(lib, { series: 'FlatShow', season: 1, episode: 1 }));
+
+    // A Specials folder of hand-filed S01-tagged files must not newly HOLD
+    // the series (it was outside the mislabel check before).
+    put('HoldShow/Season 1/HoldShow S01E01.mkv');
+    put('HoldShow/Season 1/HoldShow S01E02.mkv');
+    put('HoldShow/Specials/HoldShow S01E00 Recap.mkv');
+    put('HoldShow/Specials/HoldShow S01E13 OVA.mkv');
+    const risk = organizer.seriesLayoutRisk(path.join(lib, 'HoldShow'), 20);
+    check('Specials folder with S01 tags does not hold the series', risk.mode !== 'hold', JSON.stringify(risk));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   if (failed) {
     console.log('Failures:\n  ' + failures.join('\n  '));

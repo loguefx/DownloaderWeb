@@ -286,7 +286,7 @@ async function fetchStreamUrls(ref) {
     let urls = j.data && j.data.stream_urls;
     const meta = {
       title: (j.data && j.data.title) || ref.title || '',
-      season: (j.data && j.data.season) || ref.season || '',
+      season: (j.data && j.data.season != null ? j.data.season : ref.season != null ? ref.season : ''),
       episode: (j.data && j.data.episode) || ref.episode || '',
       // The release name (e.g. "... 1080p CR WEB-DL ...-Kitsune.mkv" = Chinese
       // release / Japanese audio; "... HULU ... English ..." = English dub).

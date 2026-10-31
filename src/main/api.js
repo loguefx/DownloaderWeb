@@ -388,7 +388,7 @@ async function handle(req, res, u) {
           title: (media.title && (media.title.english || media.title.romaji)) || '',
           anilist: String(media.id)
         }];
-        const chain = await animelayout.anilistSequelChain(media.id);
+        const { seasons: chain, extras } = await animelayout.anilistRelations(media.id);
         chain.forEach((node, i) => {
           seasons.push({
             season: i + 2,
@@ -404,7 +404,16 @@ async function handle(req, res, u) {
           poster: (media.coverImage && media.coverImage.large) || '',
           overview: (media.description || '').replace(/<[^>]+>/g, '').slice(0, 400),
           rating: media.averageScore ? Math.round(media.averageScore / 10) : null,
-          seasons
+          seasons,
+          // Season 0: movies / OVAs / specials, in release order. Each
+          // entry's episodes are numbered on from the one before (S0E1..).
+          specials: extras.map((x) => ({
+            anilist: String(x.id),
+            format: x.format,
+            title: (x.title && (x.title.english || x.title.romaji)) || '',
+            year: x.seasonYear || '',
+            episodes: x.format === 'MOVIE' ? 1 : Math.max(1, Number(x.episodes) || 1)
+          }))
         });
       } catch (e) {
         json(res, 502, { error: 'AniList info failed: ' + ((e && e.message) || e) });

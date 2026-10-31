@@ -209,46 +209,110 @@ function anilistGql(query, variables) {
   });
 }
 
-// Walk the SEQUEL chain from one AniList entry: S1 -> S2 -> S3 ... Each
-// entry's relations only list its DIRECT sequel, so reading S1's relations
-// alone stops at season 2. Movies / OVAs / specials in the chain are walked
-// through but not returned (a recap movie between two TV seasons is not a
-// season). Returns [{ id, episodes, seasonYear, title }] in order, excluding
-// the start entry; [] on any error.
+// Everything AniList relates to one work, split the way TMDB and Jellyfin
+// split it:
+//   seasons - the main SEQUEL chain S1 -> S2 -> S3 ... (TV / TV_SHORT / ONA).
+//             Each entry's relations list only its DIRECT sequel, so the chain
+//             is walked hop by hop; reading S1's relations alone stops at S2.
+//   extras  - movies, OVAs, specials and side stories hanging off any main
+//             season (or sitting between two of them in the chain). These
+//             are Season 0 ("Specials"), never a numbered season, so a recap
+//             movie between two TV seasons cannot shift S2 to S3.
+// Spin-offs / alternatives / characters are different works and are ignored.
+// Both lists hold { id, format, episodes, seasonYear, startDate, title }; the
+// start entry itself is not in `seasons`. Network errors end the walk early
+// with whatever was found.
 const SEASON_FORMATS = new Set(['TV', 'TV_SHORT', 'ONA']);
-async function anilistSequelChain(startId, gql = anilistGql, maxHops = 30) {
-  const out = [];
-  const seen = new Set([Number(startId)]);
+const EXTRA_FORMATS = new Set(['MOVIE', 'OVA', 'SPECIAL', 'ONA', 'TV_SHORT']);
+const EXTRA_RELATIONS = /^(SEQUEL|PREQUEL|SIDE_STORY|SUMMARY)$/i;
+const RELATIONS_QUERY =
+  'query($id: Int) { Media(id: $id) { relations { edges { relationType node { ' +
+  'id type format episodes seasonYear startDate { year month day } title { english romaji } } } } } }';
+
+async function anilistRelations(startId, gql = anilistGql, maxHops = 30) {
+  const seasons = [];
+  const extras = [];
+  const mainIds = new Set([Number(startId)]);
+  const extraIds = new Set();
+  const pick = (n) => ({
+    id: n.id,
+    format: n.format || '',
+    episodes: n.episodes,
+    seasonYear: n.seasonYear,
+    startDate: n.startDate || null,
+    title: n.title
+  });
+  const addExtra = (n) => {
+    if (mainIds.has(n.id) || extraIds.has(n.id)) return;
+    extraIds.add(n.id);
+    extras.push(pick(n));
+  };
   let id = Number(startId);
   for (let hop = 0; hop < maxHops; hop++) {
     let rel;
     try {
-      rel = await gql(
-        'query($id: Int) { Media(id: $id) { relations { edges { relationType node { id type format episodes seasonYear title { english romaji } } } } } }',
-        { id }
-      );
+      rel = await gql(RELATIONS_QUERY, { id });
     } catch (e) {
       break;
     }
-    const edges = (rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [];
-    const sequels = edges
-      .filter((e) => e && e.node && /SEQUEL|NEXT_SEASON/i.test(e.relationType || ''))
-      .filter((e) => (!e.node.type || e.node.type === 'ANIME') && !seen.has(e.node.id));
-    if (!sequels.length) break;
-    // When a season has both a sequel season and a sequel movie, follow the season.
-    const next = sequels.find((e) => SEASON_FORMATS.has(e.node.format)) || sequels[0];
-    seen.add(next.node.id);
-    if (!next.node.format || SEASON_FORMATS.has(next.node.format)) {
-      out.push({
-        id: next.node.id,
-        episodes: next.node.episodes,
-        seasonYear: next.node.seasonYear,
-        title: next.node.title
-      });
+    const edges = ((rel && rel.data && rel.data.Media && rel.data.Media.relations && rel.data.Media.relations.edges) || [])
+      .filter((e) => e && e.node && (!e.node.type || e.node.type === 'ANIME'));
+    const sequels = edges.filter((e) => /^(SEQUEL|NEXT_SEASON)$/i.test(e.relationType || '') && !mainIds.has(e.node.id));
+    // When a season has both a sequel season and a sequel movie, the season
+    // continues the chain and the movie is an extra.
+    const next = sequels.find((e) => SEASON_FORMATS.has(e.node.format)) || sequels[0] || null;
+    for (const e of edges) {
+      if (next && e.node.id === next.node.id) continue;
+      if (!EXTRA_RELATIONS.test(e.relationType || '')) continue;
+      if (!EXTRA_FORMATS.has(e.node.format)) continue;
+      addExtra(e.node);
     }
+    if (!next) break;
+    if (!next.node.format || SEASON_FORMATS.has(next.node.format)) {
+      // A node first seen as an extra (e.g. an ONA side story) that turns out
+      // to be the next main season is promoted.
+      const was = extras.findIndex((x) => x.id === next.node.id);
+      if (was >= 0) extras.splice(was, 1);
+      extraIds.delete(next.node.id);
+      seasons.push(pick(next.node));
+    } else {
+      // A movie / OVA sitting in the sequel chain: keep walking through it.
+      addExtra(next.node);
+    }
+    mainIds.add(next.node.id);
     id = next.node.id;
   }
-  return out;
+  const when = (x) => {
+    const d = x.startDate || {};
+    return (d.year || x.seasonYear || 9999) * 10000 + (d.month || 12) * 100 + (d.day || 31);
+  };
+  extras.sort((a, b) => when(a) - when(b));
+  return { seasons, extras };
+}
+
+async function anilistSequelChain(startId, gql = anilistGql, maxHops = 30) {
+  return (await anilistRelations(startId, gql, maxHops)).seasons;
+}
+
+// Season 0 ("Specials") episodes from AniList extras, in release order: a
+// movie is one episode, a multi-episode OVA is one episode per part. Names
+// carry the extra's title so a hand-named file ("Show - Mugen Train.mkv") is
+// still recognized as present.
+function specialsFromExtras(extras) {
+  const eps = [];
+  for (const x of extras || []) {
+    const name = (x.title && (x.title.english || x.title.romaji)) || '';
+    const count = x.format === 'MOVIE' ? 1 : Math.max(1, Number(x.episodes) || 1);
+    for (let i = 1; i <= count; i++) {
+      eps.push({
+        episode: eps.length + 1,
+        name: count > 1 ? `${name} - ${i}` : name,
+        anilist: String(x.id),
+        format: x.format
+      });
+    }
+  }
+  return eps;
 }
 
 // Strict guard against an AniList search returning a DIFFERENT work with a
@@ -355,7 +419,7 @@ async function anilistSeasons(title, opts = {}) {
     return eps;
   };
   let seasons = [{ season: 1, episodes: mk(media.episodes, media.seasonYear), year: media.seasonYear || '' }];
-  const chain = await anilistSequelChain(media.id, gql);
+  const { seasons: chain, extras } = await anilistRelations(media.id, gql);
   chain.forEach((node, i) => {
     seasons.push({
       season: i + 2,
@@ -363,7 +427,11 @@ async function anilistSeasons(title, opts = {}) {
       year: node.seasonYear || ''
     });
   });
-  if (!seasons[0].episodes.length && !seasons.some((s) => s.episodes.length)) {
+  // Season 0 (Specials) goes FIRST so callers that read "the last season"
+  // still get the newest numbered one.
+  const specials = specialsFromExtras(extras);
+  if (specials.length) seasons.unshift({ season: 0, episodes: specials, year: '' });
+  if (!seasons.some((s) => s.season > 0 && s.episodes.length)) {
     cacheSet(key, null);
     return null;
   }
@@ -432,11 +500,12 @@ const countOf = (s) => (Array.isArray(s.episodes) ? s.episodes.length : Number(s
 // wrong about the seasons" failure. AniList still earns its place by adding
 // the missing sequel TMDB hasn't listed yet - the original bug it fixed.
 function addMissingSeasons(baseSeasons, extraSeasons) {
-  const out = (baseSeasons || []).filter((s) => s && s.season > 0)
+  const out = (baseSeasons || []).filter((s) => s && s.season >= 0)
     .map((s) => ({ season: s.season, episodes: countOf(s), year: s.year || '' }));
   const have = new Set(out.map((s) => s.season));
   for (const s of extraSeasons || []) {
-    if (!s || s.season <= 0 || have.has(s.season)) continue;
+    if (!s || !(s.season >= 0) || have.has(s.season)) continue;
+    if (s.season === 0 && !countOf(s)) continue; // no known specials: nothing to add
     have.add(s.season);
     out.push({ season: s.season, episodes: countOf(s), year: s.year || '' });
   }
@@ -454,6 +523,9 @@ function addMissingSeasons(baseSeasons, extraSeasons) {
 //     (assume they agree; never invent a cross-season guess).
 function mapEpisode(authoritative, tmdbSeasons, season, episode) {
   const identity = { season, episode, mapped: false };
+  // Specials (Season 0) are numbered per source and are never part of the
+  // main-season episode run, so they are never offset into a real season.
+  if (!(Number(season) > 0)) return identity;
   const A = (authoritative || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
   const T = (tmdbSeasons || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
   if (!A.length || !T.length) return identity;
@@ -493,7 +565,8 @@ async function urlMapFor(tmdbId, title, opts = {}) {
       // Identity for ep 1 does not prove identity for all - but if the total
       // episode sets differ or shapes match, mapEpisode always returns
       // identity. Re-check with a mid/last pair to be sure.
-      const last = resolved.seasons[resolved.seasons.length - 1];
+      const numbered = resolved.seasons.filter((s) => s.season > 0);
+      const last = numbered[numbered.length - 1] || a;
       const lastEp = countOf(last) || 1;
       const m2 = mapEpisode(resolved.seasons, tmdbSeasons, last.season, lastEp);
       if (!m2.mapped) return null;
@@ -506,6 +579,8 @@ module.exports = {
   aniwaveSeasons,
   anilistSeasons,
   anilistSequelChain,
+  anilistRelations,
+  specialsFromExtras,
   anilistGql,
   anilistIdFor,
   resolveLayout,

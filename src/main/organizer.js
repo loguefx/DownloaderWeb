@@ -183,7 +183,24 @@ function seriesDir(outputRoot, meta) {
   const base = seriesRoot(outputRoot, meta);
   if (toNumber(meta && meta.episode) == null) return base;
   const se = toNumber(meta && meta.season);
+  if (se === 0) return specialsDir(base);
   return path.join(base, `Season ${se != null ? se : 1}`);
+}
+
+// Season 0 = Specials (OVAs, movies, extras). Jellyfin reads a "Specials" or
+// "Season 00" folder as season 0. Use the one the series already has (any
+// folder seasonFromName reads as 0), else "Specials".
+function specialsDir(base) {
+  try {
+    const ents = fs.readdirSync(base, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && seasonFromName(e.name) === 0)
+      .map((e) => e.name)
+      .sort();
+    if (ents.length) return path.join(base, ents.includes('Specials') ? 'Specials' : ents[0]);
+  } catch (e) {
+    // no series folder yet
+  }
+  return path.join(base, 'Specials');
 }
 
 // Output path: <root>/<Series>/Season N/<Series> S1E1.mp4
@@ -392,7 +409,11 @@ function seriesHasSeasonFolders(outputRoot, meta) {
       continue;
     }
     for (const ent of ents) {
-      if (ent.isDirectory() && seasonFromName(ent.name) != null) return true;
+      // A Specials / Season 00 folder does not make a flat series "seasoned":
+      // the bare numbers at its root still belong to the main run.
+      if (!ent.isDirectory()) continue;
+      const anchor = seasonFromName(ent.name);
+      if (anchor != null && anchor !== 0) return true;
     }
   }
   return false;
@@ -422,8 +443,13 @@ function titleMatches(fileName, episodeName) {
   return true;
 }
 
+const SPECIALS_NAME = /^\s*specials?\s*$/i;
+
 function seasonFromName(name) {
   const s = String(name || '');
+  // Jellyfin's Specials folder is season 0. Only the bare name: "Holiday
+  // Specials" is a grouping folder, not season 0.
+  if (SPECIALS_NAME.test(s)) return 0;
   let m = s.match(/season\s*0*(\d{1,3})/i);
   if (m) return parseInt(m[1], 10);
   m = s.match(/(\d{1,3})\s*(?:st|nd|rd|th)\s+season/i);
@@ -718,7 +744,10 @@ function seriesLayoutRisk(seriesDir, sourceTotal) {
     if (!videoFiles.length) return;
     const name = path.basename(dir);
     const anchor = seasonFromName(name);
-    if (anchor != null) seasonFolders.push({ name, anchor, files: videoFiles });
+    // A bare "Specials" folder is left out of the mislabel check, exactly as
+    // before it was read as season 0: hand-filed specials often carry the
+    // main season's S/E tag, and that alone must not hold the series.
+    if (anchor != null && !SPECIALS_NAME.test(name)) seasonFolders.push({ name, anchor, files: videoFiles });
     for (const fn of videoFiles) {
       const m = String(fn).match(/s0*(\d{1,3})[eE]0*(\d{1,3})(?!\d)/i);
       if (!m) continue;

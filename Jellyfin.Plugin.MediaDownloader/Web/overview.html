@@ -1201,12 +1201,14 @@
                         if (info && info.title) t.title = info.title;
                         if (info && info.year) t.year = info.year;
                         if (t.kind === 'series') {
-                            t.seasons = ((info && info.seasons) || []).filter((s) => s.season > 0).map((s) => ({
+                            // Season 0 = Specials (OVAs, movies, extras), listed when it has episodes.
+                            t.seasons = ((info && info.seasons) || []).filter((s) => s.season > 0 || (s.season === 0 && s.episodes > 0)).map((s) => ({
                                 season: s.season, count: s.episodes || 0, year: s.year,
                                 eps: null, status: {}, loaded: false, checked: false
                             }));
                             if (!t.seasons.length) t.infoError = 'TMDB lists no seasons for this title yet.';
-                            t.active = t.seasons.length ? t.seasons[0].season : null;
+                            const firstNumbered = t.seasons.find((s) => s.season > 0) || t.seasons[0];
+                            t.active = firstNumbered ? firstNumbered.season : null;
                         }
                         renderTitle();
                         if (t.kind === 'movie') checkMovie(t); else loadSeasons(t);
@@ -1414,6 +1416,15 @@
                 // and footer can never disagree. "have" = full-quality copies,
                 // "low" = on disk but below the floor (replaceable), "missing"
                 // = aired but nowhere on disk, "onDisk" = have + low.
+                function seasonLabel(n) {
+                    return Number(n) === 0 ? 'Specials' : 'Season ' + n;
+                }
+                // "3 seasons + specials" - Specials is not counted as a season.
+                function seasonsText(t) {
+                    const numbered = (t.seasons || []).filter((s) => s.season > 0).length;
+                    const sp = (t.seasons || []).some((s) => s.season === 0);
+                    return (numbered ? plural(numbered, 'season') : '') + (sp ? (numbered ? ' + specials' : 'specials') : '');
+                }
                 function seasonCounts(s) {
                     let have = 0, low = 0, queued = 0, unaired = 0, total = 0;
                     (s.eps || []).forEach((e) => {
@@ -1477,7 +1488,7 @@
                         if (info.runtime) meta.push(Math.floor(info.runtime / 60) + ' h ' + (info.runtime % 60) + ' min');
                     } else if (t.seasons.length) {
                         const total = t.seasons.reduce((a, s) => a + (s.count || 0), 0);
-                        meta.push(plural(t.seasons.length, 'season'), plural(total, 'episode'));
+                        meta.push(seasonsText(t), plural(total, 'episode'));
                     }
                     $('[data-t-meta]').textContent = meta.filter(Boolean).join(' · ');
                     $('[data-t-ov]').textContent = info.overview || t.r.overview || '';
@@ -1616,14 +1627,14 @@
                         if (t.mode === 'episodes' && t.active === s.season) cls += ' on';
                         if (t.mode === 'season' && t.picked[s.season]) cls += ' picked';
                         if (t.mode === 'full' && avail) cls += ' picked';
-                        return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>Season ' + s.season + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + '</b><span>' + esc(sub) + '</span></button>';
+                        return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>' + seasonLabel(s.season) + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + '</b><span>' + esc(sub) + '</span></button>';
                     }).join('') + '</div>';
 
                     if (t.mode === 'full') {
                         const c = titleCounts(t);
                         const toDownload = c.missing + c.low;
                         h += '<div class="mdl-callout">' + ICON.check + '<div><b>' + plural(toDownload, 'episode') + '</b> to download (' +
-                             c.missing + ' new' + (c.low ? ', ' + c.low + ' replacing below-floor copies' : '') + ') across ' + plural(t.seasons.length, 'season') + '.' +
+                             c.missing + ' new' + (c.low ? ', ' + c.low + ' replacing below-floor copies' : '') + ') across ' + seasonsText(t) + '.' +
                              (c.have ? ' Your ' + c.have + ' full-quality episodes are left alone.' : '') +
                              '<div class="small muted" style="margin-top:.2em;">Episode counts come from TMDB, so no season is cut short.</div></div></div>';
                         return h;
@@ -1636,9 +1647,9 @@
                     // specific episodes
                     const s = t.seasons.find((x) => x.season === t.active) || t.seasons[0];
                     if (!s) return h;
-                    if (!s.loaded) return h + '<div class="small muted"><span class="mdl-spin"></span> Loading season ' + s.season + '…</div>';
+                    if (!s.loaded) return h + '<div class="small muted"><span class="mdl-spin"></span> Loading ' + seasonLabel(s.season).toLowerCase() + '…</div>';
                     const set = t.sel[s.season] || {};
-                    h += '<p class="small muted" style="margin-bottom:.7em;">Season ' + s.season + ' has ' + plural(s.count, 'episode') + ' on TMDB. Greyed-out episodes are already in your library, already queued, or not out yet.</p>' +
+                    h += '<p class="small muted" style="margin-bottom:.7em;">' + seasonLabel(s.season) + ' has ' + plural(s.count, 'episode') + ' on TMDB. Greyed-out episodes are already in your library, already queued, or not out yet.</p>' +
                          '<div class="mdl-actions" style="margin-bottom:.8em;"><button type="button" class="mdl-btn sm" data-sel="all">Select all available</button><button type="button" class="mdl-btn sm" data-sel="none">Clear</button></div>';
                     h += s.eps.map((e) => {
                         const st = epStatus(s, e);
@@ -1663,9 +1674,10 @@
                     const join = (...p) => p.join(sep).replace(/([\\/])\1+/g, '$1');
                     if (t.kind === 'movie') return join(base, name, name + '.mp4');
                     const sel = selection(t);
-                    const s = sel.length ? sel[0].season : (t.seasons[0] ? t.seasons[0].season : 1);
+                    const first = t.seasons.find((x) => x.season > 0) || t.seasons[0];
+                    const s = sel.length ? sel[0].season : (first ? first.season : 1);
                     const e = sel.length ? sel[0].episodes[0] : 1;
-                    return join(base, name, 'Season ' + s, name + ' S' + s + 'E' + e + '.mp4');
+                    return join(base, name, Number(s) === 0 ? 'Specials' : 'Season ' + s, name + ' S' + s + 'E' + e + '.mp4');
                 }
 
                 function renderFoot() {
@@ -1740,7 +1752,7 @@
                             // Keep watching from the newest season picked.
                             watch: !!t.watch && i === sel.length - 1,
                             noWatch: noWatch,
-                            label: t.title + ' · Season ' + x.season + ' · ' + (x.episodes.length === 1 ? 'E' + x.episodes[0] : plural(x.episodes.length, 'episode'))
+                            label: t.title + ' · ' + seasonLabel(x.season) + ' · ' + (x.episodes.length === 1 ? 'E' + x.episodes[0] : plural(x.episodes.length, 'episode'))
                         }));
                     }
                     if (!jobs.length) return;

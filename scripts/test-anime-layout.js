@@ -9,7 +9,9 @@
 //      and negative caching;
 //   3. anilistSeasons - season split from relations, the title-match guard;
 //   4. resolveLayout / urlMapFor - tiering with mocked network;
-//   5. static guarantee: this module never touches the disk (add-only).
+//   5. static guarantee: this module never touches the disk (add-only);
+//   8. Specials (Season 0): sequel chain walked hop by hop, movies / OVAs /
+//      side stories go to Season 0 and never shift the numbered seasons.
 //
 // No network: every fetcher is mocked.
 
@@ -294,6 +296,67 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
       if (src.includes(b)) { clean = false; console.log('        banned token found: ' + b); }
     }
     check('no disk I/O calls in the layout module', clean);
+  }
+
+  console.log('\n[8] Specials (Season 0): full chain, extras never renumber seasons');
+  {
+    // S1(1) -SEQUEL-> movie(10) -SEQUEL-> S2(2) -SEQUEL-> S3(3)
+    // S1 also has: OVA side story(20, 2 eps), a spin-off TV (30, ignored),
+    // and a special (21) hanging off S2. S3 links back to S1 (cycle guard).
+    const node = (id, format, episodes, y, m) => ({
+      id, type: 'ANIME', format, episodes, seasonYear: y,
+      startDate: { year: y, month: m, day: 1 }, title: { english: 'T' + id, romaji: '' }
+    });
+    const N = {
+      1: node(1, 'TV', 12, 2019, 4), 2: node(2, 'TV', 11, 2021, 1), 3: node(3, 'TV', 13, 2023, 7),
+      10: node(10, 'MOVIE', null, 2020, 10), 20: node(20, 'OVA', 2, 2019, 12),
+      21: node(21, 'SPECIAL', 1, 2021, 6), 30: node(30, 'TV', 24, 2022, 1)
+    };
+    const rel = {
+      1: [['SEQUEL', 10], ['SIDE_STORY', 20], ['SPIN_OFF', 30]],
+      10: [['PREQUEL', 1], ['SEQUEL', 2]],
+      2: [['PREQUEL', 10], ['SEQUEL', 3], ['SIDE_STORY', 21]],
+      3: [['PREQUEL', 2], ['SEQUEL', 1]]
+    };
+    const gql = async (q, v) => {
+      if (q.includes('relations')) {
+        return { data: { Media: { relations: { edges: (rel[v.id] || []).map(([t, id]) => ({ relationType: t, node: N[id] })) } } } };
+      }
+      return { data: { Media: { id: 1, title: { english: 'Show', romaji: '' }, episodes: 12, seasonYear: 2019 } } };
+    };
+    const r = await mod.anilistRelations(1, gql);
+    check('main chain walks through the movie to S2 and S3', JSON.stringify(r.seasons.map((x) => x.id)) === '[2,3]', r.seasons.map((x) => x.id));
+    check('extras = OVA, movie, special in release order (spin-off ignored)',
+      JSON.stringify(r.extras.map((x) => x.id)) === '[20,10,21]', r.extras.map((x) => x.id));
+    check('anilistSequelChain still returns only the numbered seasons',
+      JSON.stringify((await mod.anilistSequelChain(1, gql)).map((x) => x.id)) === '[2,3]');
+
+    mod._resetCache();
+    const seasons = await mod.anilistSeasons('Show', { anilistId: '1', fetcher: gql });
+    const by = (n) => seasons.find((s) => s.season === n);
+    check('numbered seasons are S1=12, S2=11, S3=13 (the movie did not become S2)',
+      by(1).episodes.length === 12 && by(2).episodes.length === 11 && by(3).episodes.length === 13 && !by(4),
+      seasons.map((s) => s.season + ':' + s.episodes.length));
+    const sp = by(0);
+    check('Season 0 holds OVA x2 + movie + special = 4 episodes', sp && sp.episodes.length === 4, sp && sp.episodes.length);
+    check('Season 0 episode names carry the extra titles',
+      sp && sp.episodes[0].name === 'T20 - 1' && sp.episodes[2].name === 'T10', sp && sp.episodes.map((e) => e.name));
+    check('Season 0 is listed first, so "last season" is still the newest numbered one', seasons[0].season === 0);
+
+    const tmdb = [{ season: 1, episodes: 12 }, { season: 2, episodes: 24 }];
+    const auth = [{ season: 0, episodes: 4 }, { season: 1, episodes: 12 }, { season: 2, episodes: 11 }, { season: 3, episodes: 13 }];
+    const m0 = mod.mapEpisode(auth, [{ season: 1, episodes: 12 }, { season: 2, episodes: 11 }, { season: 3, episodes: 13 }, { season: 4, episodes: 0 }], 0, 2);
+    check('mapEpisode never offsets a special into a numbered season', m0.season === 0 && m0.episode === 2 && !m0.mapped, m0);
+    const m1 = mod.mapEpisode([mk(1, 12), mk(2, 12)], [{ season: 1, episodes: 24 }], 2, 1);
+    check('mapEpisode for numbered seasons is unchanged (S2E1 -> S1E13)', m1.season === 1 && m1.episode === 13 && m1.mapped, m1);
+
+    const merged = mod.addMissingSeasons(tmdb, auth);
+    check('AniList adds Season 0 and S3 when TMDB lacks them; TMDB counts kept',
+      JSON.stringify(merged.map((s) => s.season + ':' + s.episodes)) === '["0:4","1:12","2:24","3:13"]', merged);
+    const merged2 = mod.addMissingSeasons([{ season: 0, episodes: 9 }].concat(tmdb), auth);
+    check("TMDB's own Specials count wins over AniList's", merged2[0].season === 0 && merged2[0].episodes === 9, merged2);
+    const merged3 = mod.addMissingSeasons(tmdb, [{ season: 0, episodes: [] }]);
+    check('an empty AniList Season 0 is not added', !merged3.some((s) => s.season === 0), merged3);
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

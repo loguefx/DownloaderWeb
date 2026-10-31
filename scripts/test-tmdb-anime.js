@@ -50,6 +50,34 @@ const TV = {
     id: 555, name: 'Missing Season Anime', first_air_date: '2025-01-10', poster_path: null, overview: 'x',
     seasons: [{ season_number: 1, episode_count: 12, air_date: '2025-01-10' }]
   },
+  // 600: Aniwave layout + TMDB Specials: Specials stay TMDB's.
+  600: {
+    id: 600, name: 'Aniwave With Specials', first_air_date: '2024-01-10', poster_path: null, overview: 'x',
+    seasons: [
+      { season_number: 0, episode_count: 3, air_date: '2024-06-01' },
+      { season_number: 1, episode_count: 12, air_date: '2024-01-10' }
+    ]
+  },
+  // 601: TMDB has no Specials; AniList knows OVAs + a missing S2.
+  601: {
+    id: 601, name: 'AniList Specials Anime', first_air_date: '2024-01-10', poster_path: null, overview: 'x',
+    seasons: [{ season_number: 1, episode_count: 12, air_date: '2024-01-10' }]
+  },
+  // 602: plain TV with an EMPTY Specials season and a real one on 603.
+  602: {
+    id: 602, name: 'Empty Specials Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
+    seasons: [
+      { season_number: 0, episode_count: 0, air_date: null },
+      { season_number: 1, episode_count: 8, air_date: '2020-01-10' }
+    ]
+  },
+  603: {
+    id: 603, name: 'Specials Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
+    seasons: [
+      { season_number: 0, episode_count: 5, air_date: '2021-12-24' },
+      { season_number: 1, episode_count: 8, air_date: '2020-01-10' }
+    ]
+  },
   // 789: a plain TV show (2 seasons) - the anime tiers must not touch it.
   789: {
     id: 789, name: 'Plain TV Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
@@ -78,7 +106,7 @@ global.fetch = async (url) => {
       ok: true,
       json: async () => ({
         imdb_id: 'tt' + m[1],
-        anilist_id: m[1] === '123' ? 999 : m[1] === '555' ? 777 : null
+        anilist_id: m[1] === '123' ? 999 : m[1] === '555' ? 777 : m[1] === '601' ? 6010 : null
       })
     };
   }
@@ -97,6 +125,15 @@ animelayout._internals.cacheSet('anilistid:777', [
   { season: 2, episodes: eps(12), year: '2026' }
 ]);
 animelayout._internals.cacheSet('aniwave:789', null);
+animelayout._internals.cacheSet('aniwave:600', [{ season: 1, episodes: eps(10), dub: true, sub: false, year: '2024' }]);
+animelayout._internals.cacheSet('aniwave:601', null);
+animelayout._internals.cacheSet('anilistid:6010', [
+  { season: 0, episodes: eps(2), year: '' },
+  { season: 1, episodes: eps(12), year: '2024' },
+  { season: 2, episodes: eps(11), year: '2025' }
+]);
+animelayout._internals.cacheSet('aniwave:602', null);
+animelayout._internals.cacheSet('aniwave:603', null);
 
 (async () => {
   console.log('\n[1] Anime known only to AniList (the user\'s failing case)');
@@ -136,6 +173,24 @@ animelayout._internals.cacheSet('aniwave:789', null);
     check('tmdbInfo did not throw', !!info, 'returned null');
     check('layout stays tmdb', info && info.layout === 'tmdb', info && info.layout);
     check('both TMDB seasons intact', info && info.seasons.length === 2 && info.seasons[1].episodes === 10, JSON.stringify(info && info.seasons));
+  } catch (e) {
+    check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
+  }
+
+  console.log('\n[6] Specials (Season 0) are listed, never renumber seasons');
+  try {
+    const a = await tmdb.tmdbInfo('600', 'tv', { anime: true });
+    check('Aniwave layout keeps TMDB\'s Specials (3) first, then S1=10',
+      a && JSON.stringify(a.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:3","1:10"]', JSON.stringify(a && a.seasons));
+    const b = await tmdb.tmdbInfo('601', 'tv', { anime: true });
+    check('AniList adds Specials (2) and the missing S2 (11); TMDB S1 stays 12',
+      b && JSON.stringify(b.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:2","1:12","2:11"]', JSON.stringify(b && b.seasons));
+    const c = await tmdb.tmdbInfo('602', 'tv', { anime: false });
+    check('an empty TMDB Specials season is not listed',
+      c && JSON.stringify(c.seasons.map((x) => x.season)) === '[1]', JSON.stringify(c && c.seasons));
+    const d = await tmdb.tmdbInfo('603', 'tv', { anime: false });
+    check('a plain TV show lists its TMDB Specials too',
+      d && d.layout === 'tmdb' && JSON.stringify(d.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:5","1:8"]', JSON.stringify(d && d.seasons));
   } catch (e) {
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
   }

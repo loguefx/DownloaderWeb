@@ -86,8 +86,10 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   // title while TV (resolved = null) skipped the merge and kept working.
   const body = await tmdbFetch(`/tv/${tmdbId}?language=en-US`, key);
   if (!body) return null;
+  // Season 0 is TMDB's "Specials" (OVAs, movies, extras). It is listed when
+  // it has episodes; it sits first, like TMDB orders it.
   let seasons = (body.seasons || [])
-    .filter((s) => s.season_number > 0)
+    .filter((s) => s.season_number > 0 || (s.season_number === 0 && s.episode_count > 0))
     .map((s) => ({
       season: s.season_number,
       episodes: s.episode_count || 0,
@@ -117,10 +119,11 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   //     "One Piece") can therefore never inherit the anime's season list.
   const tmdbSeasons = seasons.slice();
   let layout = 'tmdb';
-  const allowAnilist = !!(opts && opts.anime) || tmdbSeasons.length === 0;
+  const tmdbNumbered = tmdbSeasons.filter((s) => s.season > 0).length;
+  const allowAnilist = !!(opts && opts.anime) || tmdbNumbered === 0;
   const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId });
   if (resolved) {
-    if (resolved.source === 'aniwave' || tmdbSeasons.length === 0) {
+    if (resolved.source === 'aniwave' || tmdbNumbered === 0) {
       layout = resolved.source;
       seasons = resolved.seasons
         .filter((s) => s && s.season > 0)
@@ -129,6 +132,13 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
           episodes: (s.episodes || []).length,
           year: s.year || ''
         }));
+      // The numbered seasons follow the resolved layout; Specials stay
+      // TMDB's when TMDB has them (TMDB-keyed sources number them that
+      // way), else the resolved layout's own Season 0.
+      const sp = tmdbSeasons.find((s) => s.season === 0) ||
+        resolved.seasons.filter((s) => s && s.season === 0 && (s.episodes || []).length)
+          .map((s) => ({ season: 0, episodes: s.episodes.length, year: '' }))[0];
+      if (sp) seasons.unshift(sp);
     } else {
       seasons = animelayout.addMissingSeasons(tmdbSeasons, resolved.seasons);
       if (seasons.length > tmdbSeasons.length) layout = 'tmdb+anilist';

@@ -146,7 +146,8 @@ module.exports = {
   ],
 
   async findTitle(ref, hooks, onLog = () => {}) {
-    const season = ref && ref.season ? String(ref.season) : '';
+    // Season 0 is TMDB's "Specials" - a real season, not "no season".
+    const season = ref && ref.season != null && ref.season !== '' ? String(ref.season) : '';
     const episode = ref && ref.episode ? String(ref.episode) : '';
     let ids = await idsFromPage(hooks, onLog);
     // The window has usually navigated off the source page by now, so its DOM
@@ -163,7 +164,7 @@ module.exports = {
     }
     const { tmdb, imdb } = ids;
     let path = '';
-    if (season && episode) {
+    if (season !== '' && episode) {
       if (tmdb) path = `/embed/tv/${tmdb}-${season}-${episode}`;
       else if (imdb) path = `/embed/imdb/${imdb}-${season}-${episode}`;
     } else if (tmdb) {
@@ -195,7 +196,7 @@ module.exports = {
   // so the caller can fall back to the browser path.
   async directResolve(ref = {}, opts = {}) {
     const onLog = opts.onLog || (() => {});
-    const season = ref.season ? String(ref.season) : '';
+    const season = ref.season != null && ref.season !== '' ? String(ref.season) : '';
     const episode = ref.episode ? String(ref.episode) : '';
     let tmdb = ref.tmdb || '';
     let imdb = ref.imdb || '';
@@ -217,12 +218,12 @@ module.exports = {
       onLog('Vidsrc (headless): no TMDB/IMDB id available; falling back to browser path.');
       return null;
     }
-    const isMovie = !season && !episode;
+    const isMovie = season === '' && !episode;
     const dlRef = {
       type: isMovie ? 'movie' : 'tv',
       tmdb: tmdb || undefined,
       imdb: imdb || undefined,
-      season: season || undefined,
+      season: season !== '' ? season : undefined,
       episode: episode || undefined,
       title: ref.title || ''
     };

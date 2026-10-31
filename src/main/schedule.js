@@ -36,7 +36,7 @@ class ScheduleStore extends EventEmitter {
   }
 
   static key(spec) {
-    return [spec.series, spec.season || '', spec.mode || 'dub', spec.template || spec.baseUrl || ''].join('|');
+    return [spec.series, (spec.season != null ? spec.season : ''), spec.mode || 'dub', spec.template || spec.baseUrl || ''].join('|');
   }
 
   // Adds (or refreshes) a scheduled series. Returns true if newly added.
