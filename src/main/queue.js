@@ -994,7 +994,8 @@ class DownloadManager extends EventEmitter {
           const started = Date.now();
           const integ = await integrity.checkIntegrity(partPath, {
             expectedDuration: expected,
-            decode: config.download.decodeCheck !== false
+            decode: config.download.decodeCheck !== false,
+            remuxWarnings: (detection && detection.remuxWarnings) || []
           });
           let host = '';
           try {

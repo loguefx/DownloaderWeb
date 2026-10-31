@@ -153,6 +153,24 @@ async function main() {
     check('permanent record written (integrity.log, one JSON line)', row && row.ok === false && row.segments === 10 && row.details.videoSkips.length === 1 && row.remuxWarnings.length >= 1, rowLine.slice(0, 200));
   }
 
+  console.log('\n[9] A long still frame is not a skip; a corroborated one is');
+  {
+    const integrity = require(path.join(REPO, 'src/main/integrity.js'));
+    // Variable frame rate: frame 100 is held for 2 s over continuous sound.
+    const vfr = path.join(DATA_DIR, 'vfr.mp4');
+    ff(['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=25', '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '12',
+      '-filter_complex', "[0:v]setpts='if(gte(N,100),if(lt(N,101),PTS,PTS+2/TB),PTS)'[v]", '-map', '[v]', '-map', '1:a',
+      '-fps_mode', 'vfr', '-c:v', 'libx264', '-c:a', 'aac', '-shortest', vfr]);
+    let r = await integrity.checkIntegrity(vfr, { decode: true });
+    check('VFR still frame over continuous sound: passes', r.ok, JSON.stringify(r.problems));
+    check('...noted as a long still, not a skip', (r.details.longStills || []).length === 1 && !(r.details.videoSkips || []).length, JSON.stringify(r.details));
+    check('...and the log says why', integrity.report(r, { label: 'VFR' }).some((l) => /still frame at .* not counted as a skip/.test(l)));
+    // The same long frame WITH a segment error from the remux (a video
+    // segment lost while a separate audio track kept playing): a skip.
+    r = await integrity.checkIntegrity(vfr, { decode: false, remuxWarnings: [{ first: '[in#0/hls] Failed to open segment 4 of playlist 0', count: 1 }] });
+    check('the same hole + "Failed to open segment": a skip', !r.ok && r.problems.some((p) => /video skips 1x/.test(p)), JSON.stringify(r.problems));
+  }
+
   return finish();
 }
 

@@ -115,7 +115,15 @@ function decodeErrors(file) {
 // -> { ok, problems: [string], stats }
 //   expectedDuration: seconds the source playlist says the title runs (0 = unknown)
 //   decode: run the full decode check
-async function checkIntegrity(file, { expectedDuration = 0, decode = true, limits = {} } = {}) {
+// A long video frame is not always a skip: variable-frame-rate releases hold
+// a still image (title card, slideshow) as ONE frame lasting seconds, over
+// continuous sound. A lost segment takes picture AND sound. So a long video
+// frame counts as a skip only when it is corroborated - an audio dropout at
+// the same moment, ffmpeg reporting a failed / corrupt segment, or a length
+// that does not match the source. Otherwise it is logged as a long still.
+const SEGMENT_TROUBLE = /failed to open segment|skipping|packet corrupt|corrupt (input )?packet|invalid data/i;
+
+async function checkIntegrity(file, { expectedDuration = 0, decode = true, limits = {}, remuxWarnings = [] } = {}) {
   const L = Object.assign({}, LIMITS, limits);
   const problems = [];
   const streams = await scanPackets(file);
@@ -126,14 +134,7 @@ async function checkIntegrity(file, { expectedDuration = 0, decode = true, limit
   if (!a) problems.push('no audio stream');
 
   // Gaps longer than a few frames / audio packets are holes in the media.
-  if (v) {
-    const big = v.steps.filter((g) => g.len > L.videoGap);
-    if (big.length) {
-      const total = big.reduce((x, g) => x + g.len, 0);
-      problems.push(`video skips ${big.length}x (${total.toFixed(1)} s missing; first at ${fmt(big[0].at)})`);
-    }
-    if (v.backwards) problems.push(`video timestamps go backwards ${v.backwards}x (repeated or out-of-order segment)`);
-  }
+  if (v && v.backwards) problems.push(`video timestamps go backwards ${v.backwards}x (repeated or out-of-order segment)`);
   if (a) {
     const big = a.steps.filter((g) => g.len > L.audioGap);
     if (big.length) {
@@ -153,17 +154,32 @@ async function checkIntegrity(file, { expectedDuration = 0, decode = true, limit
     }
   }
   const span = v ? v.end - v.first : 0;
+  let lengthOff = false;
   if (expectedDuration > 0 && v) {
     const allowed = Math.min(L.lengthToleranceMax, Math.max(L.lengthToleranceMin, expectedDuration * L.lengthTolerance));
+    if (span < expectedDuration - allowed || span > expectedDuration + allowed) lengthOff = true;
     if (span < expectedDuration - allowed) {
       problems.push(`${(expectedDuration - span).toFixed(1)} s missing (file ${fmt(span)}, source ${fmt(expectedDuration)})`);
     } else if (span > expectedDuration + allowed) {
       problems.push(`plays ${(span - expectedDuration).toFixed(1)} s longer than the source (a repeated segment)`);
     }
   }
+  // Video holes: skips when corroborated, else long still frames.
+  const longVideo = v ? v.steps.filter((g) => g.len > L.videoGap) : [];
+  const audioHoles = a ? a.steps.filter((g) => g.len > L.audioGap) : [];
+  const segmentTrouble = (remuxWarnings || []).some((w) => SEGMENT_TROUBLE.test(w.first || w.line || ''));
+  const overlapsAudio = (g) => audioHoles.some((h) => h.at < g.at + g.len + 0.5 && h.at + h.len > g.at - 0.5);
+  const realSkips = longVideo.filter((g) => overlapsAudio(g) || segmentTrouble || lengthOff || !a);
+  const stills = longVideo.filter((g) => !realSkips.includes(g));
+  if (realSkips.length) {
+    const total = realSkips.reduce((x, g) => x + g.len, 0);
+    problems.unshift(`video skips ${realSkips.length}x (${total.toFixed(1)} s missing; first at ${fmt(realSkips[0].at)})`);
+  }
   const skipList = (st, min) => (st ? st.steps.filter((g) => g.len > min).slice(0, 25).map((g) => ({ at: +g.at.toFixed(3), len: +g.len.toFixed(3) })) : []);
+  const pick = (list) => list.slice(0, 25).map((g) => ({ at: +g.at.toFixed(3), len: +g.len.toFixed(3) }));
   const details = {
-    videoSkips: skipList(v, L.videoGap),
+    videoSkips: pick(realSkips),
+    longStills: pick(stills),
     audioSkips: skipList(a, L.audioGap),
     videoBackwardsAt: v ? v.backAt.map((t) => +t.toFixed(3)) : [],
     audioBackwardsAt: a ? a.backAt.map((t) => +t.toFixed(3)) : []
@@ -235,6 +251,9 @@ function report(result, ctx = {}) {
     for (const t of d.videoBackwardsAt || []) lines.push(`  video timestamps jump back at ${t.toFixed(2)} s${segNote(t)}`);
     for (const e of d.decodeErrors || []) lines.push(`  decoder: ${e.slice(0, 160)}`);
     if (ctx.source || ctx.release) lines.push(`  source: ${[ctx.source, ctx.release].filter(Boolean).join(' - ')}`);
+  }
+  for (const g of ((result.details || {}).longStills || []).slice(0, 5)) {
+    lines.push(`  note: ${g.len.toFixed(2)} s still frame at ${fmt(g.at)} - not counted as a skip (sound continuous, no segment errors)`);
   }
   // ffmpeg's own remux warnings explain WHY (a segment it skipped, corrupt
   // packets...). Logged on success too: a warning on a passing file is an
