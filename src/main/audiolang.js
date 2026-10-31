@@ -91,7 +91,9 @@ function verdictFromLangs(langs) {
 }
 
 // -> { verdict: 'english'|'foreign'|'multi'|'unknown', evidence, langs }
-//   streamLangs - audio language tags probed from the media ('' = untagged)
+//   streamLangs - audio language tags probed from the media ('' = untagged);
+//                 its LENGTH is the number of audio tracks actually in the
+//                 stream (pass null when the stream was not probed)
 //   media       - parseHlsMedia() result (or null)
 //   fileName    - release name (or '')
 function audioVerdict({ streamLangs = [], media = null, fileName = '' } = {}) {
@@ -101,6 +103,17 @@ function audioVerdict({ streamLangs = [], media = null, fileName = '' } = {}) {
   const fromMedia = verdictFromLangs(mediaLangs);
   if (fromMedia) return { verdict: fromMedia, evidence: 'playlist audio tracks', langs: mediaLangs.filter(Boolean) };
   const fromName = classifyFileName(fileName);
+  // A "DUAL"/"Multi" RELEASE says the original file had Japanese + English.
+  // The STREAM may not: Vidsrc converts such a release to HLS with ONE
+  // untagged audio track - the first, Japanese one (live: Smoking Behind the
+  // Supermarket S01E04 "...DUAL-BiOMA.mkv" streams a single Japanese track).
+  // So a dual release only counts as having English when the stream really
+  // carries more than one track (or the playlist lists an English one).
+  const streamTracks = Array.isArray(streamLangs) ? streamLangs.length : null;
+  const separateAudio = media ? media.audio.filter((x) => x.uri).length : 0;
+  if (fromName === 'multi' && streamTracks === 1 && separateAudio === 0) {
+    return { verdict: 'unknown', evidence: 'dual-audio release, but the stream carries ONE untagged audio track (the second language was dropped by the source)', langs: [] };
+  }
   if (fromName !== 'unknown') return { verdict: fromName, evidence: 'release name', langs: [] };
   return { verdict: 'unknown', evidence: 'no language information', langs: [] };
 }
@@ -140,16 +153,23 @@ function checkMode({ mode, audio, media = null, strictDub = false }) {
     return { ok: false, reason: `audio is ${langLabel(audio.langs)} (${audio.evidence}), not an English dub`, englishSub: null };
   }
   if (strictDub) {
-    return { ok: false, reason: 'no English-dub marker on this release (anime releases always mark dubs)', englishSub: null };
+    const why = audio && audio.evidence && audio.evidence !== 'no language information'
+      ? audio.evidence
+      : 'no English-dub marker on this release (anime releases always mark dubs)';
+    return { ok: false, reason: why, englishSub: null };
   }
   return { ok: true, reason: 'audio language unknown', englishSub: null };
 }
 
 // Is this episode's release an English dub? true / false / null (no name).
-// The same rule the DUB download uses for anime (strict).
-function isEnglishDub(fileName, streamLangs = []) {
-  if (!fileName && !(streamLangs || []).some(Boolean)) return null;
-  const a = audioVerdict({ streamLangs, fileName });
+// From the release name alone, only an explicit dub ("DUBBED", "English")
+// counts: a "DUAL"/"Multi" release is usually streamed with just its first,
+// Japanese track (see audioVerdict), so it is NOT counted as dubbed.
+function isEnglishDub(fileName, streamLangs = null) {
+  const langs = Array.isArray(streamLangs) ? streamLangs : [];
+  if (!fileName && !langs.some(Boolean)) return null;
+  const a = audioVerdict({ streamLangs: langs.some(Boolean) ? langs : [], fileName });
+  if (a.evidence === 'release name') return a.verdict === 'english';
   return a.verdict === 'english' || a.verdict === 'multi';
 }
 

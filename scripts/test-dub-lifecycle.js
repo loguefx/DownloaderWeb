@@ -157,6 +157,38 @@ async function main() {
   const w2 = pending.list().filter((x) => x.series === 'Watch Show').map((x) => x.episode).sort();
   check('...E2 + E3 now wait for their dub', JSON.stringify(w2) === '[2,3]', JSON.stringify(w2));
 
+  console.log('\n[5] A deleted episode is noticed, not skipped');
+  {
+    // Season already waiting for its dub (E1, E2 parked); E3 + E4 were
+    // downloaded as Japanese and DELETED. With no dubbed episode in the
+    // season, the deleted ones must go back on the waiting list - also in
+    // report-only mode - and nothing is downloaded.
+    const gs = { series: 'Gone Show', tmdb: '700', anime: true, mode: 'dub', outputRoot: roots[0], baseUrl: 'https://vidsrc.sh/embed/tv/700-1-1', key: 'gone-show' };
+    for (const ep of [1, 2]) pending.add({ label: 'Gone Show S1E' + ep, series: 'Gone Show', season: 1, episode: ep, mode: 'dub', anime: true, tmdb: '700', baseUrl: 'https://vidsrc.sh/embed/tv/700-1-' + ep, outputRoot: roots[0] });
+    const queued5 = [];
+    bulk.queueOne = async (entry) => { queued5.push(entry.episode); return { queued: 1, skipped: 0 }; };
+    dubstatus._resetForTests();
+    await watcher.queueMissingEps(gs, 1, [1, 2, 3, 4].map((n) => ({ episode: n, name: '' })), null, 'https://vidsrc.sh/embed/tv/700-{season}-{episode}', roots, true, 0);
+    const w5 = pending.list().filter((x) => x.series === 'Gone Show').map((x) => x.episode).sort();
+    check('deleted E3 + E4 are back on the waiting list (report-only mode)', JSON.stringify(w5) === '[1,2,3,4]', JSON.stringify(w5));
+    check('...and nothing was downloaded', queued5.length === 0, JSON.stringify(queued5));
+
+    // A dub answer cached by the OLD rule (DUAL counted as dubbed) is looked up again.
+    const file = path.join(DATA_DIR, 'dubstatus.json');
+    dubstatus._resetForTests();
+    let looks = 0;
+    dubstatus._setLookupForTests(async () => { looks += 1; return { status: 'ok', fileName: 'Gone.Show.S01E04.1080p.CR.WEB-DL.DUAL-BiOMA.mkv' }; });
+    fs.writeFileSync(file, JSON.stringify({ '700|1|4': { dubbed: true, file: 'old', at: Date.now() } }));
+    dubstatus._resetForTests(true);
+    const d4 = await dubstatus.isDubbed('700', 1, 4);
+    check('old-rule cache entry is looked up again: a DUAL release is NOT dubbed', d4 === false && looks === 1, 'dubbed=' + d4 + ' lookups=' + looks);
+
+    // The flat-library floor is re-read every pass.
+    watcher.__flatFloorCache = new Map([['/somewhere', 12]]);
+    await watcher._checkSchedules();
+    check('flat-library floor cache is cleared each pass', !watcher.__flatFloorCache || !watcher.__flatFloorCache.has('/somewhere'));
+  }
+
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

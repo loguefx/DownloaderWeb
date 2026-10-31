@@ -311,7 +311,9 @@ const at = (name) => {
   const total3 = Date.now() - start3;
   check('no error', !err3, err3 && err3.message);
   check('the first data-API call was 403ed', dataApiCalls >= 2, 'data-api calls: ' + dataApiCalls);
-  check('a FRESH token was re-acquired (player chain walked again)', playerTokenHits >= 2, 'player-token hits: ' + playerTokenHits);
+  // The first call may use the shared cached token (no chain walk); the 403
+  // must then force exactly the fresh walk.
+  check('a FRESH token was re-acquired after the 403 (player chain walked again)', playerTokenHits >= 1, 'player-token hits: ' + playerTokenHits);
   check('resolved to verified 1080p despite the stale token', !!best3 && best3.realHeight === 1080, best3 && `${best3.host} ${best3.realWidth}x${best3.realHeight}`);
   check(`finished in ${total3}ms (< 15000ms)`, total3 < 15000, total3 + 'ms');
 

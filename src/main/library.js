@@ -150,8 +150,20 @@ class Library {
   }
 
   // True when the engine placed this file (and therefore may replace it).
+  // The entry must still describe the file at that path: after an engine
+  // file is deleted, a different file put there by hand (other size) is the
+  // user's, not ours, and must never be replaced.
   isOurs(file) {
-    return Object.prototype.hasOwnProperty.call(this._loadLedger(), normKey(file));
+    const entry = this._loadLedger()[normKey(file)];
+    if (!entry) return false;
+    if (entry.size > 0) {
+      try {
+        if (fs.statSync(file).size !== entry.size) return false;
+      } catch (e) {
+        return false;
+      }
+    }
+    return true;
   }
 
   forget(file) {

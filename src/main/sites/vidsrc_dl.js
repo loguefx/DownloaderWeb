@@ -178,6 +178,42 @@ async function acquireApiToken(ref) {
   return '';
 }
 
+// Shared API token. Getting one walks the player chain on BOTH relay hosts
+// (6 requests); doing that per call - per episode of a dub check, then again
+// per download - sent ~80 requests in half a minute when a season was queued,
+// and Vidsrc throttled the IP right before the download (generate.php
+// timeouts). The token is IP-bound and works for every title/episode, so one
+// is reused until shortly before it expires (JWT "exp"; at most 3 min).
+// Concurrent callers share one fetch; a rejected token is refreshed.
+const TOKEN_MAX_AGE_MS = 3 * 60 * 1000;
+let tokenCache = { tok: '', until: 0 };
+let tokenInflight = null;
+function tokenExpiry(tok) {
+  try {
+    const part = String(tok).split('.')[1];
+    const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return Number(json.exp) > 0 ? Number(json.exp) * 1000 : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+async function getApiToken(ref, { fresh = false } = {}) {
+  if (!fresh && tokenCache.tok && Date.now() < tokenCache.until) return tokenCache.tok;
+  if (!tokenInflight) {
+    tokenInflight = acquireApiToken(ref)
+      .then((tok) => {
+        const exp = tok ? tokenExpiry(tok) : 0;
+        const byExp = exp ? exp - 30 * 1000 : Infinity;
+        tokenCache = tok ? { tok, until: Math.min(Date.now() + TOKEN_MAX_AGE_MS, byExp) } : { tok: '', until: 0 };
+        return tok;
+      })
+      .finally(() => {
+        tokenInflight = null;
+      });
+  }
+  return tokenInflight;
+}
+
 function parseToken(text) {
   const t = String(text || '').trim();
   if (!t) return '';
@@ -250,7 +286,7 @@ async function fetchStreamUrls(ref) {
   // token-less call below may still work on older deployments.
   let apiToken = '';
   try {
-    apiToken = await acquireApiToken(ref);
+    apiToken = await getApiToken(ref);
   } catch (e) {
     apiToken = '';
   }
@@ -282,7 +318,7 @@ async function fetchStreamUrls(ref) {
     // whole budget on 403s and then dumps the episode on the slow browser path.
     if (lastStatus === 403) {
       try {
-        apiToken = await acquireApiToken(ref);
+        apiToken = await getApiToken(ref, { fresh: true });
         if (apiToken) url = API_BASE + '?' + qs + '&stream_urls&api_token=' + encodeURIComponent(apiToken);
       } catch (e) {
         /* keep retrying token-less */
@@ -344,7 +380,7 @@ async function episodeRelease(ref, session = {}) {
   if (isBlocked()) return { fileName: '', status: 'unreachable' };
   if (!session.token) {
     try {
-      session.token = await acquireApiToken(ref);
+      session.token = await getApiToken(ref);
     } catch (e) {
       session.token = '';
     }
@@ -366,7 +402,7 @@ async function episodeRelease(ref, session = {}) {
     }
     if (res.status === 403) {
       try {
-        session.token = await acquireApiToken(ref);
+        session.token = await getApiToken(ref, { fresh: true });
       } catch (e) {
         /* keep going */
       }
@@ -661,7 +697,7 @@ async function download(ref, outPath, opts = {}) {
 }
 
 module.exports = {
-  pick1080, download, fetchStreamUrls, acquireApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
+  pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
   isBlocked, isBlockPage,
   _setBlockedUntilForTests(t) { blockedUntil = t; }
 };

@@ -370,7 +370,9 @@ async function main() {
         outputRoot: path.join(DATA_DIR, 'staging'),
         discover: () => {
           discovers += 1;
-          return Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'JapaneseServer' } });
+          // A server from a DUB row (so it passes the "proof of dub" rule)
+          // that actually serves Japanese: the audio check must catch it.
+          return Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'JapaneseServer', dubEvidence: 'row' } });
         }
       });
       const ditem = manager.items.find((x) => x.id === did);
@@ -383,6 +385,30 @@ async function main() {
       check('later attempts do not ask Vidsrc again', directCalls === 1, 'directCalls=' + directCalls);
       manager.removeByIds([did]);
       await sleep(200);
+
+      // An UNLABELLED player (no DUB row, no -dub marker): nothing is
+      // downloaded at all - the episode waits for its dub.
+      const plogs = [];
+      manager._log = (m) => { plogs.push(m); realLog4(m); };
+      const uid = manager.add({
+        label: 'Plain Show S1E1',
+        series: 'Plain Show',
+        season: 1,
+        episode: 1,
+        mode: 'dub',
+        anime: true,
+        minHeight: 0,
+        url: 'https://vidsrc.sh/embed/tv/124-1-1',
+        outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: () => Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'episode-page' } })
+      });
+      const uitem = manager.items.find((x) => x.id === uid);
+      for (let i = 0; i < 60 && uitem.status !== 'waiting'; i++) await sleep(100);
+      check('unlabelled player: not downloaded, waits for the dub', uitem.status === 'waiting', uitem.status);
+      check('...and the log says it had no proof of a dub', plogs.some((m) => /no proof it is the English dub \(episode-page\)/.test(m)), plogs.slice(-3).join(' | '));
+      check('...no file was saved', !fs.existsSync(path.join(DATA_DIR, 'staging', 'Plain Show', 'Season 1', 'Plain Show S1E1.mp4')));
+      manager.removeByIds([uid]);
+      await sleep(150);
       vs.directResolve = origDirect;
       manager._log = realLog4;
       msrv.close();

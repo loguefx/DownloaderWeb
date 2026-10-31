@@ -1139,7 +1139,7 @@ let lastFfmpegAt = 0;
 // DTS", ...). Grouped by message (numbers stripped) with a count and the
 // first full line, kept on the detection for the playback-check log.
 const FFMPEG_WARN =
-  /failed to open segment|skipping|packet corrupt|corrupt (input )?packet|non[- ]monoton|discontinuity|invalid data|missing picture|error while decoding|out of order|queue input is backward|timestamps are unset|delay between the first packet|too many packets buffered|concealing|could not find ref/i;
+  /failed to open segment|skipping|packet corrupt|corrupt (input )?packet|non[- ]monoton|discontinuity|invalid data|missing picture|error while decoding|out of order|queue input is backward|delay between the first packet|too many packets buffered|concealing|could not find ref/i;
 function collectFfmpegWarnings(detection, text) {
   if (!detection) return;
   const list = detection.remuxWarnings || (detection.remuxWarnings = []);

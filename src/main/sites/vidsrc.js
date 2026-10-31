@@ -317,6 +317,8 @@ module.exports = {
         plainHttp: true,
         // Release name, for the playback-check log / record.
         release: fileName || undefined,
+        // Passed the DUB/SUB check above (strict for anime DUB).
+        dubEvidence: mode === 'dub' && verdict.ok ? 'release' : undefined,
         audioUrl: audioTrack ? audioTrack.uri : undefined,
         audioLabel: audioTrack ? audiolang.langLabel([audioTrack.lang]) : undefined,
         embedSubs: !!englishSub,

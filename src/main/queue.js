@@ -778,14 +778,38 @@ class DownloadManager extends EventEmitter {
           this._log(`"${item.label}": ${outcome.reason || 'wrong audio on Vidsrc'}; trying sites with a ${(item.mode || 'dub').toUpperCase()} option.`);
           outcome = await item.discover();
         } else if (outcome && outcome.status === 'no_quality') {
+          // Anime DUB: the Vidsrc page in the browser would replay the same
+          // unverifiable file - go to the sites with DUB/SUB rows instead.
+          if (item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
           outcome = await item.discover();
         } else if (!outcome || outcome.status !== 'resolved') {
+          // Same for "busy"/unreachable Vidsrc: anime DUB skips its page.
+          if (outcome && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
           outcome = await item.discover();
         }
-        const status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
+        let status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
+
+        // Anime DUB: never download a stream without proof it is the English
+        // dub - Vidsrc's checked release, a dub-marked stream URL / variant, or
+        // a server from a DUB row. Players without DUB/SUB labels (the Vidsrc
+        // page itself, an episode page's own playlist) serve whatever audio the
+        // file has, and Vidsrc audio carries no language tag to check later -
+        // that is how a Japanese "DUAL" release got saved as the dub. No proof
+        // -> the episode waits for its dub (checked every 24 h).
+        if (status === 'resolved' && item.anime && (item.mode || 'dub') === 'dub') {
+          const det0 = (outcome && outcome.detection) || outcome;
+          if (!(det0 && det0.dubEvidence)) {
+            this._log(`"${item.label}": the stream found has no proof it is the English dub (${(det0 && det0.sourceLabel) || 'unlabelled player'}); not downloading it.`);
+            if (det0 && typeof det0.releaseDiscover === 'function') {
+              try { det0.releaseDiscover(); } catch (e) { /* ignore */ }
+            }
+            outcome = { status: 'unavailable', reason: 'no verified English-dub source yet' };
+            status = 'unavailable';
+          }
+        }
 
         if (status === 'unavailable') {
           this._releaseDownloadSlot(item);

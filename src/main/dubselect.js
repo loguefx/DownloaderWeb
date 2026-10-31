@@ -1279,16 +1279,18 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // IMPORTANT: never re-probe sniffed streams with Node http. Those CDNs often
   // 403/challenge outside Chromium, which used to reject every server, burn the
   // full sourceWaitMs on each, and leave the UI stuck on "resolving".
+  // Each accepted stream records WHY it is the dub (dubEvidence); the queue
+  // refuses an anime DUB download without it.
   const resolveDub = async (s, fromRow) => {
     if (!s) return null;
     const m = urlMode(s.url);
     if (m === 'sub') return null;
-    if (m === 'dub') return s;
+    if (m === 'dub') return Object.assign(s, { dubEvidence: 'marked' });
     const variant = await tryDubVariant(s);
-    if (variant) return variant;
+    if (variant) return Object.assign(variant, { dubEvidence: 'variant' });
     if (fromRow === 'DUB') {
       onLog(`Stream has no -dub/-sub marker; trusting DUB row for ${s.url}`);
-      return s;
+      return Object.assign(s, { dubEvidence: 'row' });
     }
     return null;
   };

@@ -78,6 +78,16 @@ async function main() {
   check('untagged stream falls back to playlist tracks', al.audioVerdict({ streamLangs: [''], media }).verdict === 'multi');
   check('no evidence -> unknown', al.audioVerdict({ streamLangs: [''], fileName: 'Show S01E01 1080p WEB-DL' }).verdict === 'unknown');
 
+  // Live case: Smoking Behind the Supermarket S01E04 on Vidsrc is a "DUAL"
+  // release streamed with ONE untagged (Japanese) audio track.
+  const dualName = 'Smoking Behind the Supermarket with You S01E04 1080p CR WEB-DL AAC2 0 H 264 DUAL-BiOMA.mkv';
+  const oneTrack = al.audioVerdict({ streamLangs: [''], fileName: dualName });
+  check('DUAL release + ONE track in the stream -> not proof of English', oneTrack.verdict === 'unknown' && /ONE untagged audio track/.test(oneTrack.evidence), JSON.stringify(oneTrack));
+  check('...anime DUB rejects it, saying why', !al.checkMode({ mode: 'dub', audio: oneTrack, strictDub: true }).ok && /ONE untagged audio track/.test(al.checkMode({ mode: 'dub', audio: oneTrack, strictDub: true }).reason));
+  check('DUAL release + TWO tracks in the stream -> has English', al.audioVerdict({ streamLangs: ['', ''], fileName: dualName }).verdict === 'multi');
+  check('the dub count does not count a DUAL release as dubbed', al.isEnglishDub(dualName) === false);
+  check('...but does count an explicit DUBBED release', al.isEnglishDub('Solo.Leveling.S01E02.DUBBED.1080p.WEB.H264-SKYANiME.mkv') === true);
+
   console.log('\n[2] Mode check');
   const V = (verdict, evidence = 'audio stream tags', langs = []) => ({ verdict, evidence, langs });
   check('DUB + English audio -> ok', al.checkMode({ mode: 'dub', audio: V('english') }).ok);
@@ -161,6 +171,48 @@ async function main() {
     https.get = realGet;
     check('...and nothing was sent', sent === 0, 'sent=' + sent);
     vidsrcDl._setBlockedUntilForTests(0);
+  }
+
+  console.log('\n[3c] One shared API token, not one per request');
+  {
+    // Stand-in for the relay chain + data API (nothing leaves the machine).
+    const https = require('https');
+    const { EventEmitter } = require('events');
+    const realGet = https.get;
+    const seen = { relay: 0, api: 0 };
+    const exp = Math.floor(Date.now() / 1000) + 600;
+    const jwt = 'x.' + Buffer.from(JSON.stringify({ exp })).toString('base64') + '.y';
+    https.get = function (url, opts, cb) {
+      const u = String(url);
+      let body = '';
+      if (/vs_src\.php/.test(u)) { seen.relay += 1; body = JSON.stringify({ src: 'https://player.test/embed/tv/1/1/1' }); }
+      else if (/player\.test\/embed\/player/.test(u)) body = '{"apiToken":"' + jwt + '"}';
+      else if (/player\.test\/embed/.test(u)) body = '{"playerUrl":"/embed/player/tv/1"}';
+      else if (/data\.vidsrc\.sh\/api\.php/.test(u)) { seen.api += 1; const ep = (u.match(/episode=(\d+)/) || [])[1]; body = JSON.stringify({ status_code: '200', data: { file_name: `Show.S01E0${ep}.${ep === '1' ? 'DUBBED.' : ''}1080p.mkv` } }); }
+      const req = new EventEmitter();
+      req.destroy = () => {};
+      req.setTimeout = () => req;
+      setImmediate(() => {
+        const res = new EventEmitter();
+        res.statusCode = body ? 200 : 404;
+        res.headers = {};
+        res.resume = () => {};
+        cb(res);
+        res.emit('data', Buffer.from(body));
+        res.emit('end');
+      });
+      return req;
+    };
+    vidsrcDl._setBlockedUntilForTests(0);
+    const session = {};
+    const names = [];
+    for (let ep = 1; ep <= 4; ep++) names.push((await vidsrcDl.episodeRelease({ type: 'tv', tmdb: '1', season: 1, episode: ep }, session)).fileName);
+    check('4 dub lookups: one token chain, not four', seen.relay <= 2 && seen.api === 4, JSON.stringify(seen));
+    check('...answers are right (E1 dubbed, E2-E4 not)', /DUBBED/.test(names[0]) && !/DUBBED/.test(names[3]), JSON.stringify(names));
+    const before = seen.relay;
+    await vidsrcDl.episodeRelease({ type: 'tv', tmdb: '1', season: 1, episode: 5 }, {});
+    check('a new lookup session reuses the cached token (no new chain)', seen.relay === before, JSON.stringify(seen));
+    https.get = realGet;
   }
 
   console.log('\n[4] English subtitle captures win');

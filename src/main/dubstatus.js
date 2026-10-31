@@ -20,6 +20,10 @@ const { writeJsonAtomic, readJson } = require('./jsonfile');
 const audiolang = require('./audiolang');
 
 const TTL = { dubbed: 7 * 24 * 3600 * 1000, notDubbed: 12 * 3600 * 1000, unknown: 3600 * 1000 };
+// Bumped whenever the "is this release a dub" rule changes, so answers made
+// by an older rule are looked up again (v2: a "DUAL" release is not a dub -
+// the stream keeps only its Japanese track).
+const RULE_VERSION = 2;
 
 let cache = null; // key "tmdb|season|episode" -> { dubbed: true|false|null, file, at }
 let saveTimer = null;
@@ -54,7 +58,7 @@ function saveSoon() {
 const key = (tmdb, season, ep) => `${tmdb}|${season}|${ep}`;
 
 function fresh(hit, now = Date.now()) {
-  if (!hit) return false;
+  if (!hit || hit.v !== RULE_VERSION) return false;
   const ttl = hit.dubbed === true ? TTL.dubbed : hit.dubbed === false ? TTL.notDubbed : TTL.unknown;
   return now - (hit.at || 0) < ttl;
 }
@@ -99,7 +103,7 @@ function checkSeason(tmdb, season, episodes, { force = false, onLog = () => {} }
       const dubbed = r.status === 'ok' ? audiolang.isEnglishDub(r.fileName) : null;
       // A network failure must not overwrite a good answer we already have.
       if (dubbed === null && hit && hit.dubbed !== null && r.status === 'unreachable') continue;
-      c[key(tmdb, season, ep)] = { dubbed, file: r.fileName || '', at: Date.now() };
+      c[key(tmdb, season, ep)] = { dubbed, file: r.fileName || '', at: Date.now(), v: RULE_VERSION };
       saveSoon();
     }
     if (looked) onLog(`English-dub check: TMDB ${tmdb} season ${season} - ${looked} episode(s) looked up.`);
@@ -115,7 +119,7 @@ async function isDubbed(tmdb, season, episode, { maxAgeMs = null } = {}) {
   const c = load();
   const hit = c[key(tmdb, season, episode)];
   const okAge = hit && (maxAgeMs == null ? fresh(hit) : Date.now() - (hit.at || 0) < maxAgeMs);
-  if (okAge) return hit.dubbed;
+  if (okAge && hit.v === RULE_VERSION) return hit.dubbed;
   // A season check already running may cover other episodes: wait for it,
   // then look this episode up if it still has no fresh answer.
   const k = `${tmdb}|${season}`;
@@ -135,8 +139,8 @@ module.exports = {
   _setLookupForTests(fn) {
     lookup = fn;
   },
-  _resetForTests() {
-    cache = {};
+  _resetForTests(reloadFromDisk = false) {
+    cache = reloadFromDisk ? null : {};
     running.clear();
   }
 };

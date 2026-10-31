@@ -604,6 +604,20 @@ async function main() {
     check('multi-root: mislabeled series -> still HELD', organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2).mode === 'hold', JSON.stringify(organizer.seriesLayoutRiskFor([base], 'Mislabeled', 2)));
   }
 
+  console.log('\n[ledger] An entry only covers the same file');
+  {
+    const lib = createLibrary({ dataDir: path.join(work, 'ledger-data') });
+    const f = path.join(work, 'ledger', 'Show S1E4.mp4');
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, 'x'.repeat(5000));
+    lib.recordPlaced(f, 5000);
+    check('a file the engine placed is ours', lib.isOurs(f));
+    fs.unlinkSync(f);
+    check('...deleted: no longer ours', !lib.isOurs(f));
+    fs.writeFileSync(f, 'y'.repeat(7000)); // a different file put there by hand
+    check('...a different file at the same path is NOT ours (never replaced)', !lib.isOurs(f));
+  }
+
   console.log('\n[specials] Season 0 placement and recognition');
   {
     const lib = path.join(work, 'specials');

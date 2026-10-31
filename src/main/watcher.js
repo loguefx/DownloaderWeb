@@ -115,6 +115,10 @@ class Watcher {
   }
 
   async _checkSchedules() {
+    // On-disk facts are re-read every pass: an episode deleted since the last
+    // pass must count as missing again (the flat-library floor was cached for
+    // the engine's whole lifetime).
+    this.__flatFloorCache = null;
     const items = schedule.list();
     if (!items.length) return { checked: 0, newSeasons: 0 };
     const dryRun = this.watcherMode().dryRun;
@@ -446,6 +450,10 @@ class Watcher {
       return { season, episode: ep };
     };
     const dubGate = !!(s.anime && (s.mode || 'dub') === 'dub' && /^\d+$/.test(String(s.tmdb || '')));
+    // Episodes of this season already waiting for their dub = the user asked
+    // for this season in DUB: any other missing, undubbed episode waits too
+    // (e.g. one deleted because it was not the dub).
+    const seasonWaiting = dubGate && pending.list().some((w) => w.series === s.series && Number(w.season) === Number(season) && (w.mode || 'dub') === 'dub');
     const dubbedOf = new Map(); // episode -> true/false/null
     let dubStarted = false;
     let notDubbed = 0;
@@ -518,7 +526,9 @@ class Watcher {
         // Before the first dub of the season appears, the series just stays
         // on the watch list - nothing is queued or parked.
         notDubbed += 1;
-        if (dubStarted && dubbedOf.get(e.episode) === false && !dryRun) {
+        // Parking only adds to the waiting list (nothing is downloaded until
+        // the dub is confirmed), so it also runs in report-only mode.
+        if ((dubStarted || seasonWaiting) && dubbedOf.get(e.episode) === false) {
           const isNew = pending.add({
             label: organizer.buildBaseName({ series: s.series, season, episode: e.episode }),
             series: s.series,
@@ -565,8 +575,8 @@ class Watcher {
     if (dubGate && notDubbed) {
       this.onLog(
         `"${s.series}" season ${season}: ${notDubbed} aired episode(s) not dubbed yet - ` +
-          (dubStarted
-            ? (dryRun ? 'would wait for their dub (report only).' : `${parked} newly added to the waiting-for-dub list.`)
+          (dubStarted || seasonWaiting
+            ? `${parked} newly added to the waiting-for-dub list.`
             : 'the English dub has not started for this season; watching until it does.')
       );
     }

@@ -340,6 +340,29 @@ async function runJob(job) {
     } catch (e) {
       urlMap = null; // best effort: keep the requested numbering
     }
+    // Anime DUB: look the whole selection's dub status up FIRST, one batch
+    // per source season (one shared token, paced like every API call). The
+    // per-episode loop below then reads the cache. Looking episodes up one by
+    // one fetched a new token each time (~80 requests in half a minute) and
+    // got the IP throttled right before the download.
+    if (anime && mode === 'dub' && /^\d+$/.test(dubTmdb)) {
+      const bySourceSeason = new Map();
+      for (const sel of job.selections) {
+        const season = sel.season != null ? sel.season : (ref && ref.season) || 1;
+        for (const ep of sel.episodes) {
+          const m = urlMap ? urlMap(season, ep) : { season, episode: ep };
+          if (!bySourceSeason.has(m.season)) bySourceSeason.set(m.season, []);
+          bySourceSeason.get(m.season).push(m.episode);
+        }
+      }
+      for (const [srcSeason, eps] of bySourceSeason) {
+        try {
+          await require('./dubstatus').checkSeason(dubTmdb, srcSeason, eps, { onLog });
+        } catch (e) {
+          // per-episode lookups below fall back to "unknown"
+        }
+      }
+    }
     for (const sel of job.selections) {
       const season = sel.season != null ? sel.season : (ref && ref.season) || 1;
       // Optional episode titles ("1": "Pilot") so hand-named files are seen.
@@ -382,6 +405,12 @@ async function runJob(job) {
             waiting += 1;
             onLog(`${label}: no English dub yet - added to the waiting-for-dub list${isNew === false ? ' (already there)' : ''}.`);
             continue;
+          }
+          if (dubbed === null) {
+            onLog(
+              `${organizer.buildBaseName({ series, season, episode: ep })}: English-dub status unknown (the source lookup failed) - ` +
+                'queued; the download still refuses a non-English copy.'
+            );
           }
         }
         const r = await bulk.queueOne(
