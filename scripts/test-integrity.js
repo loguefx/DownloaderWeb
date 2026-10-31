@@ -119,6 +119,40 @@ async function main() {
   check('encrypted / non-TS data gets no opinion', !hls.bufferTsTruncated(rnd));
   check('a cut exactly on a packet boundary is still a whole-looking part (caught later by the playback check)', !hls.bufferTsTruncated(seg.subarray(0, 188 * 20)));
 
+  console.log('\n[8] The log explains a skip: ffmpeg warning, time, segment');
+  {
+    const integrity = require(path.join(REPO, 'src/main/integrity.js'));
+    const dl = require(path.join(REPO, 'src/main/downloader.js'));
+    // Segment 5 cannot be opened: ffmpeg skips it and still exits 0 - the
+    // real-world cause of a skip.
+    const broken = segs.slice();
+    broken[4] = 'gone04.ts';
+    const pl = playlist(broken, 'broken.m3u8');
+    const out = path.join(DATA_DIR, 'broken.mp4');
+    const res = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'info', '-y', '-f', 'hls', '-allowed_extensions', 'ALL', '-fflags', '+genpts',
+      '-avoid_negative_ts', 'make_zero', '-i', pl, '-map', '0:v?', '-map', '0:a?', '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-f', 'mp4', out], { encoding: 'utf8' });
+    check('ffmpeg exits 0 despite the missing segment (why skips slipped through)', res.status === 0, String(res.status));
+    const det = {};
+    dl.collectFfmpegWarnings(det, res.stderr);
+    check('the "failed to open segment" warning is captured', (det.remuxWarnings || []).some((w) => /failed to open segment/i.test(w.first)), JSON.stringify(det.remuxWarnings));
+    const starts = dl.segmentStartTimes(fs.readFileSync(pl, 'utf8'));
+    check('segment start times read from the playlist', starts.length === 10 && starts[4] === 8, JSON.stringify(starts));
+    const integ = await integrity.checkIntegrity(out, { expectedDuration: 20, decode: false });
+    const lines = integrity.report(integ, { label: 'Test S1E1', source: 'cdn.example', release: 'Test.S01E01.DUBBED.mkv', segmentStarts: starts, remuxWarnings: det.remuxWarnings, elapsedMs: 1200 });
+    const text = lines.join('\n');
+    check('report: FAILED summary line', /^Playback check FAILED: "Test S1E1"/.test(lines[0]), lines[0]);
+    check('report: names the missing segment as ffmpeg does (#4, seg00004)', /video skip at 0:07 .*\(segment #4 of 0-9, part seg00004\)/.test(text), text);
+    check('report: names the source and release', /source: cdn\.example - Test\.S01E01\.DUBBED\.mkv/.test(text), text);
+    check('report: includes the ffmpeg warning', /ffmpeg: .*[Ff]ailed to open segment/.test(text), text);
+    const okLines = integrity.report(await integrity.checkIntegrity(path.join(DATA_DIR, 'clean.mp4'), { expectedDuration: 20, decode: false }), { label: 'Clean S1E1' });
+    check('a passing file still gets a summary line', okLines.length === 1 && /^Playback check OK: "Clean S1E1" - length 0:20/.test(okLines[0]), okLines.join(' | '));
+    const logFile = integrity.record(out, integ, { label: 'Test S1E1', segmentStarts: starts, remuxWarnings: det.remuxWarnings }, DATA_DIR);
+    const rowLine = logFile ? fs.readFileSync(logFile, 'utf8').trim().split('\n').pop() : '';
+    let row = null;
+    try { row = JSON.parse(rowLine); } catch (e) { row = null; }
+    check('permanent record written (integrity.log, one JSON line)', row && row.ok === false && row.segments === 10 && row.details.videoSkips.length === 1 && row.remuxWarnings.length >= 1, rowLine.slice(0, 200));
+  }
+
   return finish();
 }
 

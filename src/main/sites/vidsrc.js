@@ -315,6 +315,8 @@ module.exports = {
         // uses plain https.get() with only User-Agent and works reliably. Flag the
         // downloader to do the same: no session cookies, no Referer, no Origin.
         plainHttp: true,
+        // Release name, for the playback-check log / record.
+        release: fileName || undefined,
         audioUrl: audioTrack ? audioTrack.uri : undefined,
         audioLabel: audioTrack ? audiolang.langLabel([audioTrack.lang]) : undefined,
         embedSubs: !!englishSub,

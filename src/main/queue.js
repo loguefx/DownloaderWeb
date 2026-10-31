@@ -12,7 +12,7 @@ const placer = require('./placer');
 const { download, lastFfmpegStderr } = require('./downloader');
 const { verifyFile, belowMinHeight, audioLanguages } = require('./verify');
 const audiolang = require('./audiolang');
-const { checkIntegrity } = require('./integrity');
+const integrity = require('./integrity');
 const hlscheck = require('./hlscheck');
 const sites = require('./sites');
 const cfsolve = require('./cfsolve');
@@ -991,10 +991,29 @@ class DownloadManager extends EventEmitter {
         // looks like "the video skips" when watched).
         {
           const expected = (detection && detection.playlistDuration) || item.expectedDuration || 0;
-          const integ = await checkIntegrity(partPath, {
+          const started = Date.now();
+          const integ = await integrity.checkIntegrity(partPath, {
             expectedDuration: expected,
             decode: config.download.decodeCheck !== false
           });
+          let host = '';
+          try {
+            host = new URL(String((detection && detection.url) || '')).host;
+          } catch (e) {
+            host = '';
+          }
+          const ctx = {
+            label: item.label,
+            source: [detection && detection.sourceLabel, host].filter(Boolean).join(' @ '),
+            release: (detection && detection.release) || '',
+            segmentStarts: detection && detection.segmentStarts,
+            remuxWarnings: detection && detection.remuxWarnings,
+            expectedDuration: expected,
+            attempt: item.attempts + 1,
+            elapsedMs: Date.now() - started
+          };
+          for (const line of integrity.report(integ, ctx)) this._log(line);
+          integrity.record(finalPath, integ, ctx);
           if (!integ.ok) {
             this._dropShortFile(partPath);
             throw new Error(`playback check failed: ${integ.problems.join('; ')}`);

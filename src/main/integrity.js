@@ -58,13 +58,16 @@ function scanPackets(file) {
       if (!Number.isFinite(t)) return;
       const d = Number(dur);
       const key = `${type}${idx}`;
-      const s = streams[key] || (streams[key] = { type, index: Number(idx), n: 0, first: t, last: t, end: t, steps: [], backwards: 0, prevDur: 0 });
+      const s = streams[key] || (streams[key] = { type, index: Number(idx), n: 0, first: t, last: t, end: t, steps: [], backwards: 0, backAt: [], prevDur: 0 });
       if (s.n) {
         // The hole is either a jump to this packet or folded into the
         // previous packet's duration by the muxer: take the larger.
         const step = Math.max(t - s.last, s.prevDur || 0);
         if (step > 0) s.steps.push({ at: s.last, len: step });
-        if (t < s.last - 0.001) s.backwards += 1;
+        if (t < s.last - 0.001) {
+          s.backwards += 1;
+          if (s.backAt.length < 10) s.backAt.push(t);
+        }
       }
       s.prevDur = Number.isFinite(d) && d > 0 ? d : 0;
       s.n += 1;
@@ -158,6 +161,13 @@ async function checkIntegrity(file, { expectedDuration = 0, decode = true, limit
       problems.push(`plays ${(span - expectedDuration).toFixed(1)} s longer than the source (a repeated segment)`);
     }
   }
+  const skipList = (st, min) => (st ? st.steps.filter((g) => g.len > min).slice(0, 25).map((g) => ({ at: +g.at.toFixed(3), len: +g.len.toFixed(3) })) : []);
+  const details = {
+    videoSkips: skipList(v, L.videoGap),
+    audioSkips: skipList(a, L.audioGap),
+    videoBackwardsAt: v ? v.backAt.map((t) => +t.toFixed(3)) : [],
+    audioBackwardsAt: a ? a.backAt.map((t) => +t.toFixed(3)) : []
+  };
   let decodeErr = null;
   if (decode && !problems.length) {
     decodeErr = await decodeErrors(file);
@@ -165,9 +175,11 @@ async function checkIntegrity(file, { expectedDuration = 0, decode = true, limit
       problems.push(`${decodeErr.length} decode error(s) - damaged frames (e.g. "${decodeErr[0].slice(0, 90)}")`);
     }
   }
+  if (decodeErr && decodeErr.length) details.decodeErrors = decodeErr.slice(0, 15);
   return {
     ok: problems.length === 0,
     problems,
+    details,
     stats: {
       duration: span,
       videoPackets: v ? v.n : 0,
@@ -179,4 +191,103 @@ async function checkIntegrity(file, { expectedDuration = 0, decode = true, limit
   };
 }
 
-module.exports = { checkIntegrity, scanPackets, LIMITS };
+// Which playlist segment a time on the output timeline falls in, counted
+// from 0 like ffmpeg ("Failed to open segment 4") and the engine's part
+// files (seg00004.ts).
+function segmentAt(t, starts) {
+  if (!Array.isArray(starts) || !starts.length) return null;
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// Log lines for one check. ctx: { label, source, release, segmentStarts,
+// remuxWarnings, elapsedMs, attempt }. Always one summary line; on a failure
+// every problem, every skip (with its segment), and ffmpeg's warnings.
+function report(result, ctx = {}) {
+  const lines = [];
+  const st = result.stats || {};
+  const name = ctx.label || 'file';
+  const segs = Array.isArray(ctx.segmentStarts) ? ctx.segmentStarts : null;
+  // A hole starts at the stretched frame BEFORE it, so locate its middle:
+  // that is the segment that is missing.
+  const segNote = (t, len = 0) => {
+    const n = segmentAt(t + len / 2, segs);
+    return n != null ? ` (segment #${n} of 0-${segs.length - 1}, part seg${String(n).padStart(5, '0')})` : '';
+  };
+  const summary =
+    `length ${fmt(st.duration || 0)}, A/V start ${st.startSkewMs != null ? st.startSkewMs + ' ms' : 'n/a'}, ` +
+    `end ${st.endSkewMs != null ? st.endSkewMs + ' ms' : 'n/a'}, decode errors ${st.decodeErrors != null ? st.decodeErrors : 'not checked'}` +
+    (ctx.elapsedMs != null ? `, checked in ${Math.round(ctx.elapsedMs / 1000)} s` : '');
+  if (result.ok) {
+    lines.push(`Playback check OK: "${name}" - ${summary}.`);
+  } else {
+    lines.push(`Playback check FAILED: "${name}"${ctx.attempt ? ` (attempt ${ctx.attempt})` : ''} - ${summary}.`);
+    for (const p of result.problems) lines.push(`  problem: ${p}`);
+    const d = result.details || {};
+    for (const g of d.videoSkips || []) lines.push(`  video skip at ${fmt(g.at)} (${g.at.toFixed(2)} s), ${g.len.toFixed(2)} s${segNote(g.at, g.len)}`);
+    for (const g of d.audioSkips || []) lines.push(`  audio dropout at ${fmt(g.at)} (${g.at.toFixed(2)} s), ${g.len.toFixed(2)} s${segNote(g.at, g.len)}`);
+    for (const t of d.videoBackwardsAt || []) lines.push(`  video timestamps jump back at ${t.toFixed(2)} s${segNote(t)}`);
+    for (const e of d.decodeErrors || []) lines.push(`  decoder: ${e.slice(0, 160)}`);
+    if (ctx.source || ctx.release) lines.push(`  source: ${[ctx.source, ctx.release].filter(Boolean).join(' - ')}`);
+  }
+  // ffmpeg's own remux warnings explain WHY (a segment it skipped, corrupt
+  // packets...). Logged on success too: a warning on a passing file is an
+  // early sign of a flaky source.
+  for (const w of ctx.remuxWarnings || []) {
+    lines.push(`  ffmpeg: ${w.first}${w.count > 1 ? ` (x${w.count})` : ''}`);
+  }
+  return lines;
+}
+
+// Permanent record: one JSON line per checked file in <data>/integrity.log
+// (rotated at 5 MB to integrity.log.1), so a skip found weeks later can be
+// matched to what the engine saw when it downloaded the file.
+const RECORD_MAX = 5 * 1024 * 1024;
+function record(file, result, ctx = {}, dir = null) {
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    let base = dir;
+    if (!base) {
+      try {
+        base = require('electron').app.getPath('userData');
+      } catch (e) {
+        base = require('./engineconfig').defaultDataDir();
+      }
+    }
+    fs.mkdirSync(base, { recursive: true });
+    const p = path.join(base, 'integrity.log');
+    try {
+      if (fs.statSync(p).size > RECORD_MAX) fs.renameSync(p, p + '.1');
+    } catch (e) {
+      /* no log yet */
+    }
+    const row = {
+      at: new Date().toISOString(),
+      ok: result.ok,
+      label: ctx.label || '',
+      file,
+      source: ctx.source || '',
+      release: ctx.release || '',
+      attempt: ctx.attempt || null,
+      expectedDuration: ctx.expectedDuration || null,
+      segments: Array.isArray(ctx.segmentStarts) ? ctx.segmentStarts.length : null,
+      problems: result.problems,
+      stats: result.stats,
+      details: result.details,
+      remuxWarnings: (ctx.remuxWarnings || []).map((w) => ({ line: w.first, count: w.count }))
+    };
+    fs.appendFileSync(p, JSON.stringify(row) + '\n');
+    return p;
+  } catch (e) {
+    return null; // logging must never break a download
+  }
+}
+
+module.exports = { checkIntegrity, scanPackets, report, record, segmentAt, LIMITS };

@@ -998,6 +998,8 @@ async function downloadHls(detection, partPath, opts = {}) {
     const firstSeg = hlscheck.firstUri(loaded.text);
     if (loaded.text) {
       detection.playlistDuration = hlscheck.playlistMediaDuration(loaded.text);
+      detection.segmentStarts = segmentStartTimes(loaded.text);
+      detection.remuxWarnings = [];
     }
     let disguised = hlscheck.isTokenCdn(detection.url, detection.embedUrl);
     let pngSeen = false;
@@ -1132,6 +1134,39 @@ async function downloadHls(detection, partPath, opts = {}) {
 // retries? a slow drip?) instead of only "stuck in downloading for 30 min".
 let lastFfmpegTail = '';
 let lastFfmpegAt = 0;
+// ffmpeg's remux warnings that explain a skip or an A/V problem afterwards
+// ("Failed to open segment 37 ... skipping", "Packet corrupt", "Non-monotonic
+// DTS", ...). Grouped by message (numbers stripped) with a count and the
+// first full line, kept on the detection for the playback-check log.
+const FFMPEG_WARN =
+  /failed to open segment|skipping|packet corrupt|corrupt (input )?packet|non[- ]monoton|discontinuity|invalid data|missing picture|error while decoding|out of order|queue input is backward|timestamps are unset|delay between the first packet|too many packets buffered|concealing|could not find ref/i;
+function collectFfmpegWarnings(detection, text) {
+  if (!detection) return;
+  const list = detection.remuxWarnings || (detection.remuxWarnings = []);
+  for (const raw of String(text || '').split(/\r?\n|\r/)) {
+    const line = raw.trim();
+    if (!line || !FFMPEG_WARN.test(line)) continue;
+    const key = line.replace(/0x[0-9a-f]+/gi, '').replace(/\d+(\.\d+)?/g, '#').slice(0, 120);
+    const hit = list.find((w) => w.key === key);
+    if (hit) hit.count += 1;
+    else if (list.length < 40) list.push({ key, count: 1, first: line.slice(0, 240) });
+  }
+}
+
+// Start time of every segment of a media playlist (from #EXTINF), so a skip
+// found later can be traced to the segment it came from.
+function segmentStartTimes(text) {
+  const starts = [];
+  let t = 0;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const m = line.match(/^#EXTINF:\s*([\d.]+)/i);
+    if (!m) continue;
+    starts.push(t);
+    t += parseFloat(m[1]) || 0;
+  }
+  return starts;
+}
+
 function noteFfmpegTail(tail) {
   lastFfmpegTail = String(tail || '');
   lastFfmpegAt = Date.now();
@@ -1297,6 +1332,7 @@ function spawnFfmpegHls(inputUrl, headers, ua, detection, partPath, { signal, on
       const text = buf.toString();
       stderrTail = (stderrTail + text).slice(-4000);
       noteFfmpegTail(stderrTail);
+      collectFfmpegWarnings(detection, text);
       st.lastActivity = Date.now();
 
       if (!durationSec) {
@@ -1437,6 +1473,8 @@ function download(detection, partPath, opts) {
 module.exports = {
   download,
   sweepStaleHlsCaches,
+  segmentStartTimes,
+  collectFfmpegWarnings,
   downloadMp4,
   downloadHls,
   AbortError,
