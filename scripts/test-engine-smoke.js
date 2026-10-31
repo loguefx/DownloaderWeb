@@ -184,6 +184,28 @@ async function main() {
   );
   check('ep4 missing', ep4 && ep4.status === 'missing', JSON.stringify(ep4));
 
+  // A season with nothing on disk must list each folder ONCE, not once per
+  // episode: 444 listings for 12 episodes froze the engine for 10-20 s on a
+  // network share and the plugin reported it offline (Ranma ½ Season 2).
+  {
+    const libC = path.join(DATA_DIR, 'lib', 'many');
+    for (let i = 0; i < 40; i++) fs.mkdirSync(path.join(libC, `Other ${i}`, 'Season 1'), { recursive: true });
+    let lists = 0;
+    const realReaddir = fs.readdirSync;
+    fs.readdirSync = function () { lists += 1; return realReaddir.apply(this, arguments); };
+    let lcBig;
+    try {
+      lcBig = await service.libraryCheck({
+        series: 'Nothing Here Yet', season: 2, episodes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        epNames: { 1: "Ranma's Weakness", 2: 'Attack of the Wild Mousse' }, locations: [libC, libB]
+      });
+    } finally {
+      fs.readdirSync = realReaddir;
+    }
+    check('12 missing episodes reported missing', lcBig && lcBig.episodes.every((e) => e.status === 'missing'), JSON.stringify(lcBig && lcBig.episodes.slice(0, 2)));
+    check('each folder listed once per check (not once per episode)', lists <= 20, 'readdirSync calls: ' + lists);
+  }
+
   // ---- 5b. service.verifyDrives (drive alignment, Part 5) -------------------
   console.log('\n[5b] service.verifyDrives');
   engineconfig.set({ pathMappings: [] }); // same-letter case: engine path == jellyfin path

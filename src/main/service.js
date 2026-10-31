@@ -802,7 +802,10 @@ async function libraryCheck(payload) {
 
   // 1) Resolve every episode's on-disk path first - cheap synchronous scans,
   //    done for ALL episodes before any probing starts.
-  const resolved = episodes.map((ep) => {
+  //    Each folder is listed once for the whole check (withScanCache), not
+  //    once per episode - on a network share that was 10-20 s of a frozen
+  //    engine for a season with nothing on disk.
+  const resolved = organizer.withScanCache(() => episodes.map((ep) => {
     const meta = { series, season, episode: ep };
     const epName = ep != null ? (epNames[ep] || epNames[String(ep)] || '') : '';
     let foundPath = null;
@@ -820,7 +823,7 @@ async function libraryCheck(payload) {
       }
     }
     return { ep, foundPath };
-  });
+  }));
   // 2) Probe the found files with limited parallelism. ffprobe is the slow
   //    part, and a 24-episode season used to wait on 24 SERIAL probes;
   //    four at a time keeps the disk/CPU happy while cutting the wait ~4x.
@@ -865,6 +868,11 @@ async function libraryCheck(payload) {
 //     visible ("unrecognized") instead of silently re-downloaded or skipped.
 // This is the "let me eyeball it before I trust a download" check.
 async function libraryReport(payload) {
+  // Fully synchronous scan: list each folder once (see libraryCheck).
+  return organizer.withScanCache(() => libraryReportScan(payload));
+}
+
+function libraryReportScan(payload) {
   const series = String((payload && payload.series) || '').trim();
   if (!series) throw Object.assign(new Error('series is required'), { code: 'BAD_REQUEST', status: 400 });
   const movie = payload.kind === 'movie';

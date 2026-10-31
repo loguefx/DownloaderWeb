@@ -800,6 +800,13 @@ function start() {
         reject(e);
       }
     });
+    // Keep idle connections open LONGER than the plugin's HTTP client does
+    // (.NET pools them for 60 s; Node's default is 5 s). With Node closing
+    // first, a request the plugin sent on a connection Node was just closing
+    // failed outright - "Engine is offline or did not answer in time" with
+    // the engine up. headersTimeout must exceed keepAliveTimeout.
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
     server.listen(c.port, c.bind, () => {
       const addr = server.address();
       console.log(`[engine] API listening on ${addr.address}:${addr.port}`);

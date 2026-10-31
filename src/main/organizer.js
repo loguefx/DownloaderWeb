@@ -1,7 +1,64 @@
 'use strict';
 
-const fs = require('fs');
+const realFs = require('fs');
 const path = require('path');
+
+// Directory-listing cache for read-only scans (see withScanCache). Every other
+// fs call goes straight through: `fs` here inherits all of node's fs and only
+// the three lookup calls below consult the cache while a scan is active.
+let scanCache = null;
+const fs = Object.create(realFs);
+fs.readdirSync = function (dir, opts) {
+  if (!scanCache) return realFs.readdirSync(dir, opts);
+  const key = 'd|' + (opts && opts.withFileTypes ? 't|' : 'n|') + dir;
+  if (!scanCache.has(key)) {
+    try {
+      scanCache.set(key, { v: realFs.readdirSync(dir, opts) });
+    } catch (e) {
+      scanCache.set(key, { e });
+    }
+  }
+  const hit = scanCache.get(key);
+  if (hit.e) throw hit.e;
+  return hit.v;
+};
+fs.existsSync = function (p) {
+  if (!scanCache) return realFs.existsSync(p);
+  const key = 'x|' + p;
+  if (!scanCache.has(key)) scanCache.set(key, { v: realFs.existsSync(p) });
+  return scanCache.get(key).v;
+};
+fs.statSync = function (p, opts) {
+  if (!scanCache) return realFs.statSync(p, opts);
+  const key = 's|' + p;
+  if (!scanCache.has(key)) {
+    try {
+      scanCache.set(key, { v: realFs.statSync(p, opts) });
+    } catch (e) {
+      scanCache.set(key, { e });
+    }
+  }
+  const hit = scanCache.get(key);
+  if (hit.e) throw hit.e;
+  return hit.v;
+};
+
+// Runs a SYNCHRONOUS, read-only scan with every directory listed at most once.
+// A library check looks up each episode across every library folder and used
+// to re-list the same folders per episode: 444 listings for one 12-episode
+// season with nothing on disk. On network shares (~20-40 ms per listing) that
+// froze the engine for 10-20 s, long enough for the plugin's request to be
+// dropped ("Engine is offline or did not answer in time"). The cache lives
+// only for this call, so later scans always see the disk as it is now.
+function withScanCache(fn) {
+  if (scanCache) return fn(); // already inside a scan
+  scanCache = new Map();
+  try {
+    return fn();
+  } finally {
+    scanCache = null;
+  }
+}
 
 // Strips characters that are illegal in Windows filenames and trims noise.
 function sanitize(name) {
@@ -839,6 +896,7 @@ function seriesLayoutRiskFor(roots, series, sourceTotal) {
 }
 
 module.exports = {
+  withScanCache,
   sanitize,
   pad,
   parseSeasonFromUrl,

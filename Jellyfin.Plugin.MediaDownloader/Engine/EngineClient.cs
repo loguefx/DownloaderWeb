@@ -33,11 +33,20 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
     /// </summary>
     public class EngineClient
     {
-        private static readonly HttpClient Http = new HttpClient
+        private static readonly HttpClient Http = new HttpClient(new SocketsHttpHandler
+        {
+            // Retire idle connections well before the engine does (it keeps
+            // them 65 s). Reusing one the engine is closing fails the request
+            // outright; the .NET default here is 60 s, the old engine's 5 s.
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(20)
+        })
         {
             // Generous: /api/title runs episode detection, which loads pages.
             Timeout = TimeSpan.FromSeconds(90)
         };
+
+        // Read-only POSTs that are safe to send twice.
+        private static readonly string[] ReadOnlyPosts = { "api/library/check", "api/library/report" };
 
         private static readonly JsonSerializerOptions JsonOpts = new JsonSerializerOptions
         {
@@ -91,7 +100,26 @@ namespace Jellyfin.Plugin.MediaDownloader.Engine
         public async System.Threading.Tasks.ValueTask<(int status, string body)> SendAsync(
             HttpMethod method, string path, JsonElement? body = null, CancellationToken ct = default)
         {
-            var request = new HttpRequestMessage(method, new Uri(BaseUri, path));
+            // A dropped connection (the engine closed it, or it was briefly
+            // busy) is retried ONCE for calls that change nothing - reads and
+            // the library checks. Jobs are never resent here: the outbox
+            // already retries those with the engine's jobId de-duplication.
+            var idempotent = method == HttpMethod.Get
+                || Array.Exists(ReadOnlyPosts, p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+            try
+            {
+                return await SendOnceAsync(method, path, body, ct).ConfigureAwait(false);
+            }
+            catch (HttpRequestException) when (idempotent && !ct.IsCancellationRequested)
+            {
+                return await SendOnceAsync(method, path, body, ct).ConfigureAwait(false);
+            }
+        }
+
+        private async System.Threading.Tasks.ValueTask<(int status, string body)> SendOnceAsync(
+            HttpMethod method, string path, JsonElement? body, CancellationToken ct)
+        {
+            using var request = new HttpRequestMessage(method, new Uri(BaseUri, path));
             var key = (Plugin?.Configuration.EngineApiKey ?? string.Empty).Trim();
             if (!string.IsNullOrEmpty(key))
             {
