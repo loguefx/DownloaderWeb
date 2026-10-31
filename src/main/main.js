@@ -45,8 +45,46 @@ if (!app || typeof app.commandLine === 'undefined') {
 
 // Linux-only Chromium flags. Windows keeps the stock GPU + <webview> path.
 const linuxBrowser = process.platform === 'linux' ? require('./linuxbrowser') : null;
-if (linuxBrowser) {
+// Chromium's sandbox stays ON: the app browses untrusted streaming sites.
+// On Linux it needs unprivileged user namespaces or a setuid-root
+// chrome-sandbox helper; only where neither is available (or as root, or
+// when forced with WVD_NO_SANDBOX=1) is it turned off, and that is logged.
+function linuxSandboxBlocker() {
+  if (process.env.WVD_NO_SANDBOX === '1') return 'WVD_NO_SANDBOX=1 is set';
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return 'running as root';
+  const read = (p) => {
+    try {
+      return fs.readFileSync(p, 'utf8').trim();
+    } catch (e) {
+      return null;
+    }
+  };
+  let suidHelper = false;
+  try {
+    const st = fs.statSync(path.join(path.dirname(process.execPath), 'chrome-sandbox'));
+    suidHelper = st.uid === 0 && (st.mode & 0o4000) !== 0;
+  } catch (e) {
+    suidHelper = false;
+  }
+  if (suidHelper) return null;
+  if (read('/proc/sys/kernel/unprivileged_userns_clone') === '0') return 'unprivileged user namespaces are disabled';
+  if (read('/proc/sys/user/max_user_namespaces') === '0') return 'user namespaces are disabled';
+  if (read('/proc/sys/kernel/apparmor_restrict_unprivileged_userns') === '1') {
+    return 'AppArmor restricts unprivileged user namespaces (Ubuntu 24.04+)';
+  }
+  return null;
+}
+const sandboxBlocker = process.platform === 'linux' ? linuxSandboxBlocker() : null;
+if (sandboxBlocker) {
   app.commandLine.appendSwitch('no-sandbox');
+  console.warn(
+    `[startup] Chromium sandbox OFF: ${sandboxBlocker}. Pages from streaming sites run without it - ` +
+      'install a setuid chrome-sandbox or enable user namespaces to turn it back on.'
+  );
+}
+
+if (linuxBrowser) {
+  // GPU process only (AMD/Mesa video paths); renderers stay sandboxed.
   app.commandLine.appendSwitch('disable-gpu-sandbox');
   app.commandLine.appendSwitch('ozone-platform-hint', 'x11');
   app.commandLine.appendSwitch('ozone-platform', 'x11');
@@ -139,7 +177,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      // The preload only uses contextBridge/ipcRenderer: works sandboxed.
+      sandbox: true,
       webviewTag: true
     }
   });

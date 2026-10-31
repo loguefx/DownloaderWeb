@@ -2,13 +2,25 @@
 
 // Linux-only visible browser. Windows keeps <webview>.
 //
-// Electron <webview> on Wayland/AMD often paints a black rectangle. A classic
-// BrowserView is a real child of the window and does paint. It sits above the
-// HTML, so it MUST be detached with setBrowserView(null) whenever the user
-// leaves the Browser tab — otherwise Activity Log/Queue look blank.
-// WebContentsView is not used: it is harder to fully hide on Electron 31.
+// Electron <webview> on Wayland/AMD often paints a black rectangle. A
+// WebContentsView is a real child of the window and does paint. It sits above
+// the HTML, so it MUST be removed from the window (removeChildView) whenever
+// the user leaves the Browser tab - otherwise Activity Log/Queue look blank.
+// (BrowserView, used before, is deprecated since Electron 30.)
 
-const { ipcMain, BrowserView, webFrameMain } = require('electron');
+const { ipcMain, WebContentsView, webFrameMain } = require('electron');
+
+// Back/forward through navigationHistory (webContents.canGoBack & co. are
+// deprecated since Electron 32); the old calls remain as a fallback.
+function nav(c) {
+  const h = c && c.navigationHistory;
+  return {
+    canBack: () => (h && typeof h.canGoBack === 'function' ? h.canGoBack() : !!(c && c.canGoBack && c.canGoBack())),
+    canFwd: () => (h && typeof h.canGoForward === 'function' ? h.canGoForward() : !!(c && c.canGoForward && c.canGoForward())),
+    back: () => (h && typeof h.goBack === 'function' ? h.goBack() : c.goBack()),
+    fwd: () => (h && typeof h.goForward === 'function' ? h.goForward() : c.goForward())
+  };
+}
 const config = require('./config');
 const sniffer = require('./sniffer');
 
@@ -95,7 +107,7 @@ function layout() {
   if (!canShow) {
     if (attached) {
       try {
-        win.setBrowserView(null);
+        win.contentView.removeChildView(view);
       } catch (e) {
         // ignore
       }
@@ -105,7 +117,7 @@ function layout() {
   }
   if (!attached) {
     try {
-      win.setBrowserView(view);
+      win.contentView.addChildView(view);
       attached = true;
     } catch (e) {
       attached = false;
@@ -126,10 +138,11 @@ function layout() {
 
 function attach(mainWindow, userAgent) {
   win = mainWindow;
-  view = new BrowserView({
+  view = new WebContentsView({
     webPreferences: {
       partition: config.sessionPartition,
-      sandbox: false,
+      // Untrusted sites: keep Chromium's sandbox on (no preload here needs Node).
+      sandbox: true,
       backgroundThrottling: false,
       nodeIntegration: false,
       contextIsolation: true
@@ -169,14 +182,17 @@ function attach(mainWindow, userAgent) {
       url: contents.getURL(),
       title: contents.getTitle(),
       webContentsId: contents.id,
-      canGoBack: contents.canGoBack(),
-      canGoForward: contents.canGoForward()
+      canGoBack: nav(contents).canBack(),
+      canGoForward: nav(contents).canFwd()
     });
   });
   contents.on('did-frame-finish-load', (_e, _isMain, processId, routingId) => {
     injectMediaHook(contents, processId, routingId);
   });
-  contents.on('console-message', (_e, _level, message) => {
+  // One details object ({ message, level, ... }) since Electron 35; declaring
+  // the old (event, level, message) arguments triggers a deprecation warning.
+  contents.on('console-message', (details) => {
+    const message = details && details.message;
     if (typeof message === 'string' && message.includes('[wvd-media]')) {
       logMedia(message.replace(/^.*\[wvd-media\]\s*/, 'Player: '));
     }
@@ -192,8 +208,8 @@ function attach(mainWindow, userAgent) {
       type: 'did-navigate',
       url,
       webContentsId: contents.id,
-      canGoBack: contents.canGoBack(),
-      canGoForward: contents.canGoForward()
+      canGoBack: nav(contents).canBack(),
+      canGoForward: nav(contents).canFwd()
     });
   });
   contents.on('did-navigate-in-page', (_e, url, isMainFrame) => {
@@ -201,8 +217,8 @@ function attach(mainWindow, userAgent) {
       type: 'did-navigate-in-page',
       url,
       isMainFrame,
-      canGoBack: contents.canGoBack(),
-      canGoForward: contents.canGoForward()
+      canGoBack: nav(contents).canBack(),
+      canGoForward: nav(contents).canFwd()
     });
   });
   contents.on('render-process-gone', () => {
@@ -249,12 +265,12 @@ function wireIpc() {
   });
   ipcMain.handle('linux-browser:go-back', () => {
     const c = wc();
-    if (c && c.canGoBack()) c.goBack();
+    if (c && nav(c).canBack()) nav(c).back();
     return true;
   });
   ipcMain.handle('linux-browser:go-forward', () => {
     const c = wc();
-    if (c && c.canGoForward()) c.goForward();
+    if (c && nav(c).canFwd()) nav(c).fwd();
     return true;
   });
   ipcMain.handle('linux-browser:reload', () => {

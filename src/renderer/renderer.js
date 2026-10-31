@@ -173,7 +173,8 @@ view.addEventListener('dom-ready', async () => {
   $('#address').value = view.getURL();
 });
 
-view.addEventListener('crashed', () => {
+// 'render-process-gone' is the current event; 'crashed' is the old name.
+const onViewCrashed = () => {
   setTimeout(() => {
     try {
       view.reload();
@@ -181,7 +182,9 @@ view.addEventListener('crashed', () => {
       // webview may already be gone
     }
   }, 250);
-});
+};
+view.addEventListener('render-process-gone', onViewCrashed);
+view.addEventListener('crashed', onViewCrashed);
 
 view.addEventListener('did-navigate', (e) => {
   $('#address').value = e.url;

@@ -141,7 +141,9 @@ function playerPrefs(partition) {
   return {
     partition: partition || config.sessionPartition,
     backgroundThrottling: false,
-    sandbox: false,
+    // Untrusted player pages: sandboxed. The player hook preload is plain page
+    // JavaScript (no Node), which runs fine in a sandboxed renderer.
+    sandbox: true,
     contextIsolation: false,
     preload: path.join(__dirname, 'player-hook-preload.js')
   };
