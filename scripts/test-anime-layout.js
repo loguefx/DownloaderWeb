@@ -350,9 +350,17 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     const m1 = mod.mapEpisode([mk(1, 12), mk(2, 12)], [{ season: 1, episodes: 24 }], 2, 1);
     check('mapEpisode for numbered seasons is unchanged (S2E1 -> S1E13)', m1.season === 1 && m1.episode === 13 && m1.mapped, m1);
 
+    // TMDB S2 (24) already holds AniList S2 (11) + S3 (13): appending S3
+    // would list 13 episodes twice. (tmdbInfo's cour split shows it as
+    // S1/S2/S3 instead; see [9].) Specials are still added.
     const merged = mod.addMissingSeasons(tmdb, auth);
-    check('AniList adds Season 0 and S3 when TMDB lacks them; TMDB counts kept',
-      JSON.stringify(merged.map((s) => s.season + ':' + s.episodes)) === '["0:4","1:12","2:24","3:13"]', merged);
+    check('AniList adds Season 0; S3 (already inside TMDB S2) is not appended; TMDB counts kept',
+      JSON.stringify(merged.map((s) => s.season + ':' + s.episodes)) === '["0:4","1:12","2:24"]', merged);
+    const aotAdd = mod.addMissingSeasons(
+      [{ season: 1, episodes: 25 }, { season: 2, episodes: 12 }, { season: 3, episodes: 22 }, { season: 4, episodes: 28 }],
+      [mk(1, 25), mk(2, 12), mk(3, 12), mk(4, 10), mk(5, 16), mk(6, 12)]);
+    check('Attack on Titan: AniList "Part 2" seasons are not appended as S5/S6',
+      JSON.stringify(aotAdd.map((s) => s.season + ':' + s.episodes)) === '["1:25","2:12","3:22","4:28"]', aotAdd);
     const merged2 = mod.addMissingSeasons([{ season: 0, episodes: 9 }].concat(tmdb), auth);
     check("TMDB's own Specials count wins over AniList's", merged2[0].season === 0 && merged2[0].episodes === 9, merged2);
     const merged3 = mod.addMissingSeasons(tmdb, [{ season: 0, episodes: [] }]);
@@ -371,7 +379,13 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     const behind = mod.splitLumpedSeasons([{ season: 1, episodes: 28 }], al);
     check('TMDB listing only part of the newest cour keeps TMDB\'s count', sh(behind) === '["1:12@1+0","2:12@1+12","3:4@1+24"]', sh(behind));
     const twoBase = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }, { season: 2, episodes: 12 }], al);
-    check('lumped S1 + separate S2 -> S1, S2 from TMDB S1; S3 = TMDB S2', sh(twoBase) === '["1:12@1+0","2:12@1+12","3:12@2+0"]', sh(twoBase));
+    check('a lumped EARLIER season is never split (would renumber later seasons)', twoBase === null, sh(twoBase));
+    const aot = mod.splitLumpedSeasons(
+      [{ season: 1, episodes: 25 }, { season: 2, episodes: 12 }, { season: 3, episodes: 22 }, { season: 4, episodes: 28 }],
+      [mk(1, 25), mk(2, 12), mk(3, 12), mk(4, 10), mk(5, 16), mk(6, 12)]);
+    check('Attack on Titan (TMDB groups parts mid-run) keeps TMDB seasons', aot === null, sh(aot));
+    const lastLumped = mod.splitLumpedSeasons([{ season: 1, episodes: 12 }, { season: 2, episodes: 24 }], al);
+    check('earlier seasons 1:1 and the last one lumped -> split the last', sh(lastLumped) === '["1:12@1+0","2:12@2+0","3:12@2+12"]', sh(lastLumped));
     const extra = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }], al);
     check('AniList season TMDB does not list yet is appended (no TMDB slot)', sh(extra) === '["1:12@1+0","2:12@1+12","3:12"]', sh(extra));
     check('Apothecary case (AniList 24 vs TMDB 12) does not partition -> null',
@@ -412,6 +426,20 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('S3E1 downloads TMDB S1E25', r31 && r31.season === 1 && r31.episode === 25, r31);
     check('S2E12 downloads TMDB S1E24', r212 && r212.season === 1 && r212.episode === 24, r212);
     check('S1E5 stays TMDB S1E5', r15 && r15.season === 1 && r15.episode === 5, r15);
+
+    // Attack on Titan: the plugin shows TMDB's 4 seasons (AniList's 6 are a
+    // finer split of the same episodes), so S4E1 must download TMDB S4E1 -
+    // not be "mapped" to TMDB S3E13 through AniList's numbering.
+    mod._resetCache();
+    const aotAl = [mk(1, 25), mk(2, 12), mk(3, 12), mk(4, 10), mk(5, 16), mk(6, 12)];
+    mod._internals.cacheSet('aniwave:1429', null);
+    mod._internals.cacheSet('anilistid:1429', '');
+    mod._internals.cacheSet('anilist:attack on titan|2013', aotAl);
+    mod._internals.cacheSet('anilist:attack on titan', aotAl);
+    const aotMap = await mod.urlMapFor('1429', 'Attack on Titan', { anime: true, fetcher: async (u) =>
+      String(u).includes('/tv/1429') ? { first_air_date: '2013-04-07', seasons: [25, 12, 22, 28].map((c, i) => ({ season_number: i + 1, episode_count: c })) } : null });
+    const a41 = aotMap ? aotMap(4, 1) : { season: 4, episode: 1 };
+    check('Attack on Titan S4E1 downloads TMDB S4E1 (no AniList remap)', a41.season === 4 && a41.episode === 1, a41);
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

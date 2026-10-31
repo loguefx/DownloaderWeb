@@ -529,8 +529,9 @@ async function anilistLayout(tmdbId, title, opts = {}) {
 // fewer episodes of the airing cour than AniList announces keeps the base's
 // count (only episodes the base knows are offered).
 //
-// Anything that does not partition (AniList's counts are sometimes wrong:
-// 24 where the season has 12) returns null and the caller keeps its layout.
+// Only the LAST base season is ever split (see below), and anything that
+// does not partition (AniList's counts are sometimes wrong: 24 where the
+// season has 12) returns null and the caller keeps its layout.
 // AniList seasons past the end of the base are appended like
 // addMissingSeasons would (no tmdbSeason: TMDB does not list them yet).
 function splitLumpedSeasons(baseSeasons, anilistSeasons) {
@@ -569,7 +570,16 @@ function splitLumpedSeasons(baseSeasons, anilistSeasons) {
       parts++;
       ai++;
     }
-    if (parts > 1) lumped = true;
+    if (parts > 1) {
+      // Only the LAST base season may be split. TMDB grouping parts mid-run
+      // (Attack on Titan S3 = AniList "S3" + "S3 Part 2"; Spy x Family S1 =
+      // two cours) is the numbering Jellyfin and existing libraries use:
+      // splitting there would renumber every later season and orphan
+      // Season N folders already on disk. A show that keeps appending new
+      // cours to its last season (Ranma ½ 2024) is the case this is for.
+      if (bi !== B.length - 1) return null;
+      lumped = true;
+    }
   }
   if (!lumped) return null; // nothing was lumped: the layouts already agree
   for (; ai < A.length; ai++) {
@@ -593,8 +603,22 @@ function addMissingSeasons(baseSeasons, extraSeasons) {
   const out = (baseSeasons || []).filter((s) => s && s.season >= 0)
     .map((s) => ({ season: s.season, episodes: countOf(s), year: s.year || '' }));
   const have = new Set(out.map((s) => s.season));
+  // AniList splits finer than TMDB when its seasons up to TMDB's last one
+  // hold FEWER episodes than TMDB lists: TMDB's seasons already contain the
+  // "extra" AniList seasons (Attack on Titan: TMDB S3 = AniList S3 + S3
+  // Part 2, so AniList has 6 seasons for TMDB's 4). Appending them would
+  // list episodes twice and point downloads at TMDB seasons that do not
+  // exist. Only a genuinely missing sequel (AniList's matching seasons cover
+  // TMDB's count) is added. Specials are judged on their own.
+  const numbered = out.filter((s) => s.season > 0);
+  const maxBase = numbered.reduce((m, s) => Math.max(m, s.season), 0);
+  const baseTotal = numbered.reduce((t, s) => t + countOf(s), 0);
+  const extraCovered = (extraSeasons || []).filter((s) => s && s.season > 0 && s.season <= maxBase)
+    .reduce((t, s) => t + countOf(s), 0);
+  const extraIsFiner = maxBase > 0 && extraCovered > 0 && extraCovered < baseTotal;
   for (const s of extraSeasons || []) {
     if (!s || !(s.season >= 0) || have.has(s.season)) continue;
+    if (s.season > 0 && extraIsFiner) continue;
     if (s.season === 0 && !countOf(s)) continue; // no known specials: nothing to add
     have.add(s.season);
     out.push({ season: s.season, episodes: countOf(s), year: s.year || '' });
@@ -661,6 +685,12 @@ async function urlMapFor(tmdbId, title, opts = {}) {
   const resolved = await resolveLayout(tmdbId, title, opts);
   if (!resolved) return null;
   if (!tmdbSeasons) return null;
+  // Translate ONLY when the plugin shows the resolved layout - the numbers
+  // it sends are in that layout. tmdbInfo shows AniList's layout only when
+  // TMDB lists no numbered season; otherwise it shows TMDB's own seasons
+  // (plus genuinely missing sequels), so the numbers already ARE TMDB's.
+  // Mapping them anyway sent Attack on Titan "S4E1" to TMDB S3E13.
+  if (resolved.source === 'anilist' && tmdbSeasons.some((s) => s.season > 0 && countOf(s) > 0)) return null;
   // No-op check: if the first real pair is already identity and shapes
   // match, skip the per-episode work entirely.
   const a = resolved.seasons.find((s) => s.season > 0) || resolved.seasons[0];
