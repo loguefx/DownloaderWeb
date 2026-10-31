@@ -133,7 +133,8 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
   let layout = 'tmdb';
   const tmdbNumbered = tmdbSeasons.filter((s) => s.season > 0).length;
   const allowAnilist = !!(opts && opts.anime) || tmdbNumbered === 0;
-  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId });
+  const firstYear = Number(String(body.first_air_date || '').slice(0, 4)) || 0;
+  const resolved = await animelayout.resolveLayout(String(body.id), body.name || '', { anime: allowAnilist, anilistId, year: firstYear });
   if (resolved) {
     if (resolved.source === 'aniwave' || tmdbNumbered === 0) {
       layout = resolved.source;
@@ -154,6 +155,33 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     } else {
       seasons = animelayout.addMissingSeasons(tmdbSeasons, resolved.seasons);
       if (seasons.length > tmdbSeasons.length) layout = 'tmdb+anilist';
+    }
+  }
+
+  // Cour split: TMDB (or Aniwave) lists several seasons as ONE with
+  // continuous numbering - Ranma ½ (2024) is TMDB "Season 1, 36 episodes"
+  // for three 12-episode seasons, so the plugin showed one season and the
+  // newest season never appeared. When AniList's seasons partition that
+  // layout exactly, split it. Asked for anime, and for animation from
+  // JP/CN/KR/TW opened from the TV tab (the partition check keeps a
+  // live-action show that shares an anime's title out of it).
+  if (allowAnilist || looksAnime(body)) {
+    const baseLayout = layout === 'aniwave' ? seasons : tmdbSeasons;
+    const al = resolved && resolved.source === 'anilist'
+      ? resolved.seasons
+      : await animelayout.anilistLayout(String(body.id), body.name || '', { anilistId, year: firstYear });
+    const split = al ? animelayout.splitLumpedSeasons(baseLayout, al) : null;
+    if (split) {
+      const sp = seasons.find((s) => s.season === 0);
+      seasons = (sp ? [sp] : []).concat(split.map((s) => ({
+        season: s.season,
+        episodes: s.episodes,
+        year: String(s.year || ''),
+        // Where these episodes sit in the lumped layout (the season endpoint
+        // and the download URL map read it).
+        ...(s.tmdbSeason != null && layout !== 'aniwave' ? { tmdbSeason: s.tmdbSeason, tmdbOffset: s.tmdbOffset } : {})
+      })));
+      layout = (layout === 'aniwave' ? 'aniwave' : 'tmdb') + '+cours';
     }
   }
 
@@ -189,6 +217,31 @@ async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
 async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
+
+  // A season split out of a lumped TMDB season (see the cour split in
+  // tmdbInfoFetch): its episodes are a slice of that TMDB season, renumbered
+  // from 1, with TMDB's names and air dates (so unaired ones grey out).
+  if (Number(seasonNo) > 0) {
+    let info = null;
+    try { info = await tmdbInfo(tmdbId, 'tv', opts); } catch (e) { info = null; }
+    const sp = info && /\+cours$/.test(info.layout || '') && (info.seasons || []).find((s) => s.season === Number(seasonNo));
+    if (sp && sp.tmdbSeason != null) {
+      let lumped = null;
+      try {
+        lumped = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(sp.tmdbSeason)}?language=en-US`, key);
+      } catch (e) { lumped = null; }
+      const byNum = new Map(((lumped && lumped.episodes) || []).map((e) => [e.episode_number, e]));
+      const episodes = [];
+      for (let e = 1; e <= sp.episodes; e++) {
+        const t = byNum.get(sp.tmdbOffset + e);
+        episodes.push({ episode: e, name: (t && t.name) || '', runtime: (t && t.runtime) || null, airDate: (t && t.air_date) || null });
+      }
+      if (episodes.length) {
+        return { tmdb: String(tmdbId), season: Number(seasonNo), name: 'Season ' + seasonNo, layout: 'tmdb+cours', episodes };
+      }
+    }
+  }
+
   let body = null;
   try {
     body = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${encodeURIComponent(seasonNo)}?language=en-US`, key);

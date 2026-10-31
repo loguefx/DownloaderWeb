@@ -322,7 +322,10 @@ function specialsFromExtras(extras) {
 // longer one - covers "<Title> Season 2" style additions), or a long shared
 // prefix (12+ chars is distinctive).
 function titlesMatch(a, b) {
-  const n = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  // "Ranma ½ (2024)" and "Ranma1/2" are the same work: ½ spelled out, and a
+  // trailing "(year)" disambiguation tag dropped before comparing.
+  const n = (s) => String(s || '').replace(/½/g, '1/2').replace(/\s*\((?:19|20)\d{2}\)\s*$/, '')
+    .toLowerCase().replace(/[^a-z0-9]/g, '');
   const x = n(a);
   const y = n(b);
   if (!x || !y) return false; // no basis to judge -> don't accept
@@ -362,7 +365,7 @@ async function anilistIdFor(tmdbId, opts = {}) {
 async function anilistSeasons(title, opts = {}) {
   const t = String(title || '').trim();
   const alId = opts && opts.anilistId ? String(opts.anilistId) : '';
-  const key = alId ? 'anilistid:' + alId : 'anilist:' + t.toLowerCase();
+  const key = alId ? 'anilistid:' + alId : 'anilist:' + t.toLowerCase() + (opts && opts.year ? '|' + opts.year : '');
   const cached = cacheGet(key);
   if (cached !== undefined) return cached;
   const gql = opts.fetcher || anilistGql;
@@ -382,18 +385,29 @@ async function anilistSeasons(title, opts = {}) {
     if (t.length < 3) return null;
     let raw = null;
     try {
+      // A LIST of candidates (a remake shares its title with the original:
+      // "Ranma ½" 1989 vs 2024), narrowed below by the TMDB start year.
       const search = await gql(
-        'query($title: String) { Media(search: $title, type: ANIME, sort: START_DATE) { id title { english romaji } episodes seasonYear } }',
+        'query($title: String) { Page(perPage: 15) { media(search: $title, type: ANIME, sort: SEARCH_MATCH) { ' +
+          'id format title { english romaji } episodes seasonYear startDate { year } } } }',
         { title: t }
       );
-      raw = search && search.data && search.data.Media;
+      raw = search && search.data && ((search.data.Page && search.data.Page.media) || search.data.Media);
     } catch (e) {
       return null;
     }
     // Some API builds return one hit, some a list - accept both shapes.
-    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    let list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    // When the caller knows the first-air year, a candidate from that year
+    // wins over a same-titled older/newer work.
+    const wantYear = Number(opts && opts.year) || 0;
+    if (wantYear) {
+      const yearOf = (m) => Number((m && m.startDate && m.startDate.year) || (m && m.seasonYear) || 0);
+      const sameYear = list.filter((m) => yearOf(m) === wantYear);
+      if (sameYear.length) list = sameYear;
+    }
     const scored = list
-      .filter((m) => m && m.episodes != null && m.episodes > 0)
+      .filter((m) => m && (m.episodes == null || m.episodes > 0))
       .map((m) => {
         const official = (m.title && (m.title.english || m.title.romaji)) || '';
         if (!titlesMatch(official, t)) return null;
@@ -409,7 +423,7 @@ async function anilistSeasons(title, opts = {}) {
     scored.sort((x, y) => x.dist - y.dist);
     media = scored[0].media;
   }
-  if (!media || media.episodes == null || media.episodes <= 0) {
+  if (!media) {
     cacheSet(key, null);
     return null;
   }
@@ -463,6 +477,9 @@ async function tmdbSeasonCounts(tmdbId, opts = {}) {
     .filter((s) => s.season_number > 0)
     .map((s) => ({ season: s.season_number, episodes: s.episode_count || 0, year: String(s.air_date || '').slice(0, 4) }));
   cacheSet(key, seasons);
+  // First-air year: narrows the AniList title search (a remake shares its
+  // title with the original).
+  cacheSet('tmdbyear:' + id, Number(String(body.first_air_date || '').slice(0, 4)) || 0);
   return seasons;
 }
 
@@ -477,16 +494,89 @@ async function resolveLayout(tmdbId, title, opts = {}) {
     } catch (e) { /* tier is best-effort */ }
   }
   if (title && (opts.anime || opts.allowAnilist)) {
-    try {
-      let alId = opts.anilistId ? String(opts.anilistId) : '';
-      if (!alId && tmdbId) {
-        try { alId = String((await anilistIdFor(tmdbId, opts)) || ''); } catch (e) { alId = ''; }
-      }
-      const al = await anilistSeasons(title, { ...opts, anilistId: alId });
-      if (al) return { source: 'anilist', seasons: al };
-    } catch (e) { /* tier is best-effort */ }
+    const al = await anilistLayout(tmdbId, title, opts);
+    if (al) return { source: 'anilist', seasons: al };
   }
   return null;
+}
+
+// The AniList tier on its own (TMDB->AniList id when known, else the guarded
+// title search, narrowed by opts.year). null when AniList does not know it.
+async function anilistLayout(tmdbId, title, opts = {}) {
+  if (!title) return null;
+  try {
+    let alId = opts.anilistId ? String(opts.anilistId) : '';
+    if (!alId && tmdbId) {
+      try { alId = String((await anilistIdFor(tmdbId, opts)) || ''); } catch (e) { alId = ''; }
+    }
+    return (await anilistSeasons(title, { ...opts, anilistId: alId })) || null;
+  } catch (e) {
+    return null; // tier is best-effort
+  }
+}
+
+// PURE: TMDB (or a single-season Aniwave answer) often lumps several cours
+// into ONE season with continuous numbering - Ranma ½ (2024) is TMDB
+// "Season 1, 36 episodes" for three 12-episode seasons. AniList lists each
+// cour as its own season. When AniList's seasons PARTITION the base seasons
+// exactly (consecutive AniList counts add up to each base count), the base
+// season is split along those lines:
+//   base [S1:36] + AniList [12, 12, 12] -> S1:12, S2:12, S3:12
+// Each split season records where its episodes live in the base layout
+// (tmdbSeason + tmdbOffset), so names, air dates and source URLs map back
+// exactly. The airing season may have an unknown AniList count (null / 0):
+// it takes whatever the base season still has. A base season that lists
+// fewer episodes of the airing cour than AniList announces keeps the base's
+// count (only episodes the base knows are offered).
+//
+// Anything that does not partition (AniList's counts are sometimes wrong:
+// 24 where the season has 12) returns null and the caller keeps its layout.
+// AniList seasons past the end of the base are appended like
+// addMissingSeasons would (no tmdbSeason: TMDB does not list them yet).
+function splitLumpedSeasons(baseSeasons, anilistSeasons) {
+  const B = (baseSeasons || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
+  const A = (anilistSeasons || []).filter((s) => s && s.season > 0).sort((x, y) => x.season - y.season);
+  if (!B.length || A.length <= B.length) return null;
+  const out = [];
+  let ai = 0;
+  let lumped = false;
+  for (let bi = 0; bi < B.length; bi++) {
+    const b = B[bi];
+    const bCount = countOf(b);
+    if (!(bCount > 0)) return null;
+    let used = 0;
+    let parts = 0;
+    while (used < bCount) {
+      const a = A[ai];
+      if (!a) return null;
+      let c = countOf(a);
+      const isLastA = ai === A.length - 1;
+      const isLastB = bi === B.length - 1;
+      const left = bCount - used;
+      if (!(c > 0)) {
+        // Unknown count (airing cour): only the very last season may absorb
+        // the remainder.
+        if (!isLastA || !isLastB) return null;
+        c = left;
+      } else if (c > left) {
+        // The base lists fewer episodes of the newest cour than AniList
+        // announces (TMDB adds them as they air): last season only.
+        if (!(isLastA && isLastB) || parts === 0) return null;
+        c = left;
+      }
+      out.push({ season: a.season, episodes: c, year: a.year || '', tmdbSeason: b.season, tmdbOffset: used });
+      used += c;
+      parts++;
+      ai++;
+    }
+    if (parts > 1) lumped = true;
+  }
+  if (!lumped) return null; // nothing was lumped: the layouts already agree
+  for (; ai < A.length; ai++) {
+    const a = A[ai];
+    if (countOf(a) > 0) out.push({ season: a.season, episodes: countOf(a), year: a.year || '' });
+  }
+  return out;
 }
 
 const countOf = (s) => (Array.isArray(s.episodes) ? s.episodes.length : Number(s.episodes) || 0);
@@ -551,10 +641,25 @@ function mapEpisode(authoritative, tmdbSeasons, season, episode) {
 // Build a URL-number mapper for one title: (season, episode) -> TMDB pair.
 // Returns null when no mapping is needed/possible (identity everywhere).
 async function urlMapFor(tmdbId, title, opts = {}) {
-  const resolved = await resolveLayout(tmdbId, title, opts);
-  if (!resolved) return null;
   let tmdbSeasons = null;
   try { tmdbSeasons = await tmdbSeasonCounts(tmdbId, opts); } catch (e) { /* ignore */ }
+  // Cour split (TMDB lumps several AniList seasons into one): the plugin
+  // shows - and the files use - the split numbering; the source URL needs
+  // TMDB's lumped numbers. S3E1 of Ranma ½ (2024) -> TMDB S1E25.
+  if (tmdbSeasons && opts.anime) {
+    const year = opts.year || cacheGet('tmdbyear:' + String(tmdbId || '').trim()) || 0;
+    const al = await anilistLayout(tmdbId, title, { ...opts, year });
+    const split = al ? splitLumpedSeasons(tmdbSeasons, al) : null;
+    if (split) {
+      return (season, episode) => {
+        const s = split.find((x) => x.season === Number(season));
+        if (!s || s.tmdbSeason == null || !(Number(episode) >= 1)) return { season, episode, mapped: false };
+        return { season: s.tmdbSeason, episode: s.tmdbOffset + Number(episode), mapped: true };
+      };
+    }
+  }
+  const resolved = await resolveLayout(tmdbId, title, opts);
+  if (!resolved) return null;
   if (!tmdbSeasons) return null;
   // No-op check: if the first real pair is already identity and shapes
   // match, skip the per-episode work entirely.
@@ -584,6 +689,8 @@ module.exports = {
   anilistGql,
   anilistIdFor,
   resolveLayout,
+  anilistLayout,
+  splitLumpedSeasons,
   mapEpisode,
   addMissingSeasons,
   urlMapFor,

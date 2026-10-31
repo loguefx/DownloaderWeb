@@ -359,6 +359,61 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('an empty AniList Season 0 is not added', !merged3.some((s) => s.season === 0), merged3);
   }
 
+  console.log('\n[9] Cour split: TMDB lumps several seasons into one (Ranma ½ 2024)');
+  {
+    const sh = (L) => JSON.stringify((L || []).map((s) => s.season + ':' + s.episodes + (s.tmdbSeason != null ? '@' + s.tmdbSeason + '+' + s.tmdbOffset : '')));
+    const tmdbRanma = [{ season: 1, episodes: 36 }];
+    const al = [mk(1, 12), mk(2, 12), mk(3, 12)];
+    const split = mod.splitLumpedSeasons(tmdbRanma, al);
+    check('TMDB S1:36 + AniList 12/12/12 -> three seasons', sh(split) === '["1:12@1+0","2:12@1+12","3:12@1+24"]', sh(split));
+    const airing = mod.splitLumpedSeasons(tmdbRanma, [mk(1, 12), mk(2, 12), { season: 3, episodes: [], year: '2026' }]);
+    check('airing season with unknown AniList count takes the remainder', sh(airing) === '["1:12@1+0","2:12@1+12","3:12@1+24"]', sh(airing));
+    const behind = mod.splitLumpedSeasons([{ season: 1, episodes: 28 }], al);
+    check('TMDB listing only part of the newest cour keeps TMDB\'s count', sh(behind) === '["1:12@1+0","2:12@1+12","3:4@1+24"]', sh(behind));
+    const twoBase = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }, { season: 2, episodes: 12 }], al);
+    check('lumped S1 + separate S2 -> S1, S2 from TMDB S1; S3 = TMDB S2', sh(twoBase) === '["1:12@1+0","2:12@1+12","3:12@2+0"]', sh(twoBase));
+    const extra = mod.splitLumpedSeasons([{ season: 1, episodes: 24 }], al);
+    check('AniList season TMDB does not list yet is appended (no TMDB slot)', sh(extra) === '["1:12@1+0","2:12@1+12","3:12"]', sh(extra));
+    check('Apothecary case (AniList 24 vs TMDB 12) does not partition -> null',
+      mod.splitLumpedSeasons([{ season: 1, episodes: 24 }, { season: 2, episodes: 12 }], [mk(1, 24), mk(2, 24), mk(3, 12)]) === null);
+    check('layouts that already agree -> null', mod.splitLumpedSeasons([{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }], [mk(1, 12), mk(2, 12)]) === null);
+    check('unknown count before the last season -> null', mod.splitLumpedSeasons(tmdbRanma, [mk(1, 12), { season: 2, episodes: [] }, mk(3, 12)]) === null);
+    check('counts that overshoot an earlier base season -> null', mod.splitLumpedSeasons([{ season: 1, episodes: 20 }, { season: 2, episodes: 16 }], al) === null);
+
+    // AniList search: the 2024 remake, not the 1989 original with the same title.
+    const pick = await mod.anilistSeasons('Ranma1/2', { year: 2024, fetcher: async (q, v) => {
+      if (q.includes('search')) return { data: { Page: { media: [
+        { id: 1989, format: 'TV', title: { english: 'Ranma ½', romaji: 'Ranma ½' }, episodes: 161, seasonYear: 1989, startDate: { year: 1989 } },
+        { id: 2024, format: 'TV', title: { english: null, romaji: 'Ranma ½ (2024)' }, episodes: 12, seasonYear: 2024, startDate: { year: 2024 } }
+      ] } } };
+      if (q.includes('relations')) {
+        if (v.id === 2024) return { data: { Media: { relations: { edges: [{ relationType: 'SEQUEL', node: { id: 2025, type: 'ANIME', format: 'TV', episodes: 12, seasonYear: 2025 } }] } } } };
+        if (v.id === 2025) return { data: { Media: { relations: { edges: [{ relationType: 'SEQUEL', node: { id: 2026, type: 'ANIME', format: 'TV', episodes: null, seasonYear: 2026 } }] } } } };
+        return { data: { Media: { relations: { edges: [] } } } };
+      }
+      return null;
+    } });
+    const shp = (pick || []).filter((s) => s.season > 0).map((s) => s.season + ':' + s.episodes.length).join('|');
+    check('year narrows the AniList search to the 2024 remake (with its sequel chain)', shp === '1:12|2:12|3:0', shp);
+    check('"Ranma ½ (2024)" matches TMDB\'s "Ranma1/2"', mod.titlesMatch('Ranma ½ (2024)', 'Ranma1/2'));
+
+    // Download URLs: the split numbering maps back to TMDB's lumped season.
+    // The AniList answer is seeded (title search key incl. the TMDB year).
+    mod._resetCache();
+    mod._internals.cacheSet('anilist:ranma1/2|2024', [mk(1, 12), mk(2, 12), { season: 3, episodes: [], year: '2026' }]);
+    const map = await mod.urlMapFor('259140', 'Ranma1/2', { anime: true, fetcher: async (u) => {
+      if (String(u).includes('/external_ids')) return { anilist_id: null };
+      if (String(u).includes('/tv/259140')) return { first_air_date: '2024-10-05', seasons: [{ season_number: 1, episode_count: 36, air_date: '2024-10-05' }] };
+      return null;
+    } });
+    const r31 = map ? map(3, 1) : null;
+    const r212 = map ? map(2, 12) : null;
+    const r15 = map ? map(1, 5) : null;
+    check('S3E1 downloads TMDB S1E25', r31 && r31.season === 1 && r31.episode === 25, r31);
+    check('S2E12 downloads TMDB S1E24', r212 && r212.season === 1 && r212.episode === 24, r212);
+    check('S1E5 stays TMDB S1E5', r15 && r15.season === 1 && r15.episode === 5, r15);
+  }
+
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })().catch((e) => {

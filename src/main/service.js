@@ -350,7 +350,9 @@ async function runJob(job) {
     try {
       const tmdbId = dubTmdb;
       if (/^\d+$/.test(tmdbId)) {
-        urlMap = await animelayout.urlMapFor(tmdbId, series, { anime: !!(job.anime) });
+        // `anime` also covers animation from JP/CN/KR/TW sent from the TV tab:
+        // a cour-split season must map back to TMDB's lumped numbers either way.
+        urlMap = await animelayout.urlMapFor(tmdbId, series, { anime });
       }
     } catch (e) {
       urlMap = null; // best effort: keep the requested numbering

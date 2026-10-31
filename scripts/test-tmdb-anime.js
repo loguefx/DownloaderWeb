@@ -78,6 +78,13 @@ const TV = {
       { season_number: 1, episode_count: 8, air_date: '2020-01-10' }
     ]
   },
+  // 259140: Ranma ½ (2024) - TMDB lumps three 12-episode seasons into
+  // "Season 1, 36 episodes"; season 3 is airing (only E1-E4 aired).
+  259140: {
+    id: 259140, name: 'Ranma1/2', first_air_date: '2024-10-05', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }], origin_country: ['JP'],
+    seasons: [{ season_number: 1, episode_count: 36, air_date: '2024-10-05' }]
+  },
   // 789: a plain TV show (2 seasons) - the anime tiers must not touch it.
   789: {
     id: 789, name: 'Plain TV Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
@@ -101,6 +108,23 @@ global.fetch = async (url) => {
     return { ok: true, json: async () => ({ results: [wp], flatrate: wp }) };
   }
   if (!TV[m[1]]) return { ok: false, status: 404 };
+  const seasonPath = u.match(/\/tv\/259140\/season\/(\d+)/);
+  if (seasonPath) {
+    if (seasonPath[1] !== '1') return { ok: false, status: 404 };
+    return {
+      ok: true,
+      json: async () => ({
+        name: 'Season 1',
+        episodes: Array.from({ length: 36 }, (_, i) => ({
+          episode_number: i + 1,
+          name: 'Ep ' + (i + 1),
+          runtime: 24,
+          // E1-E28 aired; E29-E36 (season 3 E5-E12) are in the future.
+          air_date: i < 28 ? '2025-01-01' : '2099-01-01'
+        }))
+      })
+    };
+  }
   if (u.includes('external_ids')) {
     return {
       ok: true,
@@ -133,6 +157,12 @@ animelayout._internals.cacheSet('anilistid:6010', [
   { season: 2, episodes: eps(11), year: '2025' }
 ]);
 animelayout._internals.cacheSet('aniwave:602', null);
+animelayout._internals.cacheSet('aniwave:259140', null);
+animelayout._internals.cacheSet('anilist:ranma1/2|2024', [
+  { season: 1, episodes: eps(12), year: 2024 },
+  { season: 2, episodes: eps(12), year: 2025 },
+  { season: 3, episodes: [], year: 2026 } // airing: AniList count unknown
+]);
 animelayout._internals.cacheSet('aniwave:603', null);
 
 (async () => {
@@ -193,6 +223,29 @@ animelayout._internals.cacheSet('aniwave:603', null);
       d && d.layout === 'tmdb' && JSON.stringify(d.seasons.map((x) => x.season + ':' + x.episodes)) === '["0:5","1:8"]', JSON.stringify(d && d.seasons));
   } catch (e) {
     check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
+  }
+
+  console.log('\n[4b] Ranma ½ (2024): TMDB\'s lumped 36-episode season is split into 3');
+  for (const anime of [true, false]) {
+    try {
+      const info = await tmdb.tmdbInfo('259140', 'tv', { anime });
+      const shape = info && info.seasons.map((s) => s.season + ':' + s.episodes).join('|');
+      check(`three seasons of 12 (${anime ? 'Anime tab' : 'TV tab'})`, shape === '1:12|2:12|3:12', shape);
+      check(`layout marked as a cour split (${anime ? 'Anime tab' : 'TV tab'})`, info && info.layout === 'tmdb+cours', info && info.layout);
+    } catch (e) {
+      check('tmdbInfo did not throw', false, e.constructor.name + ': ' + e.message);
+    }
+  }
+  try {
+    const s3 = await tmdb.tmdbSeason('259140', 3, { anime: true });
+    const eps3 = (s3 && s3.episodes) || [];
+    check('season 3 lists 12 episodes numbered 1-12', eps3.length === 12 && eps3[0].episode === 1 && eps3[11].episode === 12, eps3.length);
+    check('season 3 E1 is TMDB S1E25 (name + air date carried over)', eps3[0] && eps3[0].name === 'Ep 25', eps3[0] && eps3[0].name);
+    check('season 3 E5+ keep their future air dates (greyed out as not aired)', eps3[4] && eps3[4].airDate === '2099-01-01' && eps3[3].airDate === '2025-01-01', JSON.stringify(eps3.slice(3, 5)));
+    const s1 = await tmdb.tmdbSeason('259140', 1, { anime: true });
+    check('season 1 is TMDB S1E1-E12 only', s1 && s1.episodes.length === 12 && s1.episodes[11].name === 'Ep 12', s1 && s1.episodes.length);
+  } catch (e) {
+    check('tmdbSeason did not throw', false, e.constructor.name + ': ' + e.message);
   }
 
   console.log('\n[5] Total-failure diagnostic (licensed-exclusive explanation)');
