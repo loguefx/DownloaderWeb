@@ -59,16 +59,25 @@ const API = (p) => {
     if (q.startsWith('smoking behind')) {
       return page([media(SB, 'Super no Ura de Yani Suu Futari', 'Super no Ura de Yani Suu Futari'), media('smoking-behind-the-supermarket-with-you-8851', '[Mini] Super no Ura de Yani Suu Futari', '[Mini] Super no Ura de Yani Suu Futari', 'TV_SHORT')], true);
     }
+    if (q.startsWith('the girl downstairs')) {
+      return page([media('the-girl-downstairs-9eddv-6483', 'Aishang Ta de Liyou', 'Aishang Ta de Liyou', 'ONA')], true);
+    }
     if (q.startsWith('solo leveling')) {
       return page([media('solo-leveling-ilh08-6224', 'Ore dake Level Up na Ken', 'Ore dake Level Up na Ken'), media('solo-leveling-specials-701ip-5972', 'Ore dake Level Up na Ken: Specials', 'x', 'SPECIAL'), media('solo-leveling-season-2-arise-from-the-shadow-3eukp-7457', 'Ore dake Level Up na Ken Season 2: Arise from the Shadow', 'x')], true);
     }
     return page([], true);
   }
+  if (u.pathname === '/api/episodes/the-girl-downstairs-9eddv-6483') return { error: 'Anime not found', episodes: [] };
+  if (u.pathname === '/api/episodes/the-girl-downstairs-9eddv-6483/info') return { id: 'the-girl-downstairs-9eddv-6483', totalEpisodes: 22, hasDub: false, hasSub: true };
   let m = u.pathname.match(/^\/api\/episodes\/([^/]+)$/);
   if (m) {
     const id = decodeURIComponent(m[1]);
     if (id === LC3) return eps(LC3, 12);
-    if (id === SB) return eps(SB, 12);
+    if (id === SB) {
+      const e = eps(SB, 12);
+      e.episodes.splice(10, 0, { id: `${SB}?ep=1999`, number: 10.5 }); // a recap
+      return e;
+    }
     if (/^\d+$/.test(id)) return { error: 'Failed to fetch episodes' };
     return eps(id, 12);
   }
@@ -132,6 +141,14 @@ async function main() {
   check('search never answered -> unknown (null), never "not dubbed"', dm === null, dm && JSON.stringify([...dm]));
   r = await av.resolveEpisode({ title: 'Link Click', season: 3, episode: 13, mode: 'dub' });
   check('an episode that is not out -> no_episode', r.status === 'no_episode', r.status);
+
+  console.log('\n[3b] Recaps and shows without a dub');
+  const sbEps = await av.episodes(SB);
+  check('a "10.5" recap is not an episode', sbEps && sbEps.length === 12 && !sbEps.some((e) => !Number.isInteger(e.number)));
+  dm = await av.dubMap('The Girl Downstairs', 1, { only: [1, 2] });
+  check('episode list broken but the show says hasDub:false -> not dubbed', dm && dm.get(1) === false && dm.get(2) === false, dm && JSON.stringify([...dm]));
+  r = await av.resolveEpisode({ title: 'The Girl Downstairs', season: 1, episode: 3, mode: 'dub' });
+  check('...and a DUB request says no dub (not "unreachable")', r.status === 'no_dub', r.status);
 
   console.log('\n[4] The resolver');
   const saved = [];

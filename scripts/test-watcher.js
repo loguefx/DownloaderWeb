@@ -522,6 +522,36 @@ async function main() {
     check('clean per-season title still queues its 3 missing eps (6..8)', ss.length === 3 && JSON.stringify(ss.map((c) => c.episode).sort((a, b) => a - b)) === JSON.stringify([6, 7, 8]), JSON.stringify(ss.map((c) => [c.season, c.episode])));
     check('...and did NOT re-queue the 5 it already has', ss.every((c) => c.episode >= 6));
   }
+  console.log('\n[13] Added from the TV tab, but TMDB says animation from China: anime rules');
+  {
+    // The Girl Downstairs: on the watch list as plain TV (anime:false). As TV,
+    // DUB only PREFERS English - its 3 missing episodes would download in
+    // whatever audio Vidsrc has. TMDB marks it Animation + CN: it must get the
+    // anime rules (English dub only, from the anime sources).
+    const dubstatus = M('dubstatus');
+    let gdDubbed = new Set();
+    dubstatus._resetForTests();
+    dubstatus._setAnimevillageForTests(async (title, season, eps) =>
+      title === 'Donghua Show' ? new Map(eps.map((e) => [Number(e), gdDubbed.has(Number(e))])) : new Map(eps.map((e) => [Number(e), true])));
+    const realInfo = tmdb.tmdbInfo;
+    const realSeason = tmdb.tmdbSeason;
+    tmdb.tmdbInfo = async (id) => (id === '777' ? { tmdb: '777', title: 'Donghua Show', seasons: [{ season: 1, episodes: 3 }], animeLike: true } : realInfo(id));
+    tmdb.tmdbSeason = async (id, season) => (id === '777' ? { tmdb: '777', season: 1, episodes: [1, 2, 3].map((k) => ({ episode: k, airDate: past(30), name: 'Ep ' + k, runtime: 1000 })) } : realSeason(id, season));
+    schedule.add({ series: 'Donghua Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('777', 1, 1)).template, baseUrl: vid('777', 1, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '777', imdb: '', movie: false });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    const entry = schedule.list().find((x) => x.series === 'Donghua Show');
+    check('the watch-list entry is marked anime-like (layout flag untouched)', entry && entry.animeLike === true && entry.anime === false, JSON.stringify(entry && { anime: entry.anime, animeLike: entry.animeLike }));
+    check('no English dub anywhere: NOTHING downloaded (not the Chinese/Japanese copy)', queueCalls.filter((c) => c.series === 'Donghua Show').length === 0, JSON.stringify(queueCalls.map((c) => [c.series, c.episode])));
+    gdDubbed = new Set([1, 2]);
+    dubstatus._resetForTests();
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    const dq = queueCalls.filter((c) => c.series === 'Donghua Show');
+    check('once E1-E2 are dubbed: exactly those queued, as anime', JSON.stringify(dq.map((c) => c.episode).sort()) === '[1,2]' && dq.every((c) => c.anime === true), JSON.stringify(dq.map((c) => [c.episode, c.anime])));
+    tmdb.tmdbInfo = realInfo;
+    tmdb.tmdbSeason = realSeason;
+  }
   service.watcherModeSet({ dryRun: true });
 
   // ---- summary ----------------------------------------------------------------

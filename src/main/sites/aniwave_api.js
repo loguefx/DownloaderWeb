@@ -93,10 +93,14 @@ function episodes(id) {
       return null;
     }
     const out = [];
-    const re = /<a\b[^>]*\bdata-num="(\d+)"[^>]*>/g;
+    // Whole episodes only: recap / bonus entries are numbered between two
+    // episodes ("10.5", "11.5" - The Girl Downstairs) and are never the
+    // episode a job asks for.
+    const re = /<a\b[^>]*\bdata-num="([\d.]+)"[^>]*>/g;
     let m;
     while ((m = re.exec(html))) {
       const tag = m[0];
+      if (!/^\d+$/.test(m[1])) continue;
       out.push({
         episode: Number(m[1]),
         sub: /\bdata-sub="1"/.test(tag),

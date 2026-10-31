@@ -282,7 +282,22 @@ async function runJob(job) {
   const scope = job.scope || 'full';
   // Anime: the plugin sends anime:true and minHeight 0, so the source's own
   // resolution (often 720p) is accepted. TV/movies keep the 1080p floor.
-  const anime = !!job.anime;
+  // A series opened from the TV tab is still anime when TMDB says so
+  // (Animation from JP/CN/KR/TW - e.g. a Chinese donghua): it then gets the
+  // strict English-dub rule and the anime sources, not Vidsrc's "prefer
+  // English, else take what is there".
+  let anime = !!job.anime;
+  if (!anime && job.kind !== 'movie' && /^\d+$/.test(String(job.tmdb || '').trim())) {
+    try {
+      const info = await require('./tmdb').tmdbInfo(String(job.tmdb).trim(), 'tv');
+      if (info && info.animeLike) {
+        anime = true;
+        onLog(`"${series}" is animation from ${'Japan/China/Korea/Taiwan'} on TMDB - handled as anime (English-dub-only DUB, Aniwave + Anime Village).`);
+      }
+    } catch (e) {
+      // TMDB unreachable: keep the plugin's flag
+    }
+  }
 
   // Part 5: sign each library folder with the .mediadownloader marker so a
   // dropped NAS share can never silently collect finished files at its mount
@@ -502,7 +517,8 @@ async function runJob(job) {
         outputRoot: staging,
         library: lib,
         minHeight,
-        anime,
+        anime: !!job.anime,
+        animeLike: anime && !job.anime,
         tmdb: watchTmdb,
         imdb: watchImdb,
         movie: job.kind === 'movie'
@@ -520,7 +536,8 @@ async function runJob(job) {
       outputRoot: staging,
       library: lib,
       minHeight,
-      anime,
+      anime: !!job.anime,
+      animeLike: anime && !job.anime,
       tmdb: watchTmdb,
       imdb: watchImdb,
       movie: job.kind === 'movie'

@@ -208,6 +208,14 @@ animelayout._internals.cacheSet('aniwave:603', null);
   check('hint is empty with no providers', tmdb.exclusiveHint(none) === '', tmdb.exclusiveHint(none));
   check('multi-provider hint uses licensed-on wording', /licensed on Netflix, Apple TV\+/.test(tmdb.exclusiveHint(multi)), tmdb.exclusiveHint(multi));
 
+  // Anime by TMDB: Animation from JP/CN/KR/TW, whichever tab it came from.
+  const la = tmdb.looksAnime;
+  check('Chinese donghua (The Girl Downstairs: Animation, CN) is anime', la({ genres: [{ id: 16 }, { id: 18 }], origin_country: ['CN'] }) === true);
+  check('Japanese animation is anime', la({ genres: [{ id: 16 }], origin_country: ['JP'] }) === true);
+  check('US animation is not', la({ genres: [{ id: 16 }], origin_country: ['US'] }) === false);
+  check('live-action Japanese drama is not', la({ genres: [{ id: 18 }], origin_country: ['JP'] }) === false);
+  check('search-result shape (genre_ids) works too', la({ genre_ids: [16], origin_country: ['KR'] }) === true);
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })();

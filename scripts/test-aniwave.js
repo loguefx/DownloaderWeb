@@ -72,7 +72,9 @@ const SITE = {
   ]),
   '/ajax/episode/list/76040': episodeList(12, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
   '/ajax/episode/list/82064': episodeList(13, [1, 2, 3]),
-  '/ajax/episode/list/82730': episodeList(12, [])
+  '/ajax/episode/list/82730': episodeList(12, []),
+  // The Girl Downstairs: recaps "10.5" / "11.5" between the episodes.
+  '/ajax/episode/list/81272': JSON.stringify({ status: 200, result: ['1', '10', '10.5', '11', '11.5', '12'].map((n) => `<a data-num="${n}" data-sub="1" data-dub="0">${n}</a>`).join('') })
 };
 
 async function main() {
@@ -88,6 +90,8 @@ async function main() {
   check('search lists 3 entries with id/slug/title', res.length === 3 && res[0].id === '76040' && res[0].title === 'Solo Leveling', JSON.stringify(res[0]));
   const eps = await aw.episodes('82064');
   check('episode list: 13 episodes, E1-E3 dubbed', eps.length === 13 && eps.filter((e) => e.dub).length === 3 && eps[2].dub && !eps[3].dub);
+  const gd = await aw.episodes('81272');
+  check('recap entries (10.5, 11.5) are not episodes', gd && JSON.stringify(gd.map((e) => e.episode)) === '[1,10,11,12]', gd && JSON.stringify(gd.map((e) => e.episode)));
   const before = requests;
   await aw.search('Solo Leveling');
   check('results are cached', requests === before);

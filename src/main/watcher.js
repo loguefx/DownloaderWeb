@@ -269,7 +269,7 @@ class Watcher {
         outputRoot: s.outputRoot,
         library: s.library || null,
         minHeight: s.minHeight || 0,
-        anime: !!s.anime
+        anime: !!(s.anime || s.animeLike)
       },
       this.onLog
     );
@@ -287,8 +287,13 @@ class Watcher {
   // Future episodes are NEVER queued (the old source-detection path guessed a
   // 1-12 range and re-queued every not-yet-out episode daily).
   async checkSeriesTmdb(s, dryRun) {
-    const anime = !!s.anime;
+    const anime = !!s.anime; // season layout: as the plugin showed it
     const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime });
+    if (info && info.animeLike && !s.anime && !s.animeLike) {
+      s.animeLike = true;
+      schedule.setAnimeLike(s.key);
+      this.onLog(`"${s.series}" is animation from Japan/China/Korea/Taiwan on TMDB - handled as anime from now on (English-dub-only DUB, Aniwave + Anime Village).`);
+    }
     if (!info || !(info.seasons || []).some((x) => x && x.season > 0)) {
       if (dryRun) {
         // The fallback downloads (startBatch) - report-only mode must not run it.
@@ -370,7 +375,7 @@ class Watcher {
     // English-dub status of the season on the anime sources (the same ones
     // the downloads use), stated plainly in the daily log. Best-effort: a
     // failure must never break the schedule check.
-    if (anime) {
+    if (anime || s.animeLike) {
       let d = null;
       try {
         d = await anidb.englishDubForTmdb(s.tmdb, { title: s.series, season });
@@ -431,7 +436,7 @@ class Watcher {
     const floorActive = floor != null && sourceTotal != null && floor >= sourceTotal;
     // Anime DUB: which aired episodes are English-dubbed on the anime sources
     // (Aniwave, Anime Village; cached), in the job's own numbering.
-    const dubGate = !!(s.anime && (s.mode || 'dub') === 'dub');
+    const dubGate = !!((s.anime || s.animeLike) && (s.mode || 'dub') === 'dub');
     // Episodes of this season already waiting for their dub = the user asked
     // for this season in DUB: any other missing, undubbed episode waits too
     // (e.g. one deleted because it was not the dub).
@@ -553,7 +558,7 @@ class Watcher {
           episodeName: e.name || '',
           library: s.library || null,
           minHeight: s.minHeight || 0,
-          anime: !!s.anime,
+          anime: !!(s.anime || s.animeLike),
           tmdb: s.tmdb || null
         },
         this.onLog
@@ -580,7 +585,7 @@ class Watcher {
       stopRunOnFail: false,
       library: s.library || null,
       minHeight: s.minHeight || 0,
-      anime: !!s.anime
+      anime: !!(s.anime || s.animeLike)
     };
     const entry = {
       series: s.series,

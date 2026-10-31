@@ -655,7 +655,7 @@ async function handle(req, res, u) {
           if (!it0) return it0;
           const n = waitingBySeries.get(it0.series) || 0;
           const it = Object.assign({}, it0, { dubWaiting: n, dubState: n ? 'waiting' : 'watching' });
-          if (!it.tmdb || !it.anime) return it;
+          if (!it.tmdb || !(it.anime || it.animeLike)) return it;
           const hit = anidbMod.peek(it.tmdb, it.season);
           if (hit) {
             return Object.assign({}, it, {

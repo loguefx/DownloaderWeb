@@ -51,6 +51,18 @@ function tmdbCacheSet(key, value) {
   tmdbCache.set(key, { ts: Date.now(), value });
 }
 
+// Animation (genre 16) made in Japan, China, Korea or Taiwan = anime for the
+// engine's purposes (Japanese anime, Chinese donghua, ...), whichever plugin
+// tab the title was opened from. Anime gets the strict English-dub rule and
+// the anime sources; as plain TV a DUB request would only PREFER English.
+const ANIME_COUNTRIES = new Set(['JP', 'CN', 'KR', 'TW']);
+function looksAnime(body) {
+  if (!body) return false;
+  const genres = (body.genres || []).map((g) => Number(g && g.id)).concat((body.genre_ids || []).map(Number));
+  const countries = [].concat(body.origin_country || [], (body.production_countries || []).map((c) => c && c.iso_3166_1));
+  return genres.includes(16) && countries.some((c) => ANIME_COUNTRIES.has(String(c || '').toUpperCase()));
+}
+
 async function tmdbInfo(tmdbId, type, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
@@ -151,6 +163,7 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     title: body.name || '',
     year: String(body.first_air_date || '').slice(0, 4),
     type: 'tv',
+    animeLike: looksAnime(body),
     poster: body.poster_path ? `https://image.tmdb.org/t/p/w342${body.poster_path}` : '',
     overview: (body.overview || '').slice(0, 300),
     seasons,
@@ -304,5 +317,6 @@ module.exports = {
   tmdbSeason,
   watchProviders,
   exclusiveHint,
+  looksAnime,
   TMDB_CACHE_MS
 };

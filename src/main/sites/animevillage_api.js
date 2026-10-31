@@ -172,10 +172,19 @@ function episodes(id) {
       ok: (x) => x && Array.isArray(x.episodes) && x.episodes.length > 0
     });
     if (!o) return null;
+    // Whole episodes only (a "10.5" recap is never the episode asked for).
     return o.episodes
       .map((e) => ({ number: Number(e.number), epId: String(e.id || '').split('?ep=')[1] || '' }))
-      .filter((e) => e.number > 0 && e.epId);
+      .filter((e) => Number.isInteger(e.number) && e.number > 0 && e.epId);
   });
+}
+
+// The show's own summary: { hasDub, hasSub, totalEpisodes } (null when
+// unreadable). "hasDub: false" is a definite "no English dub of this show",
+// also when its episode list does not load (The Girl Downstairs: the list
+// answers "Anime not found", the summary says 22 episodes, no dub).
+function info(id) {
+  return cached('i:' + id, () => getJson(`/api/episodes/${encodeURIComponent(id)}/info`, { ok: (x) => x && typeof x.hasDub === 'boolean' }));
 }
 
 // The show for (title, season). names: other titles of the work to try
@@ -281,7 +290,10 @@ async function dubMap(title, season = 1, { names = [], only = null } = {}) {
   const none = () => new Map((want || []).map((e) => [e, false]));
   if (!show) return ctx.catalog ? none() : null;
   const eps = await episodes(show.id);
-  if (!eps) return null;
+  if (!eps) {
+    const sum = await info(show.id);
+    return sum && sum.hasDub === false ? none() : null;
+  }
   const out = new Map();
   for (const ep of eps) {
     if (want && !want.includes(ep.number)) continue;
@@ -310,7 +322,11 @@ async function resolveEpisode({ title, season = 1, episode, mode = 'dub', names 
   const show = await findShow(title, season, names);
   if (!show) return { status: 'no_show', reason: `"${title}" season ${season} is not on Anime Village` };
   const eps = await episodes(show.id);
-  if (!eps) return { status: 'unreachable', reason: 'Anime Village episode list did not load' };
+  if (!eps) {
+    const sum = mode === 'dub' ? await info(show.id) : null;
+    if (sum && sum.hasDub === false) return { status: 'no_dub', reason: `Anime Village has no English dub of "${show.names[0]}"`, show };
+    return { status: 'unreachable', reason: 'Anime Village episode list did not load' };
+  }
   const ep = eps.find((e) => e.number === Number(episode));
   if (!ep) return { status: 'no_episode', reason: `Anime Village has no episode ${episode} of "${show.names[0]}" yet`, show };
   if (mode === 'sub') {
@@ -332,6 +348,7 @@ module.exports = {
   UA,
   search,
   episodes,
+  info,
   pickShow,
   findShow,
   seasonOfTitle,

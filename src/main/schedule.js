@@ -54,6 +54,7 @@ class ScheduleStore extends EventEmitter {
       // anime rules (source-resolution floor off, no episode invention) even
       // after the original job is long gone.
       if (spec.anime != null) existing.anime = !!spec.anime;
+      if (spec.animeLike) existing.animeLike = true;
       // TMDB ids power the daily "what has aired" check; keep them when a
       // re-submission carries them (older entries may not have any).
       if (spec.tmdb) existing.tmdb = String(spec.tmdb);
@@ -79,6 +80,8 @@ class ScheduleStore extends EventEmitter {
       library: spec.library || null,
       minHeight: Number(spec.minHeight) || 0,
       anime: !!spec.anime,
+      // anime rules without the anime season layout (see setAnimeLike)
+      animeLike: !!spec.animeLike,
       // TMDB ids: the daily check asks TMDB "what has aired" instead of
       // guessing from the source page (sources like Vidsrc list no episodes
       // at all, so the old path re-queued every future episode daily).
@@ -132,6 +135,18 @@ class ScheduleStore extends EventEmitter {
 
   // Older entries predate TMDB-id storage; the watcher recovers the id from
   // the source URL and stores it here so the TMDB-aware check can run.
+  // TMDB says this series is anime (Animation from JP/CN/KR/TW) although it
+  // was added from the TV tab: downloads use the anime rules and sources.
+  // Separate from `anime` (which also picks the season layout the plugin
+  // showed), so the episode numbering of an existing entry never shifts.
+  setAnimeLike(key) {
+    this.load();
+    const it = this.items.find((x) => x.key === key);
+    if (!it || it.animeLike) return;
+    it.animeLike = true;
+    this._save();
+  }
+
   setIds(key, tmdb, imdb) {
     this.load();
     const it = this.items.find((x) => x.key === key);
