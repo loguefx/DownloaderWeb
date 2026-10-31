@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.37",
+                "changelog": "English-dub badge for anime (EN DUB n/m per season, EN DUB / SUB only per episode); anime DUB downloads only English-dubbed releases, undubbed episodes go to Waiting for dub (checked every 24 h) and the series is watched; SUB embeds English subtitles. Much faster, reliable downloads (CDN rate limits absorbed). Outbox and proxy fixes.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v37/MediaDownloader.12.1.0.37.zip",
+                "checksum": "71d7c201c80d4913c68d1f3084935052",
+                "timestamp": "2026-10-31T05:06:26.200Z"
+            },
+            {
                 "version": "12.1.0.36",
                 "changelog": "Specials (Season 0): OVAs, movies and specials are listed as a Specials season and can be queued (included in Full series); main seasons keep their numbers. Fixes specials resolving to the wrong video, anime seasons past 2 from AniList, Jellyfin search fallback, and crash-safe watch/waiting lists.",
                 "targetAbi": "12.1.0.0",
@@ -288,6 +296,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.37",
+                "changelog": "English-dub badge for anime (EN DUB n/m per season, EN DUB / SUB only per episode); anime DUB downloads only English-dubbed releases, undubbed episodes go to Waiting for dub (checked every 24 h) and the series is watched; SUB embeds English subtitles. Much faster, reliable downloads (CDN rate limits absorbed). Outbox and proxy fixes.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v37/MediaDownloader.10.11.0.37.zip",
+                "checksum": "dc04db54ef24da6eb35edaa7b662800a",
+                "timestamp": "2026-10-31T05:06:26.200Z"
+            },
+            {
                 "version": "10.11.0.36",
                 "changelog": "Specials (Season 0): OVAs, movies and specials are listed as a Specials season and can be queued (included in Full series); main seasons keep their numbers. Fixes specials resolving to the wrong video, anime seasons past 2 from AniList, Jellyfin search fallback, and crash-safe watch/waiting lists.",
                 "targetAbi": "10.11.0.0",
@@ -566,6 +582,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.37",
+                "changelog": "English-dub badge for anime (EN DUB n/m per season, EN DUB / SUB only per episode); anime DUB downloads only English-dubbed releases, undubbed episodes go to Waiting for dub (checked every 24 h) and the series is watched; SUB embeds English subtitles. Much faster, reliable downloads (CDN rate limits absorbed). Outbox and proxy fixes.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v37/MediaDownloader.10.10.0.37.zip",
+                "checksum": "c3cde6a604d34e66aba39bd212fd5285",
+                "timestamp": "2026-10-31T05:06:26.200Z"
             },
             {
                 "version": "10.10.0.36",
