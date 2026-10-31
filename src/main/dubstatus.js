@@ -131,10 +131,58 @@ async function isDubbed(tmdb, season, episode, { maxAgeMs = null } = {}) {
   return row ? row.dubbed : null;
 }
 
+// ---- Aniwave: the per-episode dub flags of its catalog -------------------
+// Vidsrc often streams only the Japanese track of a dual release, while
+// Aniwave serves the English dub as its own stream (and flags data-dub per
+// episode). Looked up by title + the job's own season/episode numbering
+// (Aniwave's layout), cached 6 h in the catalog client.
+
+// Injectable for tests: (title, season) -> { show, episodes:[{episode,dub}] } | null
+let aniwaveSeason = (title, season) => require('./sites/aniwave_api').seasonInfo(title, season);
+
+async function aniwaveDubMap(title, season) {
+  if (!title) return null;
+  try {
+    const info = await aniwaveSeason(title, Number(season) || 1);
+    if (!info) return null;
+    return new Map(info.episodes.map((e) => [e.episode, !!e.dub]));
+  } catch (e) {
+    return null;
+  }
+}
+
+// One episode of a job: dubbed on ANY source the engine downloads from.
+//   true  - Vidsrc has an English release, or Aniwave flags it dubbed
+//   false - a source answered and neither has a dub
+//   null  - nothing could be checked
+// { tmdb, srcSeason, srcEpisode } = Vidsrc (TMDB) numbering;
+// { title, season, episode }      = the job's own (Aniwave) numbering.
+async function isDubbedForJob({ tmdb, srcSeason, srcEpisode, title, season, episode }) {
+  let vid = null;
+  if (/^\d+$/.test(String(tmdb || ''))) {
+    try {
+      vid = await isDubbed(String(tmdb), srcSeason, srcEpisode);
+    } catch (e) {
+      vid = null;
+    }
+  }
+  if (vid === true) return true;
+  const aw = await aniwaveDubMap(title, season);
+  const a = aw ? aw.get(Number(episode)) : undefined;
+  if (a === true) return true;
+  if (vid === false || a === false) return false;
+  return null;
+}
+
 module.exports = {
   peekSeason,
   checkSeason,
   isDubbed,
+  isDubbedForJob,
+  aniwaveDubMap,
+  _setAniwaveForTests(fn) {
+    aniwaveSeason = fn;
+  },
   TTL,
   _setLookupForTests(fn) {
     lookup = fn;

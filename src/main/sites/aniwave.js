@@ -1,6 +1,7 @@
 'use strict';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const catalog = require('./aniwave_api');
 
 // Site adapter for Aniwave (aniwaves.ru and common mirrors).
 // Episode URL shape: https://aniwaves.ru/watch/{slug}/ep-{episode}
@@ -34,6 +35,41 @@ module.exports = {
     dubPathMarker: '-dub'
   },
   urlTemplates: ['https://aniwaves.ru/watch/{slug}/ep-{episode}'],
+  // Cross-site fallback for ANIME: tried right after Vidsrc (rank 0). It is
+  // the source that actually has English dubs where Vidsrc only streams the
+  // Japanese track (e.g. Solo Leveling S1: Vidsrc dub E1-E2, Aniwave E1-E12).
+  fallbackRank: 1,
+
+  // Finds the episode page through Aniwave's own catalog (plain HTTP, no
+  // browser). Anime only. In DUB mode only an episode Aniwave flags as
+  // dubbed is returned (and SUB mode needs a sub); the page's DUB server row
+  // is then picked by beforeResolve + the scanner as usual.
+  async findTitle(ref, _hooks, onLog = () => {}) {
+    if (!ref || !ref.anime || !ref.title) return null;
+    const season = Number(ref.displaySeason != null ? ref.displaySeason : ref.season) || 1;
+    const episode = Number(ref.displayEpisode != null ? ref.displayEpisode : ref.episode);
+    if (!(episode > 0)) return null;
+    const info = await catalog.seasonInfo(ref.title, season);
+    if (!info) {
+      onLog(`No Aniwave entry for "${ref.title}" season ${season}.`);
+      return null;
+    }
+    const ep = info.episodes.find((e) => e.episode === episode);
+    if (!ep) {
+      onLog(`Aniwave's "${info.show.title}" has no episode ${episode} (yet).`);
+      return null;
+    }
+    const wantDub = ref.mode !== 'sub';
+    if (wantDub && !ep.dub) {
+      onLog(`Aniwave has no English dub for "${info.show.title}" E${episode} yet.`);
+      return null;
+    }
+    if (!wantDub && !ep.sub) {
+      onLog(`Aniwave has no subbed copy of "${info.show.title}" E${episode} yet.`);
+      return null;
+    }
+    return catalog.episodeUrl(info.show, episode);
+  },
   // Anime uses flat episode numbers (season is baked into the slug). When the
   // episode list can't be detected, never invent a 1-12 range: that would
   // queue episodes that may not exist (or re-queue ones already on disk) and

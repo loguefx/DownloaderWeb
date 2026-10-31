@@ -776,7 +776,7 @@ class DownloadManager extends EventEmitter {
           // episode lands on the waiting-for-dub list.
           item._wrongAudio = true;
           this._log(`"${item.label}": ${outcome.reason || 'wrong audio on Vidsrc'}; trying sites with a ${(item.mode || 'dub').toUpperCase()} option.`);
-          outcome = await item.discover();
+          outcome = await item.discover(item);
         } else if (outcome && outcome.status === 'no_quality') {
           // Anime DUB: the Vidsrc page in the browser would replay the same
           // unverifiable file - go to the sites with DUB/SUB rows instead.
@@ -784,11 +784,11 @@ class DownloadManager extends EventEmitter {
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
-          outcome = await item.discover();
+          outcome = await item.discover(item);
         } else if (!outcome || outcome.status !== 'resolved') {
           // Same for "busy"/unreachable Vidsrc: anime DUB skips its page.
           if (outcome && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
-          outcome = await item.discover();
+          outcome = await item.discover(item);
         }
         let status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 

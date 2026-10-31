@@ -54,6 +54,9 @@ async function main() {
   const vpn = M('vpn');
   vpn._setStatus(true, 'test', 'test');
   const dubstatus = M('dubstatus');
+  // Aniwave is the second dub source; these cases are about Vidsrc's answers,
+  // and nothing may reach the real site.
+  dubstatus._setAniwaveForTests(async () => null);
   const pending = M('pending');
   const schedule = M('schedule');
   const bulk = M('bulk');

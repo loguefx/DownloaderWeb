@@ -596,9 +596,15 @@ async function handle(req, res, u) {
         if (part.pending) pending = true;
         for (const row of part.episodes) rows.set(`${s}|${row.episode}`, row);
       }
-      const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending, episodes: [] };
+      // Aniwave flags dubs per episode in the plugin's own numbering; an
+      // episode it has dubbed counts even where Vidsrc only has the Japanese.
+      const title = String(u.searchParams.get('title') || '').trim();
+      const aw = title ? await dubstatus.aniwaveDubMap(title, season) : null;
+      const out = { tmdb, season, total: episodes.length, checked: 0, dubbed: 0, notDubbed: 0, unknown: 0, pending, episodes: [], aniwave: !!aw };
       for (const p of pairs) {
-        const row = rows.get(`${p.s}|${p.e}`) || { dubbed: null, at: 0 };
+        const row0 = rows.get(`${p.s}|${p.e}`) || { dubbed: null, at: 0 };
+        const awDub = aw ? aw.get(p.ep) : undefined;
+        const row = awDub === true ? Object.assign({}, row0, { dubbed: true, at: row0.at || Date.now(), via: 'aniwave' }) : row0;
         if (row.at) out.checked += 1;
         if (row.dubbed === true) out.dubbed += 1;
         else if (row.dubbed === false) out.notDubbed += 1;

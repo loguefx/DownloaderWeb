@@ -109,7 +109,10 @@ async function withDiscoverGate(fn) {
 }
 
 function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({})) {
-  return async () =>
+  // The queue calls discover(item) with its LIVE item: manager.add() copies
+  // the record into a new object, so flags the queue sets later (e.g.
+  // _wrongAudio -> skip the source site) exist only on that copy.
+  return async (liveItem) =>
     withDiscoverGate(async () => {
       // Part 3: no outside request without a confirmed tunnel. Jobs accepted
       // while Mullvad is down stay queued (queue._gate holds them); this is the
@@ -166,7 +169,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         const profile = sites.resolve(url);
         const pages = (profile.mirrorUrls && profile.mirrorUrls(url)) || [url];
         const triedHosts = new Set();
-        const extra = typeof getOpts === 'function' ? getOpts() || {} : {};
+        const extra = typeof getOpts === 'function' ? getOpts(liveItem) || {} : {};
         let outcome = null;
         // One attempt at the dubselect resolve, under the stall watchdog. The
         // watchdog measures SILENCE, so the CF-wait loops in dubselect/discover
@@ -306,6 +309,12 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               log(`URL slug "${slug}" is a bare media id; searching other sites as "${extra.series}" (id ${numId} registered).`);
             }
           }
+          // Anime catalogs (Aniwave) number seasons their own way - the layout
+          // the job itself uses - and the dub-aware ones need the mode.
+          ref.anime = !!extra.anime;
+          ref.mode = mode;
+          if (extra.season != null && extra.season !== '') ref.displaySeason = Number(extra.season);
+          if (extra.episode != null && extra.episode !== '') ref.displayEpisode = Number(extra.episode);
           if (ref.title) {
             const want = ref.title + (ref.season ? ` S${ref.season}E${ref.episode || 1}` : '');
             log(`No 1080p on this catalog; searching other sites for ${want}.`);
@@ -968,7 +977,10 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         skipSources: [],
         onUnavailable: () => pending.add(spec)
       };
-      rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series, season: rec.season, skipSourceSite: !!rec._wrongAudio }));
+      rec.discover = makeDiscover(url, onLog, mode, (it) => {
+        const live = it || rec;
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, skipSourceSite: !!live._wrongAudio };
+      });
       const added = manager.add(rec);
       if (added) queued += 1;
     }
@@ -1038,7 +1050,10 @@ async function queueOne(entry, onLog = () => {}) {
     skipSources: [],
     onUnavailable: () => pending.add(spec)
   };
-  rec.discover = makeDiscover(url, onLog, mode, () => ({ skipSources: rec.skipSources, anime: rec.anime, minHeight: rec.minHeight, series: rec.series, season: rec.season, skipSourceSite: !!rec._wrongAudio }));
+  rec.discover = makeDiscover(url, onLog, mode, (it) => {
+        const live = it || rec;
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, skipSourceSite: !!live._wrongAudio };
+      });
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);
   if (added) {

@@ -466,6 +466,15 @@ class Watcher {
         if (!bySeason.has(p.season)) bySeason.set(p.season, []);
         bySeason.get(p.season).push({ ep: e.episode, urlEp: p.episode });
       }
+      const aw = await dubstatus.aniwaveDubMap(s.series, season);
+      if (aw) {
+        for (const e of eps) {
+          if (aw.get(Number(e.episode)) === true) {
+            dubbedOf.set(e.episode, true);
+            dubStarted = true;
+          }
+        }
+      }
       for (const [urlSeason, list] of bySeason) {
         let res = null;
         try {
@@ -476,7 +485,8 @@ class Watcher {
         for (const x of list) {
           const row = res && res.episodes.find((r) => r.episode === x.urlEp);
           const d = row ? row.dubbed : null;
-          dubbedOf.set(x.ep, d);
+          // Aniwave's "dubbed" (set above) wins over Vidsrc's "no".
+          if (dubbedOf.get(x.ep) !== true) dubbedOf.set(x.ep, d);
           if (d === true) dubStarted = true;
         }
       }
@@ -705,12 +715,14 @@ class Watcher {
       if (dubEntry) {
         let dubbed = null;
         try {
-          dubbed = await dubstatus.isDubbed(
-            spec.tmdb,
-            spec.urlSeason != null ? spec.urlSeason : spec.season,
-            spec.urlEpisode != null ? spec.urlEpisode : spec.episode,
-            { maxAgeMs: 60 * 60 * 1000 }
-          );
+          dubbed = await dubstatus.isDubbedForJob({
+            tmdb: spec.tmdb,
+            srcSeason: spec.urlSeason != null ? spec.urlSeason : spec.season,
+            srcEpisode: spec.urlEpisode != null ? spec.urlEpisode : spec.episode,
+            title: spec.series,
+            season: spec.season,
+            episode: spec.episode
+          });
         } catch (e) {
           dubbed = null;
         }
@@ -753,14 +765,18 @@ class Watcher {
         onUnavailable: () => pending.markChecked(spec.key),
         onDone: () => pending.remove(spec.key)
       };
-      rec.discover = bulk.makeDiscover(url, this.onLog, rec.mode, () => ({
-        skipSources: rec.skipSources,
-        anime: rec.anime,
-        minHeight: rec.minHeight,
-        series: rec.series,
-        season: rec.season,
-        skipSourceSite: !!rec._wrongAudio
-      }));
+      rec.discover = bulk.makeDiscover(url, this.onLog, rec.mode, (it) => {
+        const live = it || rec; // the queue's live copy carries later flags
+        return {
+          skipSources: live.skipSources,
+          anime: live.anime,
+          minHeight: live.minHeight,
+          series: live.series,
+          season: live.season,
+          episode: live.episode,
+          skipSourceSite: !!live._wrongAudio
+        };
+      });
       manager.add(rec);
     }
     for (const t of dubTally.values()) {

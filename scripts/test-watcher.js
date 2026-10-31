@@ -90,6 +90,7 @@ async function main() {
   // (dubstatus.js). These fixtures are about numbering and freezing, not dubs:
   // every episode counts as dubbed, and NOTHING may reach the real source.
   M('dubstatus')._setLookupForTests(async (ref) => ({ status: 'ok', fileName: `fixture.S${ref.season}E${ref.episode}.DUBBED.mkv` }));
+  M('dubstatus')._setAniwaveForTests(async () => null);
   const schedule = M('schedule');
   const pending = M('pending');
   const manager = M('queue');

@@ -355,6 +355,7 @@ async function main() {
       let directCalls = 0;
       vs.directResolve = async () => { directCalls += 1; return { status: 'wrong_audio', reason: 'audio is Japanese (audio stream tags), not an English dub' }; };
       let discovers = 0;
+      const liveFlags = [];
       const dlogs = [];
       const realLog4 = manager._log.bind(manager);
       manager._log = (m) => { dlogs.push(m); realLog4(m); };
@@ -368,8 +369,9 @@ async function main() {
         minHeight: 0,
         url: 'https://vidsrc.sh/embed/tv/123-1-1',
         outputRoot: path.join(DATA_DIR, 'staging'),
-        discover: () => {
+        discover: (it) => {
           discovers += 1;
+          liveFlags.push(!!(it && it._wrongAudio));
           // A server from a DUB row (so it passes the "proof of dub" rule)
           // that actually serves Japanese: the audio check must catch it.
           return Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${msrv.address().port}/ja.mp4`, type: 'mp4', sourceLabel: 'JapaneseServer', dubEvidence: 'row' } });
@@ -383,6 +385,9 @@ async function main() {
       check('nothing was saved for the episode', !fs.existsSync(path.join(DATA_DIR, 'staging', 'Dub Show', 'Season 1', 'Dub Show S1E1.mp4')));
       check('the server that served it is skipped next time', (ditem.skipSources || []).includes('japaneseserver'), JSON.stringify(ditem.skipSources));
       check('later attempts do not ask Vidsrc again', directCalls === 1, 'directCalls=' + directCalls);
+      // manager.add() copies the record: discovery must get the LIVE item,
+      // or "skip the Vidsrc page" never reaches it (live run: 54 s wasted).
+      check('discovery receives the live item with the skip-source flag set', liveFlags.length > 0 && liveFlags[0] === true, JSON.stringify(liveFlags));
       manager.removeByIds([did]);
       await sleep(200);
 

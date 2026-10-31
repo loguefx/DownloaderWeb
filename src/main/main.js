@@ -487,7 +487,19 @@ app.whenReady().then(() => {
       .map((s) => String(s || '').trim())
       .filter((s) => s && !/vidfast|server\s*2/i.test(s));
     return {
-      discover: bulk.makeDiscover(rec.url, onLog, rec.mode, () => ({ skipSources })),
+      // (it) = the queue's live item: later flags (skip the source site) live there.
+      discover: bulk.makeDiscover(rec.url, onLog, rec.mode, (it) => {
+        const live = it || rec;
+        return {
+          skipSources: (it && it.skipSources) || skipSources,
+          anime: !!live.anime,
+          minHeight: live.minHeight,
+          series: live.series,
+          season: live.season,
+          episode: live.episode,
+          skipSourceSite: !!(it && it._wrongAudio)
+        };
+      }),
       skipSources,
       onUnavailable: () => pending.add(spec)
     };

@@ -380,7 +380,14 @@ async function runJob(job) {
         if (anime && mode === 'dub' && /^\d+$/.test(dubTmdb)) {
           let dubbed = null;
           try {
-            dubbed = await require('./dubstatus').isDubbed(dubTmdb, m.season, m.episode);
+            dubbed = await require('./dubstatus').isDubbedForJob({
+              tmdb: dubTmdb,
+              srcSeason: m.season,
+              srcEpisode: m.episode,
+              title: series,
+              season,
+              episode: ep
+            });
           } catch (e) {
             dubbed = null;
           }
