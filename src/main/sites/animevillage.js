@@ -64,9 +64,12 @@ async function resolveForJob(ref = {}, { onLog = () => {} } = {}) {
   // The job's numbers are TMDB's; Anime Village names seasons like Aniwave
   // ("<Title> Season 3"). Translate per episode. An arc Aniwave lists under
   // a name only (Link Click: Bridon Arc) is left to Aniwave.
-  const src = await require('../anime-layout').animeSourceEpisode({
-    tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
-  });
+  // An AniDB-numbered library already uses the anime sites' seasons.
+  const src = ref.numbering === 'anime'
+    ? { season: tmdbSeason, episode: tmdbEpisode, mapped: false }
+    : await require('../anime-layout').animeSourceEpisode({
+      tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
+    });
   if (src.entry) return { status: 'none', reason: `TMDB S${tmdbSeason} is "${src.entry.title}" - looked up on Aniwave` };
   const season = src.season != null ? src.season : tmdbSeason;
   const episode = src.episode;

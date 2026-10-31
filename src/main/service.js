@@ -315,7 +315,13 @@ async function runJob(job) {
   let skipped = 0;
   let waiting = 0; // anime DUB episodes parked on the waiting-for-dub list
 
+  // Season numbering of the target library (the plugin reads it from the
+  // library's metadata settings): 'anime' = AniDB-style, the anime sites'
+  // own seasons; 'tmdb' = TMDB's. Files are named in it, and the anime
+  // sources translate only TMDB numbers.
+  const numbering = job.numbering === 'anime' ? 'anime' : 'tmdb';
   const stamp = (rec) => {
+    rec.numbering = numbering;
     rec.library = lib;
     rec.minHeight = minHeight;
     rec.jobId = job.jobId || null;
@@ -363,7 +369,9 @@ async function runJob(job) {
           // source season; arc entries are Aniwave-only).
           const bySeason = new Map();
           for (const ep of sel.episodes.map(Number)) {
-            const src = await animelayout.animeSourceEpisode({ tmdb: dubTmdb, title: series, season, episode: ep });
+            const src = numbering === 'anime'
+              ? { season, episode: ep }
+              : await animelayout.animeSourceEpisode({ tmdb: dubTmdb, title: series, season, episode: ep });
             if (src.entry || src.season == null) continue;
             if (!bySeason.has(src.season)) bySeason.set(src.season, []);
             bySeason.get(src.season).push(src.episode);
@@ -393,6 +401,7 @@ async function runJob(job) {
           let dubbed = null;
           try {
             dubbed = await require('./dubstatus').isDubbedForJob({
+              numbering,
               tmdb: dubTmdb,
               srcSeason: m.season,
               srcEpisode: m.episode,
@@ -417,6 +426,7 @@ async function runJob(job) {
               minHeight,
               anime: true,
               tmdb: dubTmdb,
+              numbering,
               urlSeason: m.season,
               urlEpisode: m.episode,
               episodeName: epName
@@ -462,6 +472,7 @@ async function runJob(job) {
       library: lib,
       minHeight,
       anime,
+      numbering,
       tmdb: /^\d+$/.test(String(job.tmdb || '').trim()) ? String(job.tmdb).trim() : null,
       jobId: job.jobId || null
     });
@@ -527,6 +538,7 @@ async function runJob(job) {
         minHeight,
         anime: !!job.anime,
         animeLike: anime && !job.anime,
+        numbering,
         tmdb: watchTmdb,
         imdb: watchImdb,
         movie: job.kind === 'movie'
@@ -546,6 +558,7 @@ async function runJob(job) {
       minHeight,
       anime: !!job.anime,
       animeLike: anime && !job.anime,
+      numbering,
       tmdb: watchTmdb,
       imdb: watchImdb,
       movie: job.kind === 'movie'
@@ -896,13 +909,36 @@ async function libraryRenumber(payload) {
       reason: 'Could not compare with the anime sources right now (TMDB key or Aniwave unreachable).' };
   }
   const tmdbCount = new Map(counts.map((c) => [c.season, c.episodes]));
-  // Catalog seasons whose episodes are a DIFFERENT TMDB season/episode.
+  // Target numbering = the library's: 'tmdb' (TheMovieDb metadata) renames
+  // files saved in the anime sites' numbering to TMDB's; 'anime' (AniDB /
+  // AniList metadata) renames TMDB-numbered files to the anime sites'.
+  const toAnime = payload.numbering === 'anime';
   const remapped = new Set();
-  for (const [ts, list] of Object.entries(plan)) {
-    for (const seg of list) {
-      if (seg.awSeason != null && (seg.awSeason !== Number(ts) || seg.start !== 0)) remapped.add(seg.awSeason);
+  let animeCount = new Map();
+  if (toAnime) {
+    const catalog = await animelayout.aniwaveCatalogSeasons(series).catch(() => null);
+    if (!catalog) {
+      return { series, moves: [], ambiguous: [], conflicts: [], applied: [], unknown: true,
+        reason: 'Could not read the anime sites\' seasons right now.' };
+    }
+    animeCount = new Map(animelayout.animeSeasonsFromPlan(plan, catalog, counts).map((x) => [x.season, x.episodes]));
+    // TMDB seasons whose episodes are a different anime season/episode.
+    for (const [ts, list] of Object.entries(plan)) {
+      for (const seg of list) {
+        if (seg.entry || seg.awSeason !== Number(ts) || seg.start !== 0) remapped.add(Number(ts));
+      }
+    }
+  } else {
+    // Catalog seasons whose episodes are a DIFFERENT TMDB season/episode.
+    for (const [ts, list] of Object.entries(plan)) {
+      for (const seg of list) {
+        if (seg.awSeason != null && (seg.awSeason !== Number(ts) || seg.start !== 0)) remapped.add(seg.awSeason);
+      }
     }
   }
+  // How many episodes the CURRENT folder's season can have in the numbering
+  // the files would be in if they were already right.
+  const targetCount = (n) => (toAnime ? animeCount.get(n) || 0 : tmdbCount.get(n) || 0);
 
   const files = [];
   organizer.withScanCache(() => {
@@ -927,14 +963,25 @@ async function libraryRenumber(payload) {
     const inSeason = files.filter((f) => f.season === n);
     if (!inSeason.length) continue;
     const maxEp = Math.max(...inSeason.map((f) => f.episode));
-    const tmdbHas = tmdbCount.get(n) || 0;
-    if (!(maxEp > tmdbHas)) {
+    const has = targetCount(n);
+    if (!(maxEp > has)) {
       ambiguous.push({ season: n, files: inSeason.length,
-        reason: `Season ${n} has ${inSeason.length} file(s), all numbered within TMDB's ${tmdbHas} - they may already follow TMDB; left alone.` });
+        reason: `Season ${n} has ${inSeason.length} file(s), all numbered within the ${has} episode(s) that season has in ${toAnime ? 'the anime numbering' : 'TMDB\'s numbering'} - they may already be right; left alone.` });
       continue;
     }
     for (const f of inSeason) {
-      const t = animelayout.tmdbEpisodeFromPlan(plan, n, f.episode);
+      let t = null;
+      if (toAnime) {
+        const src = animelayout.sourceEpisodeFromPlan(plan, n, f.episode);
+        if (src && src.entry) {
+          ambiguous.push({ season: n, files: 1,
+            reason: `${path.basename(f.path)} is TMDB's "${src.entry.title}" E${src.episode}, which the anime numbering does not count as a season; left alone.` });
+          continue;
+        }
+        t = src && src.season != null ? { season: src.season, episode: src.episode } : null;
+      } else {
+        t = animelayout.tmdbEpisodeFromPlan(plan, n, f.episode);
+      }
       if (!t || (t.season === n && t.episode === f.episode)) continue;
       const seasonDir = path.dirname(f.path);
       const seriesDir = organizer.seasonFromName(path.basename(seasonDir)) != null ? path.dirname(seasonDir) : seasonDir;
@@ -983,14 +1030,14 @@ async function libraryRenumber(payload) {
       }
     }
     if (applied.length) {
-      onLog(`Renamed ${applied.length} "${series}" file(s) to TMDB's season numbering (what Jellyfin shows).`);
+      onLog(`Renamed ${applied.length} "${series}" file(s) to ${toAnime ? 'the anime (AniDB-style)' : 'TMDB\'s'} season numbering - the library's metadata numbering.`);
       const dirs = [...new Set(applied.map((m) => m.to))];
       for (const d of dirs.slice(0, 20)) {
         try { await placer.refreshJellyfin(engineconfig.get(), d); } catch (e) { /* scheduled scan still finds it */ }
       }
     }
   }
-  return { series, moves, ambiguous, conflicts, applied };
+  return { series, numbering: toAnime ? 'anime' : 'tmdb', moves, ambiguous, conflicts, applied };
 }
 
 // ---- dry-run report: what we recognize vs. what is on disk, before downloading ----

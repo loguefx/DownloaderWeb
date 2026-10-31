@@ -60,6 +60,8 @@ class PendingStore extends EventEmitter {
       // re-queues anything.
       anime: !!spec.anime,
       tmdb: spec.tmdb ? String(spec.tmdb) : null,
+      // Season numbering of the target library ('anime' = AniDB-style).
+      numbering: spec.numbering === 'anime' ? 'anime' : 'tmdb',
       urlSeason: spec.urlSeason != null ? Number(spec.urlSeason) : null,
       urlEpisode: spec.urlEpisode != null ? Number(spec.urlEpisode) : null,
       episodeName: spec.episodeName || '',

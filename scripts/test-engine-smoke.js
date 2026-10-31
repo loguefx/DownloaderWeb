@@ -400,6 +400,27 @@ async function main() {
     r = await req('POST', '/api/library/renumber', { series: 'Other Show', tmdb: '555001', locations: [lib] }, { authorization: `Bearer ${KEY}` });
     check('no evidence (E1-E3 fit TMDB S3): no moves, reported ambiguous', r.json && r.json.moves.length === 0 && r.json.ambiguous.length === 1, r.body.slice(0, 300));
 
+    // AniDB-numbered library: TMDB-numbered files go back to the anime
+    // numbering (the 2026 season saved as TMDB "Season 4" -> "Season 3").
+    {
+      const lib2 = path.join(DATA_DIR, 'lib', 'renumber-anidb');
+      const lc2 = path.join(lib2, 'Link Click');
+      for (let e = 1; e <= 11; e++) { const f = path.join(lc2, 'Season 1', `Link Click S1E${e}.mp4`); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); }
+      for (const e of [1, 2, 3, 4, 5, 6, 7, 8, 10]) { const f = path.join(lc2, 'Season 4', `Link Click S4E${e}.mp4`); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); }
+      al._internals.cacheSet('awcat:link click', [
+        { season: 1, episodes: Array.from({ length: 11 }, (_, i) => ({ episode: i + 1 })), aniwaveId: '1' },
+        { season: 2, episodes: Array.from({ length: 12 }, (_, i) => ({ episode: i + 1 })), aniwaveId: '2' },
+        { season: 3, episodes: Array.from({ length: 12 }, (_, i) => ({ episode: i + 1 })), aniwaveId: '3' }]);
+      const b2 = { series: 'Link Click', tmdb: '126318', numbering: 'anime', locations: [lib2] };
+      r = await req('POST', '/api/library/renumber', b2, { authorization: `Bearer ${KEY}` });
+      const p2 = r.json || {};
+      check('AniDB library: TMDB "Season 4" files -> "Season 3" (9 moves)', p2.numbering === 'anime' && p2.moves && p2.moves.length === 9 && p2.moves.every((m) => /^S4E/.test(m.fromLabel) && m.toLabel === m.fromLabel.replace('S4', 'S3')), r.body.slice(0, 300));
+      r = await req('POST', '/api/library/renumber', Object.assign({}, b2, { apply: true, confirm: p2.moves.map((m) => m.from) }), { authorization: `Bearer ${KEY}` });
+      check('AniDB library: applied, files now in Season 3', r.json && r.json.applied.length === 9 && fs.existsSync(path.join(lc2, 'Season 3', 'Link Click S3E10.mp4')));
+      r = await req('POST', '/api/library/renumber', b2, { authorization: `Bearer ${KEY}` });
+      check('AniDB library: nothing left to rename (anime-numbered Season 3 is right)', r.json && r.json.moves.length === 0, r.body.slice(0, 200));
+    }
+
     // Read-only mode refuses to rename.
     library.setReadOnly(true);
     r = await req('POST', '/api/library/renumber', Object.assign({}, body, { apply: true, confirm: [path.join(lc, 'Season 3', 'Link Click S3E10.mp4')] }), { authorization: `Bearer ${KEY}` });

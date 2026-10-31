@@ -58,6 +58,7 @@ class ScheduleStore extends EventEmitter {
       // TMDB ids power the daily "what has aired" check; keep them when a
       // re-submission carries them (older entries may not have any).
       if (spec.tmdb) existing.tmdb = String(spec.tmdb);
+      if (spec.numbering) existing.numbering = spec.numbering === 'anime' ? 'anime' : 'tmdb';
       if (spec.imdb) existing.imdb = String(spec.imdb);
       if (spec.movie != null) existing.movie = !!spec.movie;
       // Opt-out override: only a deliberate spec (frozen true/false) changes
@@ -86,6 +87,8 @@ class ScheduleStore extends EventEmitter {
       // guessing from the source page (sources like Vidsrc list no episodes
       // at all, so the old path re-queued every future episode daily).
       tmdb: spec.tmdb ? String(spec.tmdb) : null,
+      // Season numbering of the target library ('anime' = AniDB-style).
+      numbering: spec.numbering === 'anime' ? 'anime' : 'tmdb',
       imdb: spec.imdb ? String(spec.imdb) : null,
       // A movie watch is just "is the file still there?" - no episodes.
       movie: !!spec.movie,

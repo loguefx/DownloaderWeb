@@ -59,9 +59,12 @@ module.exports = {
     // The job's numbers are TMDB's (Jellyfin's); Aniwave lists the work as
     // separate entries. Translate: Link Click TMDB S4E7 -> "Link Click
     // Season 3" E7, TMDB S3E2 -> "Link Click: Bridon Arc" E2.
-    const src = await require('../anime-layout').animeSourceEpisode({
-      tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
-    });
+    // An AniDB-numbered library already uses Aniwave's seasons: no translation.
+    const src = ref.numbering === 'anime'
+      ? { season: tmdbSeason, episode: tmdbEpisode, mapped: false }
+      : await require('../anime-layout').animeSourceEpisode({
+        tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
+      });
     const season = src.season != null ? src.season : tmdbSeason;
     const episode = src.episode;
     let info = null;

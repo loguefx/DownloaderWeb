@@ -1097,6 +1097,18 @@
                 };
                 const BLOCKED = { 'in-library': true, 'queued': true, 'unaired': true };
 
+                // "anime" when the library's series metadata comes from AniDB /
+                // AniList / Shoko (the plugin server reads it from Jellyfin's
+                // library settings), else "tmdb".
+                function numberingOf(libName) {
+                    const l = (S.libraries || []).find((x) => x.name === libName);
+                    return l && l.numbering === 'anime' ? 'anime' : 'tmdb';
+                }
+                function metadataOf(libName) {
+                    const l = (S.libraries || []).find((x) => x.name === libName);
+                    return (l && l.seriesMetadata) || 'TheMovieDb';
+                }
+
                 function libDefault(kind, anime) {
                     const c = S.config || {};
                     const libs = S.libraries || [];
@@ -1146,6 +1158,20 @@
                     loadTitle(S.t);
                 }
 
+                // Start the title over (seasons, episodes, checks) - e.g. another
+                // library with a different season numbering was picked. A new
+                // object, so answers still in flight for the old one are dropped.
+                function reloadTitle(t) {
+                    const n = Object.assign({}, t, {
+                        info: null, infoError: null, seasons: [], sel: {}, picked: {}, found: [],
+                        movieStatus: null, renumber: null, renumberOpen: false, checkError: null,
+                        active: null, seq: (t.seq || 0) + 1
+                    });
+                    S.t = n;
+                    renderTitle();
+                    loadTitle(n);
+                }
+
                 function loadTitle(t) {
                     const stale = () => S.t !== t;
                     if (!t.tmdb) {
@@ -1183,7 +1209,11 @@
                     // anime=1: for anime, the engine answers with the Aniwave/AniList
                     // season layout (the user's library is organized that way) instead
                     // of TMDB's split. Non-anime titles are unaffected server-side.
-                    get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv') + (t.anime ? '&anime=1' : '')).then((info) => {
+                    // numbering: how the target library numbers anime seasons (its
+                    // metadata provider): AniDB-style or TMDB's.
+                    t.numbering = numberingOf(t.library);
+                    const numQ = t.numbering === 'anime' ? '&numbering=anime' : '';
+                    get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv') + (t.anime ? '&anime=1' : '') + numQ).then((info) => {
                         if (stale()) return;
                         t.info = info || null;
                         // Animation from Japan/China/Korea/Taiwan opened from the
@@ -1192,6 +1222,9 @@
                         if (info && info.animeLike && !t.anime && !t.libraryLocked && t.kind === 'series') {
                             const animeLib = libDefault('series', true);
                             if (animeLib) t.library = animeLib;
+                            // The Anime library may number seasons differently
+                            // (AniDB): ask again in its numbering.
+                            if (animeLib && numberingOf(animeLib) !== t.numbering) { reloadTitle(t); return; }
                         }
                         if (info && info.title) t.title = info.title;
                         if (info && info.year) t.year = info.year;
@@ -1222,7 +1255,7 @@
                     const worker = () => {
                         const s = queue.shift();
                         if (!s || S.t !== t) return Promise.resolve();
-                        return get('MediaDownloader/TmdbSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season + (t.anime ? '&anime=1' : ''))
+                        return get('MediaDownloader/TmdbSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season + (t.anime ? '&anime=1' : '') + (t.numbering === 'anime' ? '&numbering=anime' : ''))
                             .then((d) => { if (d && d.episodes && d.episodes.length) s.eps = d.episodes; })
                             .catch(() => { /* fall back to 1..count */ })
                             .then(() => {
@@ -1248,6 +1281,7 @@
                     if (!t.anime || t.kind !== 'series' || !t.tmdb || !(s.season > 0) || !s.count) return Promise.resolve();
                     tries = tries || 0;
                     const url = 'MediaDownloader/DubSeason?tmdb=' + encodeURIComponent(t.tmdb) + '&season=' + s.season + '&count=' + s.count +
+                        (t.numbering === 'anime' ? '&numbering=anime' : '') +
                         '&anime=1&title=' + encodeURIComponent(t.title || '');
                     return get(url).then((d) => {
                         if (!d || S.t !== t) return;
@@ -1426,7 +1460,7 @@
                     const animeish = t.anime || (t.info && t.info.animeLike);
                     if (t.kind !== 'series' || !animeish || !t.tmdb || !t.library) return;
                     const lib = t.library;
-                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: lib, apply: false })
+                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: lib, numbering: numberingOf(lib), apply: false })
                         .then((r) => {
                             if (S.t !== t || t.library !== lib) return;
                             t.renumber = r && r.moves && r.moves.length ? r : null;
@@ -1449,8 +1483,8 @@
                     const conflicts = (r.conflicts || []).length ? '<div class="small" style="margin-top:.4em;color:var(--md-red)">' +
                         plural(r.conflicts.length, 'file') + ' skipped: a file already exists at the new name.</div>' : '';
                     return '<div class="mdl-callout yellow" style="margin-top:.8em;">' + ICON.warn + '<div style="flex:1;min-width:0;">' +
-                        '<b>' + plural(r.moves.length, 'file') + ' in ' + esc(t.library) + ' use the anime sites\' season numbering.</b> ' +
-                        'Jellyfin numbers these seasons the TMDB way, so they show up in the wrong season: ' + esc(summary) + '.' +
+                        '<b>' + plural(r.moves.length, 'file') + ' in ' + esc(t.library) + ' are numbered differently from this library\'s metadata (' + esc(metadataOf(t.library)) + ').</b> ' +
+                        'Jellyfin would show them in the wrong season: ' + esc(summary) + '.' +
                         rows + conflicts +
                         '<div class="mdl-actions" style="margin-top:.6em;">' +
                         '<button type="button" class="mdl-btn sm" data-renumber="toggle">' + (t.renumberOpen ? 'Hide the list' : 'Show every rename') + '</button>' +
@@ -1464,14 +1498,14 @@
                     const r = t.renumber;
                     if (!r || !r.moves.length || t.renumberBusy) return;
                     const sample = r.moves.slice(0, 5).map((m) => m.fromLabel + ' → ' + m.toLabel).join(', ');
-                    if (!confirm('Rename ' + plural(r.moves.length, 'file') + ' of "' + t.title + '" in ' + t.library + ' to TMDB\'s season numbering?\n\n' + sample + (r.moves.length > 5 ? ', …' : '') + '\n\nNothing is overwritten or deleted.')) return;
+                    if (!confirm('Rename ' + plural(r.moves.length, 'file') + ' of "' + t.title + '" in ' + t.library + ' to its ' + metadataOf(t.library) + ' season numbering?\n\n' + sample + (r.moves.length > 5 ? ', …' : '') + '\n\nNothing is overwritten or deleted.')) return;
                     t.renumberBusy = true;
                     renderTitle();
-                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: t.library, apply: true, confirm: r.moves.map((m) => m.from) })
+                    post('MediaDownloader/LibraryRenumber', { series: t.title, tmdb: String(t.tmdb), library: t.library, numbering: numberingOf(t.library), apply: true, confirm: r.moves.map((m) => m.from) })
                         .then((res) => {
                             const n = (res && res.applied && res.applied.length) || 0;
                             const bad = (res && res.conflicts && res.conflicts.length) || 0;
-                            footMsg(n ? 'ok' : 'err', n ? '✓ Renamed ' + plural(n, 'file') + ' to TMDB\'s seasons' + (bad ? ' (' + bad + ' skipped)' : '') + '.' : 'Nothing was renamed' + (bad ? ': ' + esc(res.conflicts[0].reason) : '.'));
+                            footMsg(n ? 'ok' : 'err', n ? '✓ Renamed ' + plural(n, 'file') + ' to ' + esc(metadataOf(t.library)) + '\'s seasons' + (bad ? ' (' + bad + ' skipped)' : '') + '.' : 'Nothing was renamed' + (bad ? ': ' + esc(res.conflicts[0].reason) : '.'));
                         })
                         .catch((err) => footMsg('err', 'Rename failed: ' + esc(err.message)))
                         .then(() => {
@@ -1628,7 +1662,14 @@
                     const drives = libObj && libObj.locations ? libObj.locations.length : 0;
                     $('[data-library-hint]').textContent = 'The library check looks in ' + (t.library || 'this library') +
                         (drives ? ' (' + plural(drives, 'drive folder') + ')' : '') +
-                        ' only, plus the queue. Pick another library to check it instead. New files land in its current folders.';
+                        ' only, plus the queue. Pick another library to check it instead. New files land in its current folders.' +
+                        (t.kind === 'series' && (t.anime || (t.info && t.info.animeLike))
+                            ? ' Seasons are numbered like this library\'s metadata (' + metadataOf(t.library) + '): ' +
+                              (numberingOf(t.library) === 'anime'
+                                ? 'each anime season is a season; arcs and specials are not numbered.'
+                                : 'TMDB\'s seasons.') +
+                              (t.info && t.info.numberingNote ? ' ' + t.info.numberingNote : '')
+                            : '');
                     $('[data-saved-as]').textContent = savedAs(t);
 
                     renderFoot();
@@ -1866,7 +1907,9 @@
                         // 720p). TV/movies keep the 1080p floor from `minHeight`.
                         anime: !!t.anime,
                         minHeight: t.anime ? 0 : (Number(t.quality) || 0),
-                        library: t.library
+                        library: t.library,
+                        // Files are named in the library's season numbering.
+                        numbering: t.numbering === 'anime' ? 'anime' : 'tmdb'
                     };
                     let jobs = [];
                     if (t.kind === 'movie') {
@@ -2348,7 +2391,10 @@
                     if (t && el.hasAttribute('data-library')) {
                         t.library = el.value;
                         t.libraryLocked = true;
-                        recheckLibrary(t);
+                        // Another season numbering (AniDB vs TMDB library): the
+                        // seasons themselves change - load them again.
+                        if (t.kind === 'series' && numberingOf(t.library) !== t.numbering) reloadTitle(t);
+                        else recheckLibrary(t);
                         return;
                     }
                     if (t && el.hasAttribute('data-quality')) {

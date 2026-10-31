@@ -434,7 +434,10 @@ async function handle(req, res, u) {
         json(res, 400, { error: 'tmdb id is required' });
         return;
       }
-      const info = await tmdbInfo(tmdb, type, { anime });
+      // numbering: 'anime' for a Jellyfin library numbered like AniDB/AniList
+      // (the plugin reads it from the library's metadata settings).
+      const numbering = u.searchParams.get('numbering') === 'anime' ? 'anime' : 'tmdb';
+      const info = await tmdbInfo(tmdb, type, { anime, numbering });
       if (!info) {
         json(res, 404, { error: 'not found or TMDB key not configured' });
         return;
@@ -452,7 +455,8 @@ async function handle(req, res, u) {
         json(res, 400, { error: 'tmdb and season are required' });
         return;
       }
-      const info = await tmdbSeason(tmdb, season, { anime });
+      const numbering = u.searchParams.get('numbering') === 'anime' ? 'anime' : 'tmdb';
+      const info = await tmdbSeason(tmdb, season, { anime, numbering });
       if (!info) {
         json(res, 404, { error: 'not found or TMDB key not configured' });
         return;
@@ -574,8 +578,13 @@ async function handle(req, res, u) {
         // looked up where the anime sources list it (Link Click TMDB S4 =
         // "Link Click Season 3", TMDB S3 = the "Bridon Arc" entry).
         const animelayout = require('./anime-layout');
-        const srcs = await Promise.all(episodes.map((ep) =>
-          animelayout.animeSourceEpisode({ tmdb, title, season, episode: ep }).catch(() => ({ season, episode: ep, mapped: false }))));
+        // An AniDB-numbered library already uses the anime sites' seasons:
+        // nothing to translate.
+        const animeNumbering = u.searchParams.get('numbering') === 'anime';
+        const srcs = animeNumbering
+          ? episodes.map((ep) => ({ season, episode: ep, mapped: false }))
+          : await Promise.all(episodes.map((ep) =>
+            animelayout.animeSourceEpisode({ tmdb, title, season, episode: ep }).catch(() => ({ season, episode: ep, mapped: false }))));
         const groups = new Map(); // key -> { season?, entry?, eps: [source episode] }
         srcs.forEach((src) => {
           const k = src.entry ? 'e:' + src.entry.id : 's:' + src.season;

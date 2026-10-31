@@ -308,6 +308,30 @@ animelayout._internals.cacheSet('aniwave:603', null);
     const s4 = await tmdb.tmdbSeason('126318', 4, { anime: true });
     check('Season 4 is the 2026 season (12 episodes)', s4 && s4.episodes.length === 12 && s4.episodes[0].name === 'LC S4E1', s4 && s4.episodes.length);
   }
+  console.log('\n[4d] Link Click in an AniDB-numbered library: the anime sites\' seasons');
+  {
+    // The plan (TMDB <-> Aniwave entries) is seeded; it is what the live
+    // TMDB counts + Aniwave catalog produce for Link Click.
+    animelayout._internals.cacheSet('tmdb:126318', [{ season: 1, episodes: 11, year: '2021' }, { season: 2, episodes: 12, year: '2023' }, { season: 3, episodes: 6, year: '2024' }, { season: 4, episodes: 12, year: '2026' }]);
+    animelayout._internals.cacheSet('plan:126318|link click', animelayout.buildSourcePlan(
+      [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 6 }, { season: 4, episodes: 12 }],
+      [{ season: 1, episodes: 11 }, { season: 2, episodes: 12 }, { season: 3, episodes: 9 }],
+      [{ entry: { id: 'b', title: 'Link Click: Bridon Arc' }, count: 6 }]));
+    for (const anime of [true, false]) {
+      const info = await tmdb.tmdbInfo('126318', 'tv', { anime, numbering: 'anime' });
+      const shape = info && info.seasons.map((x) => x.season + ':' + x.episodes).join('|');
+      check(`AniDB numbering: S1 11, S2 12, S3 12 - no Bridon Arc, no Specials (${anime ? 'Anime tab' : 'TV tab'})`, shape === '1:11|2:12|3:12' && info.numbering === 'anime', shape + ' ' + (info && info.numbering));
+    }
+    const s3 = await tmdb.tmdbSeason('126318', 3, { anime: true, numbering: 'anime' });
+    check('AniDB S3 = the 2026 season: 12 episodes named from TMDB S4', s3 && s3.episodes.length === 12 && s3.episodes[0].name === 'LC S4E1' && s3.episodes[11].name === 'LC S4E12', s3 && s3.episodes.length + ' ' + (s3 && s3.episodes[0] && s3.episodes[0].name));
+    const s1 = await tmdb.tmdbSeason('126318', 1, { anime: true, numbering: 'anime' });
+    check('AniDB S1 = TMDB S1', s1 && s1.episodes.length === 11 && s1.episodes[0].name === 'LC S1E1');
+    const tm = await tmdb.tmdbInfo('126318', 'tv', { anime: true, numbering: 'tmdb' });
+    check('same title in a TMDB library: TMDB seasons (cache kept apart)', tm && tm.seasons.map((x) => x.season + ':' + x.episodes).join('|') === '0:28|1:11|2:12|3:6|4:12|5:0', tm && tm.seasons.map((x) => x.season).join(','));
+    const tv = await tmdb.tmdbInfo('789', 'tv', { anime: false, numbering: 'anime' });
+    check('live-action TV ignores AniDB numbering (TMDB seasons)', tv && tv.numbering === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.numbering);
+  }
+
   try {
     const ag = await tmdb.tmdbInfo('127000', 'tv', { anime: true });
     check('anime with matching sources: TMDB seasons', ag && ag.layout === 'tmdb' && ag.seasons.map((s) => s.episodes).join(',') === '12,12', ag && ag.layout);

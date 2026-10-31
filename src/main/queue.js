@@ -742,7 +742,7 @@ class DownloadManager extends EventEmitter {
               let capTimer = null;
               outcome = await Promise.race([
                 require('./sites/animevillage').resolveForJob(
-                  { title: item.series, season: item.season, episode: item.episode, mode: item.mode || 'dub', tmdb: item.tmdb },
+                  { title: item.series, season: item.season, episode: item.episode, mode: item.mode || 'dub', tmdb: item.tmdb, numbering: item.numbering },
                   { onLog: (m) => this._log(m) }
                 ),
                 new Promise((res) => {

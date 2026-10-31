@@ -356,6 +356,36 @@ namespace Jellyfin.Plugin.MediaDownloader.Tests
                 Check("H: the outbox keeps working", new Outbox(hDir).Get("h-1") != null);
             }
 
+            // ---- H: season numbering read from the library's metadata ----
+            // AniDB/AniList first -> "anime" (AniDB-style seasons); TheMovieDb
+            // first or Jellyfin's defaults -> "tmdb". Order = the library's
+            // "Series metadata downloaders" list, enabled ones only.
+            {
+                var m = typeof(Jellyfin.Plugin.MediaDownloader.Api.MediaDownloaderController).GetMethod(
+                    "NumberingOf", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                string Numbering(string[] enabled, string[] order)
+                {
+                    var vf = new MediaBrowser.Model.Entities.VirtualFolderInfo
+                    {
+                        Name = "Anime",
+                        LibraryOptions = enabled == null ? new MediaBrowser.Model.Configuration.LibraryOptions() : new MediaBrowser.Model.Configuration.LibraryOptions
+                        {
+                            TypeOptions = new[]
+                            {
+                                new MediaBrowser.Model.Configuration.TypeOptions { Type = "Series", MetadataFetchers = enabled, MetadataFetcherOrder = order }
+                            }
+                        }
+                    };
+                    return (string)m.Invoke(null, new object[] { vf });
+                }
+                Check("H: NumberingOf exists", m != null);
+                Check("H: AniDB first -> anime", Numbering(new[] { "AniDB", "TheMovieDb" }, new[] { "AniDB", "TheMovieDb" }) == "anime");
+                Check("H: TheMovieDb first -> tmdb", Numbering(new[] { "TheMovieDb", "AniDB" }, new[] { "TheMovieDb", "AniDB" }) == "tmdb");
+                Check("H: AniDB listed first but DISABLED -> tmdb", Numbering(new[] { "TheMovieDb" }, new[] { "AniDB", "TheMovieDb" }) == "tmdb");
+                Check("H: AniList -> anime", Numbering(new[] { "AniList" }, new string[0]) == "anime");
+                Check("H: library on Jellyfin defaults -> tmdb", Numbering(null, null) == "tmdb");
+            }
+
             Console.WriteLine("HARNESS " + _passed + " passed, " + _failed + " failed");
             return _failed == 0 ? 0 : 1;
         }

@@ -731,6 +731,37 @@ function tmdbEpisodeFromPlan(plan, awSeason, episode) {
   return null;
 }
 
+// PURE: the AniDB-style season list (each anime-site entry "<Title>",
+// "<Title> Season 2", ... is a season, in order; arcs and specials are not
+// numbered seasons) - the numbering of a Jellyfin library whose metadata
+// comes from AniDB / AniList. Built from the same plan, so every season also
+// knows where its episodes sit in TMDB (names, air dates, unaired ones):
+// -> [{ season, episodes, year, parts: [{ tmdbSeason, start, count }] }]
+// A catalog season that is still airing takes TMDB's full episode count for
+// it (TMDB lists announced episodes; the catalog only aired ones).
+function animeSeasonsFromPlan(plan, catalogSeasons, tmdbSeasons) {
+  const tCount = new Map((tmdbSeasons || []).filter((t) => t && t.season > 0).map((t) => [t.season, countOf(t)]));
+  const tYear = new Map((tmdbSeasons || []).filter((t) => t && t.season > 0).map((t) => [t.season, String(t.year || '')]));
+  const out = [];
+  for (const c of (catalogSeasons || []).filter((x) => x && x.season > 0).sort((a, b) => a.season - b.season)) {
+    const parts = [];
+    for (const [ts, list] of Object.entries(plan || {})) {
+      for (const seg of list) {
+        if (seg.awSeason !== c.season) continue;
+        const total = tCount.get(Number(ts)) || 0;
+        // The newest catalog season keeps counting into TMDB's announced
+        // episodes of the same TMDB season.
+        const count = seg.open ? Math.max(seg.count, total - seg.start) : seg.count;
+        parts.push({ tmdbSeason: Number(ts), start: seg.start, count });
+      }
+    }
+    parts.sort((a, b) => a.tmdbSeason - b.tmdbSeason || a.start - b.start);
+    const episodes = parts.length ? parts.reduce((n, p) => n + p.count, 0) : countOf(c);
+    out.push({ season: c.season, episodes, year: parts.length ? tYear.get(parts[0].tmdbSeason) || '' : '', parts });
+  }
+  return out;
+}
+
 // The plan for one title (network: TMDB counts + Aniwave catalog), cached.
 async function animeSourcePlan(tmdbId, title, opts = {}) {
   const id = String(tmdbId || '').trim();
@@ -816,6 +847,7 @@ module.exports = {
   tmdbEpisodeFromPlan,
   animeSourcePlan,
   animeSourceEpisode,
+  animeSeasonsFromPlan,
   anilistLayout,
   mapEpisode,
   addMissingSeasons,

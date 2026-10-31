@@ -317,6 +317,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           if (extra.episode != null && extra.episode !== '') ref.displayEpisode = Number(extra.episode);
           // TMDB id: the anime sources translate TMDB's season numbers to
           // their own entries with it (anime-layout.animeSourceEpisode).
+          ref.numbering = extra.numbering === 'anime' ? 'anime' : 'tmdb';
           if (extra.tmdb) ref.tmdb = String(extra.tmdb);
           else if (ref.title && lookupMediaId(ref.title).tmdb) ref.tmdb = String(lookupMediaId(ref.title).tmdb);
           if (ref.title) {
@@ -961,7 +962,9 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         mode,
         library: opts.library || null,
         minHeight: Number(opts.minHeight) || 0,
-        anime: !!opts.anime
+        anime: !!opts.anime,
+        tmdb: opts.tmdb || null,
+        numbering: opts.numbering || 'tmdb'
       };
       const rec = {
         label,
@@ -976,6 +979,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
         minHeight: Number(opts.minHeight) || 0,
         anime: !!opts.anime,
         tmdb: opts.tmdb || null,
+        numbering: opts.numbering || 'tmdb',
         episodeName: epName,
         jobId: opts.jobId || null,
         url,
@@ -987,7 +991,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       };
       rec.discover = makeDiscover(url, onLog, mode, (it) => {
         const live = it || rec;
-        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, skipSourceSite: !!live._wrongAudio };
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!live._wrongAudio };
       });
       const added = manager.add(rec);
       if (added) queued += 1;
@@ -1036,6 +1040,7 @@ async function queueOne(entry, onLog = () => {}) {
     minHeight: Number((entry && entry.minHeight) || 0),
     anime: !!(entry && entry.anime),
     tmdb: (entry && entry.tmdb) || null,
+    numbering: (entry && entry.numbering) || 'tmdb',
     episodeName: (entry && entry.episodeName) || ''
   };
   const rec = {
@@ -1051,6 +1056,7 @@ async function queueOne(entry, onLog = () => {}) {
     minHeight: Number((entry && entry.minHeight) || 0),
     anime: !!(entry && entry.anime),
     tmdb: (entry && entry.tmdb) || null,
+    numbering: (entry && entry.numbering) || 'tmdb',
     episodeName,
     jobId: (entry && entry.jobId) || null,
     url,
@@ -1061,7 +1067,7 @@ async function queueOne(entry, onLog = () => {}) {
   };
   rec.discover = makeDiscover(url, onLog, mode, (it) => {
         const live = it || rec;
-        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, skipSourceSite: !!live._wrongAudio };
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!live._wrongAudio };
       });
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);

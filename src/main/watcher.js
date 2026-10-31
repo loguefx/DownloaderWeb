@@ -288,7 +288,10 @@ class Watcher {
   // 1-12 range and re-queued every not-yet-out episode daily).
   async checkSeriesTmdb(s, dryRun) {
     const anime = !!s.anime; // season layout: as the plugin showed it
-    const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime });
+    // The library's season numbering ('anime' = AniDB-style), stored with the
+    // watch entry: new episodes are checked and named in it.
+    const numbering = s.numbering === 'anime' ? 'anime' : 'tmdb';
+    const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime, numbering });
     if (info && info.animeLike && !s.anime && !s.animeLike) {
       s.animeLike = true;
       schedule.setAnimeLike(s.key);
@@ -320,7 +323,7 @@ class Watcher {
       season = fallback || season;
     }
 
-    const seasonData = await tmdb.tmdbSeason(s.tmdb, season, { anime });
+    const seasonData = await tmdb.tmdbSeason(s.tmdb, season, { anime, numbering });
     const eps = (seasonData && seasonData.episodes) || [];
     if (!eps.length) {
       this.onLog(`TMDB lists no episodes for "${s.series}" season ${season} - nothing to check.`);
@@ -395,7 +398,7 @@ class Watcher {
     if (present >= aired.length && fresh === 0) {
       const next = seasonNums.find((x) => x === season + 1);
       if (next) {
-        const nextData = await tmdb.tmdbSeason(s.tmdb, next, { anime });
+        const nextData = await tmdb.tmdbSeason(s.tmdb, next, { anime, numbering });
         const nextEps = (nextData && nextData.episodes) || [];
         const nextAired = airedEpisodes(nextEps, today);
         if (nextAired.length) {
@@ -531,6 +534,7 @@ class Watcher {
             minHeight: s.minHeight || 0,
             anime: true,
             tmdb: s.tmdb,
+            numbering: s.numbering === 'anime' ? 'anime' : 'tmdb',
             urlSeason: pair.season,
             urlEpisode: pair.episode,
             episodeName: e.name || ''
@@ -556,7 +560,8 @@ class Watcher {
           library: s.library || null,
           minHeight: s.minHeight || 0,
           anime: !!(s.anime || s.animeLike),
-          tmdb: s.tmdb || null
+          tmdb: s.tmdb || null,
+          numbering: s.numbering === 'anime' ? 'anime' : 'tmdb'
         },
         this.onLog
       );
@@ -699,6 +704,7 @@ class Watcher {
         let dubbed = null;
         try {
           dubbed = await dubstatus.isDubbedForJob({
+            numbering: spec.numbering,
             tmdb: spec.tmdb,
             srcSeason: spec.urlSeason != null ? spec.urlSeason : spec.season,
             srcEpisode: spec.urlEpisode != null ? spec.urlEpisode : spec.episode,
@@ -740,6 +746,7 @@ class Watcher {
         minHeight: spec.minHeight || 0,
         anime: !!spec.anime,
         tmdb: spec.tmdb || null,
+        numbering: spec.numbering === 'anime' ? 'anime' : 'tmdb',
         url,
         baseUrl: url,
         template: spec.template || null,
@@ -758,6 +765,7 @@ class Watcher {
           season: live.season,
           episode: live.episode,
           tmdb: live.tmdb,
+          numbering: live.numbering,
           skipSourceSite: !!live._wrongAudio
         };
       });

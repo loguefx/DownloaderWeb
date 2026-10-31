@@ -63,10 +63,19 @@ function looksAnime(body) {
   return genres.includes(16) && countries.some((c) => ANIME_COUNTRIES.has(String(c || '').toUpperCase()));
 }
 
+// Season numbering of the Jellyfin library the title is for:
+//   'tmdb'  - TMDB's seasons (Jellyfin's TheMovieDb metadata; the default)
+//   'anime' - AniDB-style: each anime-site entry ("<Title>", "<Title> Season
+//             2", ...) is a season, arcs/specials are not (Jellyfin with AniDB
+//             / AniList metadata). Anime only; TV always uses TMDB's.
+function numberingOf(opts) {
+  return opts && opts.numbering === 'anime' ? 'anime' : 'tmdb';
+}
+
 async function tmdbInfo(tmdbId, type, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
-  const cacheKey = 'info|' + type + '|' + tmdbId + '|' + !!(opts && opts.anime);
+  const cacheKey = 'info|' + type + '|' + tmdbId + '|' + !!(opts && opts.anime) + '|' + numberingOf(opts);
   const cached = tmdbCacheGet(cacheKey);
   if (cached) return cached;
   const value = await tmdbInfoFetch(tmdbId, type, opts);
@@ -148,10 +157,42 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     }
   }
 
+  // AniDB-style numbering (the library's metadata is AniDB / AniList): the
+  // anime sites' seasons, in order, each mapped onto TMDB's episodes. Link
+  // Click: S1 11, S2 12, S3 = the 2026 season (TMDB's S4); the Bridon Arc
+  // (TMDB's S3) is not a numbered season there. When the anime sites cannot
+  // be read, TMDB's seasons are kept and the answer says so.
+  let numbering = 'tmdb';
+  let numberingNote = '';
+  if (numberingOf(opts) === 'anime' && (allowAnilist || looksAnime(body))) {
+    const title = body.name || '';
+    let plan = null;
+    let catalog = null;
+    try {
+      plan = await animelayout.animeSourcePlan(String(body.id), title);
+      catalog = plan ? await animelayout.aniwaveCatalogSeasons(title) : null;
+    } catch (e) {
+      plan = null;
+    }
+    if (plan && catalog) {
+      const anime = animelayout.animeSeasonsFromPlan(plan, catalog, tmdbSeasons);
+      if (anime.length) {
+        seasons = anime.map((x) => ({ season: x.season, episodes: x.episodes, year: x.year, parts: x.parts }));
+        layout = 'anime';
+        numbering = 'anime';
+      }
+    }
+    if (numbering !== 'anime') {
+      numberingNote = 'The anime sites could not be read, so TMDB\'s seasons are shown; they may not match an AniDB-numbered library.';
+    }
+  }
+
   return {
     tmdb: String(body.id),
     imdb,
     title: body.name || '',
+    numbering,
+    numberingNote,
     year: String(body.first_air_date || '').slice(0, 4),
     type: 'tv',
     animeLike: looksAnime(body),
@@ -169,7 +210,7 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
 async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
-  const cacheKey = 'season|' + tmdbId + '|' + seasonNo + '|' + !!(opts && opts.anime);
+  const cacheKey = 'season|' + tmdbId + '|' + seasonNo + '|' + !!(opts && opts.anime) + '|' + numberingOf(opts);
   const cached = tmdbCacheGet(cacheKey);
   if (cached) return cached;
   const value = await tmdbSeasonFetch(tmdbId, seasonNo, opts);
@@ -180,6 +221,33 @@ async function tmdbSeason(tmdbId, seasonNo, opts = {}) {
 async function tmdbSeasonFetch(tmdbId, seasonNo, opts = {}) {
   const key = getTmdbKey();
   if (!key) return null;
+  if (numberingOf(opts) === 'anime') {
+    const info = await tmdbInfo(tmdbId, 'tv', opts).catch(() => null);
+    const hit = info && info.numbering === 'anime' && (info.seasons || []).find((x) => x.season === Number(seasonNo));
+    if (hit) {
+      // The anime season's episodes, renumbered from 1, with TMDB's names and
+      // air dates from wherever TMDB lists them (Link Click S3 = TMDB S4).
+      const episodes = [];
+      const bySeason = new Map();
+      for (const part of hit.parts || []) {
+        if (!bySeason.has(part.tmdbSeason)) {
+          let b = null;
+          try { b = await tmdbFetch(`/tv/${encodeURIComponent(tmdbId)}/season/${part.tmdbSeason}?language=en-US`, key); } catch (e) { b = null; }
+          bySeason.set(part.tmdbSeason, new Map(((b && b.episodes) || []).map((e) => [e.episode_number, e])));
+        }
+        const eps = bySeason.get(part.tmdbSeason);
+        for (let i = 1; i <= part.count; i++) {
+          const t = eps.get(part.start + i);
+          episodes.push({ episode: episodes.length + 1, name: (t && t.name) || '', runtime: (t && t.runtime) || null, airDate: (t && t.air_date) || null });
+        }
+      }
+      if (!episodes.length) {
+        for (let i = 1; i <= hit.episodes; i++) episodes.push({ episode: i, name: '', runtime: null, airDate: null });
+      }
+      return { tmdb: String(tmdbId), season: Number(seasonNo), name: 'Season ' + seasonNo, layout: 'anime', episodes };
+    }
+    // Not an anime layout (TV, or the anime sites unreadable): TMDB's season.
+  }
   // TMDB's own season - the numbering Jellyfin shows (see tmdbInfoFetch).
   let body = null;
   try {

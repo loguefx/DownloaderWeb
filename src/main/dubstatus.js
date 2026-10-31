@@ -222,11 +222,14 @@ async function aniwaveDubMap(title, season) {
 //           Village) - the episode is queued and the download decides
 // { title, season, episode } = the job's own numbering (the anime sites'
 // layout). tmdb/srcSeason/srcEpisode are accepted for older callers.
-async function isDubbedForJob({ title, season, episode, tmdb }) {
+async function isDubbedForJob({ title, season, episode, tmdb, numbering }) {
   // { season, episode } are TMDB's (Jellyfin's) numbers: ask the anime
   // sources about the episode they actually list (Link Click TMDB S4E7 =
   // "Link Click Season 3" E7; TMDB S3 = the "Bridon Arc" entry).
-  const src = await sourceEpisode({ tmdb, title, season, episode });
+  // An AniDB-numbered library already uses the anime sites' seasons.
+  const src = numbering === 'anime'
+    ? { season: Number(season), episode: Number(episode), mapped: false }
+    : await sourceEpisode({ tmdb, title, season, episode });
   if (src.entry) {
     let eps = null;
     try { eps = await require('./sites/aniwave_api').episodes(src.entry.id); } catch (e) { eps = null; }

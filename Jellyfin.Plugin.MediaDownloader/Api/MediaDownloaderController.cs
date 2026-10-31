@@ -132,10 +132,40 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
                 {
                     ["name"] = f.Name,
                     ["collectionType"] = f.CollectionType.ToString().ToLowerInvariant(),
-                    ["locations"] = new JsonArray((f.Locations ?? Array.Empty<string>()).Select(l => (JsonNode)l).ToArray())
+                    ["locations"] = new JsonArray((f.Locations ?? Array.Empty<string>()).Select(l => (JsonNode)l).ToArray()),
+                    ["seriesMetadata"] = PrimarySeriesFetcher(f) ?? "TheMovieDb",
+                    ["numbering"] = NumberingOf(f)
                 })
                 .ToList();
             return Content(new JsonObject { ["libraries"] = new JsonArray(libraries.ToArray()) }.ToJsonString(), MediaTypeNames.Application.Json);
+        }
+
+        /// <summary>
+        /// The library's first enabled series metadata downloader (Dashboard ->
+        /// Libraries -> Manage library -> Series metadata downloaders), or
+        /// null when the library uses Jellyfin's defaults (TheMovieDb).
+        /// </summary>
+        private static string PrimarySeriesFetcher(VirtualFolderInfo f)
+        {
+            var t = f.LibraryOptions?.GetTypeOptions("Series");
+            var enabled = t?.MetadataFetchers ?? Array.Empty<string>();
+            if (enabled.Length == 0) return null;
+            var order = t.MetadataFetcherOrder ?? Array.Empty<string>();
+            var first = order.FirstOrDefault(o => enabled.Contains(o, StringComparer.OrdinalIgnoreCase));
+            return first ?? enabled[0];
+        }
+
+        /// <summary>
+        /// How the library numbers anime seasons, from its metadata provider:
+        /// "anime" for AniDB / AniList / Shoko / Kitsu (each anime entry is a
+        /// season, arcs and specials are not), "tmdb" for TheMovieDb (and the
+        /// default). The engine names files and lists seasons in it, so they
+        /// land in the season Jellyfin shows.
+        /// </summary>
+        private static string NumberingOf(VirtualFolderInfo f)
+        {
+            var p = (PrimarySeriesFetcher(f) ?? string.Empty).ToLowerInvariant();
+            return p.Contains("anidb") || p.Contains("anilist") || p.Contains("shoko") || p.Contains("kitsu") ? "anime" : "tmdb";
         }
 
         // ------------------------------------------------------------------
@@ -425,19 +455,21 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         [HttpGet("TmdbInfo")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type, [FromQuery] string anime = null)
+        public async Task<IActionResult> TmdbInfo([FromQuery] string tmdb, [FromQuery] string type, [FromQuery] string anime = null, [FromQuery] string numbering = null)
         {
             var t = string.IsNullOrEmpty(type) ? "tv" : type;
-            var a = string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}";
+            var a = (string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}")
+                + (numbering == "anime" ? "&numbering=anime" : string.Empty);
             return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={Uri.EscapeDataString(t)}{a}")).ConfigureAwait(false);
         }
 
         [HttpGet("TmdbSeason")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] string anime = null)
+        public async Task<IActionResult> TmdbSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] string anime = null, [FromQuery] string numbering = null)
         {
-            var a = string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}";
+            var a = (string.IsNullOrEmpty(anime) ? string.Empty : $"&anime={Uri.EscapeDataString(anime)}")
+                + (numbering == "anime" ? "&numbering=anime" : string.Empty);
             return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}{a}")).ConfigureAwait(false);
         }
 
@@ -448,9 +480,10 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         /// </summary>
         [HttpGet("DubSeason")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        public async Task<IActionResult> DubSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] int count, [FromQuery] string anime = null, [FromQuery] string title = null)
+        public async Task<IActionResult> DubSeason([FromQuery] string tmdb, [FromQuery] int season, [FromQuery] int count, [FromQuery] string anime = null, [FromQuery] string title = null, [FromQuery] string numbering = null)
         {
             var path = $"api/dub/season?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&season={season}&count={count}";
+            if (numbering == "anime") path += "&numbering=anime";
             if (!string.IsNullOrEmpty(anime)) path += "&anime=" + Uri.EscapeDataString(anime);
             if (!string.IsNullOrEmpty(title)) path += "&title=" + Uri.EscapeDataString(title);
             return await ProxyAsync(() => _engine.GetRawAsync(path)).ConfigureAwait(false);

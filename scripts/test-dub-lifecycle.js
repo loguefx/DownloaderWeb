@@ -206,6 +206,12 @@ async function main() {
     dubstatus._setAniwaveForTests(async (title, season) => { asked.push(season); return { show: {}, episodes: [{ episode: 7, dub: season === 3 }] }; });
     const d = await dubstatus.isDubbedForJob({ tmdb: '126318', title: 'LINK CLICK', season: 4, episode: 7 });
     check('isDubbedForJob(TMDB S4E7) asks Aniwave about its season 3 E7', d === true && asked[0] === 3, JSON.stringify({ d, asked }));
+    // AniDB-numbered library: the numbers already are Aniwave's - no translation.
+    asked.length = 0;
+    let translated = false;
+    dubstatus._setSourceEpisodeForTests(async () => { translated = true; return { season: 9, episode: 9, mapped: true }; });
+    const d2 = await dubstatus.isDubbedForJob({ tmdb: '126318', title: 'LINK CLICK', season: 3, episode: 7, numbering: 'anime' });
+    check('AniDB numbering: S3E7 asks Aniwave season 3 directly (no translation)', d2 === true && asked[0] === 3 && !translated, JSON.stringify({ d2, asked, translated }));
     dubstatus._setSourceEpisodeForTests((q) => require(path.join(REPO, 'src/main/anime-layout.js')).animeSourceEpisode(q));
   }
 
