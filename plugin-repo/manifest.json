@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.43",
+                "changelog": "Anime-tab cards for a later season or arc that AniList does not link to its first season (TOUGEN ANKI: Nikko Kegon Falls Arc) now find their TMDB series by the series name and open on the season that aired that year, so the library check sees your folder. The title search also runs when the engine finds no match. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v43/MediaDownloader.12.1.0.43.zip",
+                "checksum": "046f89035a84ff8ff06d941b643ddb3e",
+                "timestamp": "2026-11-01T05:55:02.000Z"
+            },
+            {
+                "version": "10.11.0.43",
+                "changelog": "Anime-tab cards for a later season or arc that AniList does not link to its first season (TOUGEN ANKI: Nikko Kegon Falls Arc) now find their TMDB series by the series name and open on the season that aired that year, so the library check sees your folder. The title search also runs when the engine finds no match. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v43/MediaDownloader.10.11.0.43.zip",
+                "checksum": "922b93526d88f811fca8630213c8d3e5",
+                "timestamp": "2026-11-01T05:55:02.000Z"
+            },
+            {
+                "version": "10.10.0.43",
+                "changelog": "Anime-tab cards for a later season or arc that AniList does not link to its first season (TOUGEN ANKI: Nikko Kegon Falls Arc) now find their TMDB series by the series name and open on the season that aired that year, so the library check sees your folder. The title search also runs when the engine finds no match. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v43/MediaDownloader.10.10.0.43.zip",
+                "checksum": "146f9a0529ee8a2676e4ad56271b25da",
+                "timestamp": "2026-11-01T05:55:02.000Z"
+            },
+            {
                 "version": "12.1.0.42",
                 "changelog": "Library check sees episodes filed under other numbers: it sends the title's TMDB id and the library's numbering, so the engine finds a folder tagged [tmdb-N] under any name and an episode saved under its absolute number (\"S02E25\") or TMDB's season. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

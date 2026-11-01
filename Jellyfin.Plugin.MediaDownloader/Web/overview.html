@@ -1187,7 +1187,13 @@
                             t.anilistTried = true;
                             get('MediaDownloader/AnimeTmdb?anilist=' + encodeURIComponent(anilistId))
                                 .then((m) => {
-                                    if (stale() || !m || !m.tmdb) return;
+                                    if (stale()) return;
+                                    if (!m || !m.tmdb) {
+                                        // No match from AniList: the title search below
+                                        // still gets its turn (it used to stop here).
+                                        loadTitle(t);
+                                        return;
+                                    }
                                     t.tmdb = m.tmdb;
                                     if (m.name) t.title = m.name;
                                     if (m.year) t.year = String(m.year);
@@ -1223,7 +1229,32 @@
                                     const want = norm(t.title);
                                     const year = Number(t.year) || 0;
                                     const same = list.filter((x) => x.tmdb && want && norm(x.title) === want);
-                                    const hit = same.find((x) => !year || !Number(x.year) || Math.abs(Number(x.year) - year) <= 1) || null;
+                                    let hit = same.find((x) => !year || !Number(x.year) || Math.abs(Number(x.year) - year) <= 1) || null;
+                                    if (!hit && !t.baseTried) {
+                                        // A later season / arc card ("TOUGEN ANKI: Nikko
+                                        // Kegon Falls Arc"): TMDB lists the SERIES - search
+                                        // the name before the colon; the series must have
+                                        // started no later than the card, and the page then
+                                        // opens on the season that aired in the card's year.
+                                        const base = String(t.title || '').split(/\s*(?::|\s-\s|\s–\s)\s*/)[0].trim();
+                                        if (base && norm(base) && norm(base) !== want) {
+                                            t.baseTried = true;
+                                            get('MediaDownloader/Search?q=' + encodeURIComponent(base) + '&type=tv').then((r2) => {
+                                                if (stale()) return;
+                                                const list2 = (r2 && r2.results) || [];
+                                                const hit2 = list2.find((x) => x.tmdb && norm(x.title) === norm(base) && (!year || !Number(x.year) || Number(x.year) <= year));
+                                                if (!hit2) return; // the noTmdb message stays
+                                                t.tmdb = hit2.tmdb;
+                                                t.title = hit2.title || base;
+                                                if (year && Number(hit2.year) && year > Number(hit2.year)) t.preferYear = year;
+                                                t.noTmdb = false;
+                                                t.infoError = null;
+                                                if (t.r) t.r.tmdb = hit2.tmdb;
+                                                loadTitle(t);
+                                            }).catch(() => { /* the noTmdb message stays */ });
+                                        }
+                                        return;
+                                    }
                                     if (!hit) return; // the noTmdb message stays
                                     t.tmdb = hit.tmdb;
                                     t.noTmdb = false;
@@ -1275,6 +1306,12 @@
                             t.active = firstNumbered ? firstNumbered.season : null;
                             // Opened from a season card ("Season 3"): show that season.
                             if (t.preferSeason && t.seasons.some((x) => x.season === t.preferSeason)) t.active = t.preferSeason;
+                            // Matched by the series name from an arc / later-season card:
+                            // the season that aired in the card's year.
+                            else if (t.preferYear) {
+                                const byYear = t.seasons.find((x) => x.season > 0 && Number(x.year) === t.preferYear);
+                                if (byYear) t.active = byYear.season;
+                            }
                         }
                         renderTitle();
                         if (t.kind === 'movie') checkMovie(t); else { loadSeasons(t); previewRenumber(t); }

@@ -423,6 +423,14 @@ function cleanAnimeTitle(t) {
     .trim();
 }
 
+// The series a later season / arc belongs to: the part before a colon or
+// " - " ("TOUGEN ANKI: Nikko Kegon Falls Arc" -> "TOUGEN ANKI"), or the
+// title itself.
+function baseSeriesTitle(t) {
+  const m = String(t || '').match(/^(.+?)\s*(?::|\s-\s|\s–\s)\s*\S/);
+  return m ? cleanAnimeTitle(m[1]) : cleanAnimeTitle(t);
+}
+
 // Comparable form of a name: "Ranma1/2", "Ranma ½", "RANMA 1/2" -> "ranma12".
 function nameKey(t) {
   return cleanAnimeTitle(t).toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -499,8 +507,42 @@ async function tmdbForAnilist(anilistId, opts = {}) {
     if (pick && (!best || pick.score > best.score)) best = pick;
     if (best && best.score >= 150) break; // exact name + exact year
   }
+  // A later season / arc AniList does not link back to its first season yet
+  // ("TOUGEN ANKI: Nikko Kegon Falls Arc", 2026): TMDB has no series by that
+  // name, so search by the series name before the colon ("TOUGEN ANKI"),
+  // which must have started no later than the entry.
+  let byBase = false;
+  if (!best && hops === 0) {
+    const bases = [...new Set(names.map(baseSeriesTitle).filter((b) => b && b.length >= 3 && !names.includes(b)))];
+    for (const q of bases.slice(0, 3)) {
+      const body = await get('https://api.themoviedb.org/3/search/tv?query=' + encodeURIComponent(q) +
+        '&include_adult=false&language=en-US&api_key=' + encodeURIComponent(apiKey));
+      const results = ((body && body.results) || []).filter((r) => {
+        const ry = Number(String(r.first_air_date || '').slice(0, 4)) || 0;
+        return !year || !ry || ry <= year;
+      });
+      const keys = new Set([q].map(nameKey));
+      const exact = results.filter((r) => [r.name, r.original_name].map(nameKey).some((k) => keys.has(k)));
+      const pick = pickTmdbAnime(exact, [q], 0);
+      if (pick) {
+        best = pick;
+        byBase = true;
+        break;
+      }
+    }
+  }
+  // Which season the card is: the prequel hops, or - matched by the series
+  // name only - the TMDB season that aired in the entry's year.
+  let season = hops + 1;
+  const entryYear = Number((entry.startDate && entry.startDate.year) || entry.seasonYear) || 0;
+  if (best && hops === 0 && entryYear && best.year && entryYear > best.year) {
+    let counts = null;
+    try { counts = await tmdbSeasonCounts(best.id, Object.assign({}, opts, { fetcher: opts.tmdbFetcher })); } catch (e) { counts = null; }
+    const hit = (counts || []).filter((x) => x && x.season > 0 && Number(x.year) === entryYear).sort((a, b) => a.season - b.season)[0];
+    if (hit) season = hit.season;
+  }
   const value = best
-    ? { tmdb: best.id, name: best.name, year: best.year, season: hops + 1,
+    ? { tmdb: best.id, name: best.name, year: best.year, season, matchedBy: byBase ? 'series name' : 'title',
       entryTitle: (entry.title && (entry.title.english || entry.title.romaji)) || '' }
     : null;
   if (value) cacheSet(key, value); // a miss is retried next time
@@ -989,6 +1031,7 @@ async function urlMapFor(tmdbId, title, opts = {}) {
 }
 
 module.exports = {
+  baseSeriesTitle,
   tmdbPairFromAnimeSeasons,
   aniwaveSeasons,
   anilistSeasons,

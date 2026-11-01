@@ -460,6 +460,35 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     mod._resetCache();
     const old = await mod.tmdbForAnilist(1, { fetcher: async (q, v) => ({ data: { Media: Object.assign(node(1, 1989, 'Ranma ½', 'Ranma ½'), { relations: { edges: [] } }) } }), tmdbFetcher: tmdbSearch });
     check('the 1989 entry resolves to the 1989 series', old && old.tmdb === '30210' && old.season === 1, old);
+
+    // An arc AniList does not link to its first season yet: TMDB has no
+    // series by the arc's full name, so the series name before the colon is
+    // searched, and the season is the one that aired in the arc's year.
+    mod._resetCache();
+    const tq = [];
+    const tougenTmdb = async (u) => {
+      if (/\/tv\/253811/.test(u)) {
+        return { id: 253811, first_air_date: '2025-07-11', seasons: [
+          { season_number: 0, episode_count: 2, air_date: '2025-06-01' },
+          { season_number: 1, episode_count: 24, air_date: '2025-07-11' },
+          { season_number: 2, episode_count: 12, air_date: '2026-01-09' }] };
+      }
+      const q = decodeURIComponent((u.match(/query=([^&]+)/) || [])[1] || '');
+      tq.push(q);
+      if (/nikko/i.test(q)) return { results: [] };
+      return { results: [
+        { id: 253811, name: 'TOUGEN ANKI', original_name: '桃源暗鬼', first_air_date: '2025-07-11', genre_ids: [16, 10759], popularity: 40 },
+        { id: 777001, name: 'Tougen Anki Special', first_air_date: '2027-01-01', genre_ids: [16] }
+      ] };
+    };
+    const arc = await mod.tmdbForAnilist(9001, {
+      fetcher: async () => ({ data: { Media: Object.assign(node(9001, 2026, 'TOUGEN ANKI: Nikko Kegon Falls Arc', 'Tougen Anki: Nikko Kegon Taki-hen'), { relations: { edges: [] } }) } }),
+      tmdbFetcher: tougenTmdb
+    });
+    check('arc card with no prequel link -> TMDB 253811 by the series name', arc && arc.tmdb === '253811' && arc.matchedBy === 'series name', JSON.stringify(arc));
+    check('...opens on Season 2 (aired 2026, the arc\'s year)', arc && arc.season === 2, JSON.stringify(arc));
+    check('...searched "TOUGEN ANKI" after the full title found nothing', tq.some((q) => /^tougen anki$/i.test(q)), JSON.stringify(tq));
+    check('baseSeriesTitle: text before the colon', mod.baseSeriesTitle('TOUGEN ANKI: Nikko Kegon Falls Arc') === 'TOUGEN ANKI' && mod.baseSeriesTitle('Solo Leveling') === 'Solo Leveling');
   }
 
   console.log('\n[12] TMDB key from engine.json (no env var), sent with the request');
