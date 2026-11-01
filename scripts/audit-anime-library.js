@@ -249,13 +249,28 @@ async function auditOne(g, rootList, numbering) {
     if (!diskSeasons.has(v.season)) diskSeasons.set(v.season, []);
     diskSeasons.get(v.season).push(v);
   }
+  let stray = videos.filter((v) => !attributed.has(path.resolve(v.path)) && v.season !== 0 && !/\b(?:specials?|extras?|ova|ovas|movies?|featurettes?)\b/i.test(path.relative(path.dirname(v.path), v.path) + ' ' + path.basename(path.dirname(v.path))));
+  // Leftover temp files from an interrupted download ("..._temp_5572_1769819228608.mp4").
+  const temps = stray.filter((v) => /_temp_\d+_\d+/i.test(v.name));
+  stray = stray.filter((v) => !temps.includes(v));
+  if (temps.length) row.notes.push(`${temps.length} leftover temp file(s) from an interrupted download (e.g. "${temps[0].name}") - safe to delete once the real episode plays.`);
+  // A second copy of an episode the engine already finds (same S/E marker as
+  // a recognized file - backup folders like "_Fix_Backup").
+  const markerOf = (name) => { const m = String(name).match(/s0*(\d{1,3})e0*(\d{1,4})(?!\d)/i); return m ? m[1] + 'x' + m[2] : null; };
+  const foundMarkers = new Set(videos.filter((v) => attributed.has(path.resolve(v.path))).map((v) => markerOf(v.name)).filter(Boolean));
+  const copies = stray.filter((v) => markerOf(v.name) && foundMarkers.has(markerOf(v.name)));
+  stray = stray.filter((v) => !copies.includes(v));
+  if (copies.length) row.notes.push(`${copies.length} extra copy/copies of episodes already found (e.g. "${path.relative(g.entries[0].root, copies[0].path)}") - not downloaded again; delete if unwanted.`);
   // Season folders whose files the engine cannot place in the layout under
   // ANY identity: those episodes would be downloaded again.
   const maxLayout = Math.max(0, ...layoutSeasons.keys());
   for (const [n, files] of [...diskSeasons.entries()].sort((a, b) => a[0] - b[0])) {
-    const lost = files.filter((f) => !attributed.has(path.resolve(f.path)));
+    const lost = files.filter((f) => stray.includes(f));
     if (!lost.length) continue;
-    if (n > maxLayout + 5) {
+    // OVA/special groupings are numbered far above any real season
+    // ("S44", "S45"); a lumped TMDB layout (One Piece: 1 season) still has
+    // real season folders 2..20 on disk, so only very high numbers count.
+    if (n >= 40 && n > maxLayout + 5) {
       row.notes.push(`"Season ${n}" (${files.length} files) looks like specials/OVAs - the engine never downloads into it.`);
       continue;
     }
@@ -267,7 +282,6 @@ async function auditOne(g, rootList, numbering) {
     const over = lost.map((f) => organizer.episodeNumberFromName(f.name)).filter((e) => e > count);
     if (over.length) row.problems.push(`Season ${n}: disk has ${range(over)} but the layout's Season ${n} has only ${count} episodes, and they match no other numbering.`);
   }
-  const stray = videos.filter((v) => !attributed.has(path.resolve(v.path)) && v.season !== 0 && !/\b(?:specials?|extras?|ova|ovas|movies?|featurettes?)\b/i.test(path.relative(path.dirname(v.path), v.path) + ' ' + path.basename(path.dirname(v.path))));
   row.files = videos.length;
   row.unattributed = stray.length;
   if (stray.length) {
