@@ -689,7 +689,8 @@ class DownloadManager extends EventEmitter {
           }
           if (meta.alt) item.presenceAlt = meta.alt;
         }
-        const libHit = this._inTargetLibrary(item, meta);
+        // One folder listing per check (several identities, several drives).
+        const libHit = organizer.withScanCache(() => this._inTargetLibrary(item, meta));
         if (libHit) {
           const floorL = this._minHeight(item);
           const have = await verifyFile(libHit, {});

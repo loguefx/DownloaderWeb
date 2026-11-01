@@ -474,10 +474,51 @@ class Watcher {
     let dubStarted = false;
     let notDubbed = 0;
     let parked = 0;
+    // 1. Which aired episodes are already in the library - under any
+    //    identity (folder [tmdb-N] id, absolute number, TMDB pair). Each
+    //    folder is listed ONCE for the whole season (withScanCache): One
+    //    Piece is 1180 episodes x 3 drives - listing every folder again per
+    //    episode took hours on a network share.
+    const metaOf = new Map();
+    for (const e of eps) {
+      const meta = { series: s.series, season, episode: e.episode };
+      if (/^\d+$/.test(String(s.tmdb || '').trim())) {
+        meta.tmdb = String(s.tmdb).trim();
+        try {
+          meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!s.anime, numbering: s.numbering }, season, e.episode);
+        } catch (err) {
+          meta.alt = null;
+        }
+      }
+      metaOf.set(e, meta);
+    }
+    const onDiskOf = new Map();
+    organizer.withScanCache(() => {
+      for (const e of eps) {
+        if (floorActive && e.episode != null && Number(e.episode) <= floor) continue;
+        let hit = false;
+        for (const root of roots) {
+          try {
+            if (root && organizer.existingEpisodeFile(root, metaOf.get(e), null, e.name || '')) {
+              hit = true;
+              break;
+            }
+          } catch (err) {
+            // unreadable root
+          }
+        }
+        onDiskOf.set(e, hit);
+      }
+    });
+    // 2. English-dub status - only for the episodes NOT already on disk
+    //    (asking about every One Piece episode meant ~1100 lookups).
+    const toCheck = eps.filter((e) => onDiskOf.get(e) === false);
     if (dubGate && eps.length) {
       const dubstatus = require('./dubstatus');
       const aw = await dubstatus.aniwaveDubMap(s.series, season);
       if (aw) {
+        // One request covers the season: read it for every aired episode,
+        // so dubbed episodes already on disk still mark the dub as started.
         for (const e of eps) {
           if (aw.get(Number(e.episode)) === true) {
             dubbedOf.set(e.episode, true);
@@ -487,14 +528,14 @@ class Watcher {
       }
       // Anime Village: a separate dub file per episode (the episodes
       // Aniwave did not already show dubbed). Vidsrc is not used for anime.
-      const rest = eps.filter((e) => dubbedOf.get(e.episode) !== true).map((e) => Number(e.episode));
+      const rest = toCheck.filter((e) => dubbedOf.get(e.episode) !== true).map((e) => Number(e.episode));
       let av = null;
       try {
         av = rest.length ? await dubstatus.animevillageDubMap(s.series, season, rest) : null;
       } catch (err) {
         av = null;
       }
-      for (const e of eps) {
+      for (const e of toCheck) {
         if (dubbedOf.get(e.episode) === true) continue;
         const v = av ? av.get(Number(e.episode)) : undefined;
         // Only Anime Village's answer makes it "not dubbed" (see isDubbedForJob).
@@ -508,28 +549,8 @@ class Watcher {
         present++;
         continue;
       }
-      const meta = { series: s.series, season, episode: e.episode };
-      // Folder by [tmdb-N] id, and the episode's other identities (absolute
-      // number, TMDB pair): never queue what is filed under another number.
-      if (/^\d+$/.test(String(s.tmdb || '').trim())) {
-        meta.tmdb = String(s.tmdb).trim();
-        try {
-          meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!s.anime, numbering: s.numbering }, season, e.episode);
-        } catch (err) {
-          meta.alt = null;
-        }
-      }
-      let onDisk = false;
-      for (const root of roots) {
-        try {
-          if (root && organizer.existingEpisodeFile(root, meta, null, e.name || '')) {
-            onDisk = true;
-            break;
-          }
-        } catch (err) {
-          // unreadable root
-        }
-      }
+      const meta = metaOf.get(e);
+      const onDisk = onDiskOf.get(e) === true;
       if (onDisk) {
         present += 1;
         continue;
