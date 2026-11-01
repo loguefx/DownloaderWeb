@@ -362,6 +362,18 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- AniList entry -> TMDB series id (+ which season it is) ----
+    // AniList lists each season separately ("Ranma1/2 Season 3"); TMDB the
+    // series. Walks the prequel chain to season 1 and matches name + year.
+    if (req.method === 'GET' && seg === 'anime' && parts[2] === 'tmdb') {
+      const anilist = parseInt(u.searchParams.get('anilist') || '', 10);
+      if (!(anilist > 0)) { json(res, 400, { error: 'anilist id is required' }); return; }
+      const r = await animelayout.tmdbForAnilist(anilist);
+      if (!r) { json(res, 404, { error: 'No TMDB series matches this AniList entry (or the engine has no TMDB key).' }); return; }
+      json(res, 200, r);
+      return;
+    }
+
     // ---- anime info (all seasons from AniList) ----
     if (req.method === 'GET' && seg === 'anime' && parts[2] === 'info') {
       const title = (u.searchParams.get('title') || '').trim();

@@ -1178,16 +1178,52 @@
                         // The result has no TMDB id (AniList-only card, a catalog
                         // entry without a provider id, ...): the engine can still
                         // resolve one by TITLE - try that before giving up.
+                        // An Anime-tab card (AniList): AniList lists each season
+                        // separately ("Ranma1/2 Season 3"), so the engine walks
+                        // back to season 1 and matches TMDB's series by name AND
+                        // first-air year (never the 1989 show for the 2024 one).
+                        const anilistId = t.r && t.r.anilist;
+                        if (anilistId && !t.anilistTried) {
+                            t.anilistTried = true;
+                            get('MediaDownloader/AnimeTmdb?anilist=' + encodeURIComponent(anilistId))
+                                .then((m) => {
+                                    if (stale() || !m || !m.tmdb) return;
+                                    t.tmdb = m.tmdb;
+                                    if (m.name) t.title = m.name;
+                                    if (m.year) t.year = String(m.year);
+                                    // Open on the season the card was.
+                                    t.preferSeason = m.season || null;
+                                    t.noTmdb = false;
+                                    t.infoError = null;
+                                    if (t.r) t.r.tmdb = m.tmdb;
+                                    loadTitle(t);
+                                })
+                                .catch(() => {
+                                    if (stale()) return;
+                                    t.noTmdbTried = false; // fall back to the title search below
+                                    loadTitle(t);
+                                });
+                            t.infoError = null;
+                            renderTitle();
+                            return;
+                        }
                         if (t.title && !t.noTmdbTried) {
                             t.noTmdbTried = true;
                             get('MediaDownloader/Search?q=' + encodeURIComponent(t.title) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv'))
                                 .then((resp) => {
                                     if (stale()) return;
                                     const list = (resp && resp.results) || [];
-                                    const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                                    // Same name only ("½" = "1/2", a trailing "(2024)"
+                                    // or season marker ignored), and the same year when
+                                    // the card has one. Never just "the first result":
+                                    // that picked a different show of a similar name.
+                                    const norm = (s) => String(s || '').replace(/½/g, '1/2').replace(/\s*\((?:19|20)\d{2}\)\s*/g, ' ')
+                                        .replace(/\b(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+)\b.*$/i, '')
+                                        .toLowerCase().replace(/[^a-z0-9]+/g, '');
                                     const want = norm(t.title);
-                                    const hit = list.find((x) => x.tmdb && want && norm(x.title) === want)
-                                        || list.find((x) => x.tmdb) || null;
+                                    const year = Number(t.year) || 0;
+                                    const same = list.filter((x) => x.tmdb && want && norm(x.title) === want);
+                                    const hit = same.find((x) => !year || !Number(x.year) || Math.abs(Number(x.year) - year) <= 1) || null;
                                     if (!hit) return; // the noTmdb message stays
                                     t.tmdb = hit.tmdb;
                                     t.noTmdb = false;
@@ -1237,6 +1273,8 @@
                             if (!t.seasons.length) t.infoError = 'TMDB lists no seasons for this title yet.';
                             const firstNumbered = t.seasons.find((s) => s.season > 0) || t.seasons[0];
                             t.active = firstNumbered ? firstNumbered.season : null;
+                            // Opened from a season card ("Season 3"): show that season.
+                            if (t.preferSeason && t.seasons.some((x) => x.season === t.preferSeason)) t.active = t.preferSeason;
                         }
                         renderTitle();
                         if (t.kind === 'movie') checkMovie(t); else { loadSeasons(t); previewRenumber(t); }

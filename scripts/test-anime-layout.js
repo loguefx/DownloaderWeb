@@ -431,6 +431,37 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
 
   }
 
+  console.log('\n[13] AniList card -> TMDB series id (Ranma ½ 2024 Season 3)');
+  {
+    mod._resetCache();
+    const node = (id, y, en, ro) => ({ id, type: 'ANIME', format: 'TV', startDate: { year: y }, seasonYear: y, title: { english: en, romaji: ro }, synonyms: [] });
+    const entries = {
+      3: Object.assign(node(3, 2026, 'Ranma1/2 Season 3', 'Ranma ½ (2024) 3rd Season'), { relations: { edges: [{ relationType: 'PREQUEL', node: node(2, 2025, 'Ranma1/2 Season 2', '') }] } }),
+      2: Object.assign(node(2, 2025, 'Ranma1/2 Season 2', 'Ranma ½ (2024) 2nd Season'), { relations: { edges: [{ relationType: 'PREQUEL', node: node(1, 2024, 'Ranma1/2', '') }, { relationType: 'SEQUEL', node: node(3, 2026, '', '') }] } }),
+      1: Object.assign(node(1, 2024, 'Ranma1/2', 'Ranma ½ (2024)'), { relations: { edges: [{ relationType: 'SEQUEL', node: node(2, 2025, '', '') }] } })
+    };
+    const gql = async (q, v) => ({ data: { Media: entries[v.id] || null } });
+    const queries = [];
+    const tmdbSearch = async (u) => {
+      queries.push(decodeURIComponent((u.match(/query=([^&]+)/) || [])[1] || ''));
+      return { results: [
+        { id: 30210, name: 'Ranma ½', original_name: 'らんま1/2', first_air_date: '1989-04-15', genre_ids: [16, 35], popularity: 30 },
+        { id: 259140, name: 'Ranma1/2', original_name: 'らんま1/2', first_air_date: '2024-10-06', genre_ids: [16, 35], popularity: 50 },
+        { id: 999, name: 'Ranma 1/2 (live action)', first_air_date: '2024-01-01', genre_ids: [35] }
+      ] };
+    };
+    const r = await mod.tmdbForAnilist(3, { fetcher: gql, tmdbFetcher: tmdbSearch });
+    check('Season 3 card -> TMDB 259140 (the 2024 series, not 1989)', r && r.tmdb === '259140', r);
+    check('...and it is season 3', r && r.season === 3, r);
+    check('searched TMDB with the cleaned season-1 title (no "Season 3", no "½")', queries.length && !/season|½/i.test(queries[0]), queries);
+    mod._resetCache();
+    const none = await mod.tmdbForAnilist(1, { fetcher: gql, tmdbFetcher: async () => ({ results: [{ id: 5, name: 'Ranma1/2', first_air_date: '2024-01-01', genre_ids: [18] }] }) });
+    check('a non-animation match is never picked', none === null, none);
+    mod._resetCache();
+    const old = await mod.tmdbForAnilist(1, { fetcher: async (q, v) => ({ data: { Media: Object.assign(node(1, 1989, 'Ranma ½', 'Ranma ½'), { relations: { edges: [] } }) } }), tmdbFetcher: tmdbSearch });
+    check('the 1989 entry resolves to the 1989 series', old && old.tmdb === '30210' && old.season === 1, old);
+  }
+
   console.log('\n[12] TMDB key from engine.json (no env var), sent with the request');
   {
     const os = require('os');

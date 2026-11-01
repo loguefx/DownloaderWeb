@@ -401,6 +401,112 @@ function tmdbKey(opts = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// AniList entry -> TMDB series id
+// ---------------------------------------------------------------------------
+//
+// AniList lists every season as its own entry ("Ranma1/2 Season 3",
+// "Link Click Season 3"); TMDB lists the SERIES. A TMDB search with the
+// season entry's title finds nothing (or, worse, a same-named older show:
+// "Ranma ½" 1989 for the 2024 remake). So: walk the PREQUEL chain to the
+// first season, search TMDB with ITS titles (cleaned of "½", "(2024)" and
+// season markers), and accept only animation whose name AND first-air year
+// match. Also answers which season the entry was (Season 3 -> 3).
+
+// "Ranma ½ (2024)" -> "Ranma 1/2"; "Link Click Season 3" -> "Link Click".
+function cleanAnimeTitle(t) {
+  return String(t || '')
+    .replace(/½/g, ' 1/2')
+    .replace(/\s*\((?:19|20)\d{2}\)\s*/g, ' ')
+    .replace(/\b(?:season\s*\d+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+)\b.*$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Comparable form of a name: "Ranma1/2", "Ranma ½", "RANMA 1/2" -> "ranma12".
+function nameKey(t) {
+  return cleanAnimeTitle(t).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// PURE: best TMDB TV result for a set of names + first-air year, or null.
+// Requires animation (genre 16) and a name match; the year must match within
+// one year when known (a remake and its original share their name).
+function pickTmdbAnime(results, names, year) {
+  const keys = new Set((names || []).map(nameKey).filter(Boolean));
+  let best = null;
+  for (const r of results || []) {
+    if (!r || !r.id) continue;
+    const genres = (r.genre_ids || []).map(Number);
+    if (genres.length && !genres.includes(16)) continue;
+    const rk = [r.name, r.original_name, r.title].map(nameKey).filter(Boolean);
+    const exact = rk.some((k) => keys.has(k));
+    const near = !exact && rk.some((k) => [...keys].some((w) => k.length >= 4 && w.length >= 4 && (k.startsWith(w) || w.startsWith(k))));
+    if (!exact && !near) continue;
+    const ry = Number(String(r.first_air_date || '').slice(0, 4)) || 0;
+    const dy = year && ry ? Math.abs(ry - year) : null;
+    if (year && ry && dy > 1) continue;
+    const score = (exact ? 100 : 40) + (dy === 0 ? 50 : dy === 1 ? 20 : 0) + Math.min(10, Number(r.popularity) || 0) / 10;
+    if (!best || score > best.score) best = { id: String(r.id), name: r.name || r.title || '', year: ry, score };
+  }
+  return best;
+}
+
+const ENTRY_QUERY =
+  'query($id: Int) { Media(id: $id, type: ANIME) { id format synonyms startDate { year } seasonYear ' +
+  'title { english romaji native } relations { edges { relationType node { id type format startDate { year } seasonYear ' +
+  'title { english romaji } synonyms } } } } }';
+
+async function tmdbForAnilist(anilistId, opts = {}) {
+  const id = Number(anilistId);
+  if (!(id > 0)) return null;
+  const key = 'al2tmdb:' + id;
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  const gql = opts.fetcher || anilistGql;
+  const tvLike = (f) => !f || SEASON_FORMATS.has(f);
+  // Walk PREQUELs (seasons only) to the first season.
+  let media = null;
+  let cur = id;
+  let hops = 0;
+  const seen = new Set();
+  for (let i = 0; i < 25 && cur && !seen.has(cur); i++) {
+    seen.add(cur);
+    let body = null;
+    try { body = await gql(ENTRY_QUERY, { id: cur }); } catch (e) { body = null; }
+    const m = body && body.data && body.data.Media;
+    if (!m) break;
+    if (!media) media = m;
+    const prev = ((m.relations && m.relations.edges) || [])
+      .find((e) => e && /^PREQUEL$/i.test(e.relationType || '') && e.node && e.node.type === 'ANIME' && tvLike(e.node.format));
+    if (!prev) { media = Object.assign({}, m, { _entry: media }); break; }
+    hops += 1;
+    cur = prev.node.id;
+  }
+  if (!media) return null;
+  const entry = media._entry || media;
+  const root = media;
+  const names = [...new Set([root.title && root.title.english, root.title && root.title.romaji, ...(root.synonyms || [])]
+    .filter(Boolean).map(cleanAnimeTitle).filter((t) => t.length >= 2))];
+  const year = Number((root.startDate && root.startDate.year) || root.seasonYear) || 0;
+  const apiKey = tmdbKey(opts);
+  if (!apiKey || !names.length) return null;
+  const get = opts.tmdbFetcher || ((u) => httpJson(u, 10000));
+  let best = null;
+  for (const q of names.slice(0, 4)) {
+    const body = await get('https://api.themoviedb.org/3/search/tv?query=' + encodeURIComponent(q) +
+      '&include_adult=false&language=en-US&api_key=' + encodeURIComponent(apiKey));
+    const pick = pickTmdbAnime((body && body.results) || [], names, year);
+    if (pick && (!best || pick.score > best.score)) best = pick;
+    if (best && best.score >= 150) break; // exact name + exact year
+  }
+  const value = best
+    ? { tmdb: best.id, name: best.name, year: best.year, season: hops + 1,
+      entryTitle: (entry.title && (entry.title.english || entry.title.romaji)) || '' }
+    : null;
+  if (value) cacheSet(key, value); // a miss is retried next time
+  return value;
+}
+
 // TMDB -> AniList id (deterministic; no title guessing). Cached.
 async function anilistIdFor(tmdbId, opts = {}) {
   const key = 'anilistid:' + String(tmdbId || '');
@@ -864,6 +970,9 @@ module.exports = {
   animeSourcePlan,
   animeSourceEpisode,
   animeSeasonsFromPlan,
+  tmdbForAnilist,
+  pickTmdbAnime,
+  cleanAnimeTitle,
   anilistLayout,
   mapEpisode,
   addMissingSeasons,

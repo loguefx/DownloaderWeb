@@ -463,6 +463,16 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
             return await ProxyAsync(() => _engine.GetRawAsync($"api/tmdb/info?tmdb={Uri.EscapeDataString(tmdb ?? string.Empty)}&type={Uri.EscapeDataString(t)}{a}")).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// AniList entry (an Anime-tab card) -> its TMDB series id and which
+        /// season the entry is ("Ranma1/2 Season 3" -> 259140, season 3).
+        /// </summary>
+        [HttpGet("AnimeTmdb")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<IActionResult> AnimeTmdb([FromQuery] int anilist) =>
+            await ProxyAsync(() => _engine.GetRawAsync($"api/anime/tmdb?anilist={anilist}")).ConfigureAwait(false);
+
         [HttpGet("TmdbSeason")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
