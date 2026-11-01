@@ -694,9 +694,20 @@ function episodeNumberFromName(name) {
   if (m) return parseInt(m[2], 10);
   m = base.match(/(?<!\d)(\d{1,3})[xX](\d{1,4})(?!\d)/i);
   if (m) return parseInt(m[2], 10);
-  m = base.match(/(?:episode|ep)\b\.?\s*0*(\d{1,4})(?!\d)/i);
+  // "EP1", "EP 1", "Ep.01", "Episode 12", "E-07": the word must START at a
+  // word boundary ("deep 2" is not an episode) but the number may follow it
+  // directly. (It used to need a boundary AFTER "ep" too, so "EP1" never
+  // matched and "Link Click Season 2 - EP1" fell through to the bare-number
+  // rule below, which took the season's "2".)
+  m = base.match(/\b(?:episode|ep)[\s._-]*0*(\d{1,4})(?!\d)/i);
   if (m) return parseInt(m[1], 10);
-  m = base.match(/(?<![\dxXsSeE])(\d{1,3})(?![\dxXpPeE])/);
+  // Bare number: never a season's ("Season 2", "2nd Season", "S2", "Part 2").
+  const noSeason = base
+    .replace(/\b\d{1,3}(?:st|nd|rd|th)\s+season\b/gi, ' ') // before "season N": "2nd Season 05"
+    .replace(/\bseason[\s._-]*\d{1,3}\b/gi, ' ')
+    .replace(/\bpart[\s._-]*\d{1,2}\b/gi, ' ')
+    .replace(/\bs\d{1,3}\b/gi, ' ');
+  m = noSeason.match(/(?<![\dxXsSeE])(\d{1,3})(?![\dxXpPeE])/);
   if (m) return parseInt(m[1], 10);
   return null;
 }

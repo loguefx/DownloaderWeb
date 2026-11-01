@@ -505,6 +505,15 @@ async function main() {
     check('episodeNumberFromName "EP 18" -> 18', organizer.episodeNumberFromName('Show - EP 18.mp4') === 18);
     check('episodeNumberFromName "2018" (year) -> null', organizer.episodeNumberFromName('Show 2018.mp4') === null);
     check('episodeNumberFromName "720p" (res) -> null', organizer.episodeNumberFromName('Show 720p.mp4') === null);
+    // "EP" glued to the number, and season numbers never read as episodes
+    // (Link Click's "Season 2 - EP1" was read as episode 2).
+    for (const [name, want] of [
+      ['Link Click Season 2 - EP1.mp4', 1], ['Link Click Season 2 - EP12.mp4', 12], ['Link Click - EP7.mp4', 7],
+      ['Show Ep.03.mp4', 3], ['Show E-07.mp4', 7], ['Bakuman 2nd Season 05.mp4', 5], ['Show Season 3 - 04.mp4', 4],
+      ['Show Part 2 - 06.mp4', 6], ['Deep Insanity 2.mp4', 2], ['One Piece S14E1000.mp4', 1000]
+    ]) {
+      check(`episodeNumberFromName "${name}" -> ${want}`, organizer.episodeNumberFromName(name) === want, String(organizer.episodeNumberFromName(name)));
+    }
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
     // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
     // via the unambiguous S#E# / #x# / EP# markers...
