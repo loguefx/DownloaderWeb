@@ -355,7 +355,13 @@ async function runJob(job) {
     // Jellyfin uses), so a TMDB-keyed source URL (Vidsrc) needs no
     // translation. The anime sources translate per episode themselves
     // (anime-layout.animeSourceEpisode).
-    const urlMap = null;
+    // AniDB-numbered library: the job's numbers are the anime sites'
+    // seasons, but a Vidsrc URL is keyed by TMDB's (Link Click S3E1 is TMDB
+    // S4E1; Vidsrc "3-1" is the Bridon Arc). Translate the URL only.
+    let urlMap = null;
+    if (numbering === 'anime' && /^\d+$/.test(String(job.tmdb || '').trim()) && require('./tmdb').isTmdbKeyedUrl(url)) {
+      try { urlMap = await require('./tmdb').animeToTmdbMapper(String(job.tmdb).trim()); } catch (e) { urlMap = null; }
+    }
     const dubTmdb = String(job.tmdb || '').trim() || String((ref && ref.tmdb) || '').trim();
     // Anime DUB: look the selection's dub status up FIRST on the anime
     // sources, one batch per season (Aniwave's list is one request; Anime
@@ -370,7 +376,7 @@ async function runJob(job) {
           const bySeason = new Map();
           for (const ep of sel.episodes.map(Number)) {
             const src = numbering === 'anime'
-              ? { season, episode: ep }
+              ? await require('./tmdb').animeSourceForAnimeNumbering({ tmdb: dubTmdb, title: series, season, episode: ep })
               : await animelayout.animeSourceEpisode({ tmdb: dubTmdb, title: series, season, episode: ep });
             if (src.entry || src.season == null) continue;
             if (!bySeason.has(src.season)) bySeason.set(src.season, []);

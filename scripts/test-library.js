@@ -514,6 +514,43 @@ async function main() {
     ]) {
       check(`episodeNumberFromName "${name}" -> ${want}`, organizer.episodeNumberFromName(name) === want, String(organizer.episodeNumberFromName(name)));
     }
+    // Folders carrying a provider id in brackets are the same series
+    // (user library: "Haikyu!! (2014) [tmdb-60863]" was missed - short
+    // titles need an exact key match, and the id token broke it).
+    for (const folder of ['Haikyu!! (2014) [tmdb-60863]', 'Haikyu!! {tvdb-269062}', 'Haikyu!! [tmdbid-60863]', 'Haikyu!! (tmdb-60863)']) {
+      const root = path.join(base, 'IdRoot' + Math.random().toString(36).slice(2, 7));
+      fs.mkdirSync(path.join(root, folder), { recursive: true });
+      const got = organizer.existingSeriesFolder(root, { series: 'Haikyu!!' });
+      check(`existingSeriesFolder finds "${folder}" for "Haikyu!!"`, got === path.join(root, folder), String(got));
+    }
+    {
+      const root = path.join(base, 'ArtRoot');
+      fs.mkdirSync(path.join(root, 'Management of Novice Alchemist'), { recursive: true });
+      const got = organizer.existingSeriesFolder(root, { series: 'Management of a Novice Alchemist' });
+      check('articles ignored: "Management of Novice Alchemist" folder found', got === path.join(root, 'Management of Novice Alchemist'), String(got));
+      const root2 = path.join(base, 'ArtRoot2');
+      fs.mkdirSync(path.join(root2, 'Office'), { recursive: true });
+      check('short names stay exact: "Office" is not "The Office"', organizer.existingSeriesFolder(root2, { series: 'The Office' }) === null);
+    }
+    {
+      // Two folders of one show: a flat one (bare numbers) and a seasoned
+      // one. The flat folder's files are season 1 and must stay visible.
+      const root = path.join(base, 'TwoFolders');
+      for (let i = 1; i <= 3; i++) {
+        fs.mkdirSync(path.join(root, 'Management of Novice Alchemist'), { recursive: true });
+        fs.writeFileSync(path.join(root, 'Management of Novice Alchemist', `Management of Novice Alchemist ${i}.mp4`), 'x');
+      }
+      fs.mkdirSync(path.join(root, 'Management of a Novice Alchemist (2022)', 'Season 1'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'Management of a Novice Alchemist (2022)', 'Season 1', 'S01E07.mp4'), 'x');
+      fs.mkdirSync(path.join(root, 'Management of a Novice Alchemist (2022)', 'Season 2'), { recursive: true });
+      const meta = (season, episode) => ({ series: 'Management of a Novice Alchemist', season, episode });
+      check('flat sibling folder: bare "...Alchemist 2" counts as S1E2', !!organizer.existingEpisodeFile(root, meta(1, 2)));
+      check('...the seasoned folder still counts S1E7', !!organizer.existingEpisodeFile(root, meta(1, 7)));
+      check('...but a bare number is never read as season 2', organizer.existingEpisodeFile(root, meta(2, 2)) === null);
+      // Loose bare numbers at the root of a SEASONED folder stay ambiguous.
+      fs.writeFileSync(path.join(root, 'Management of a Novice Alchemist (2022)', 'Management 9.mp4'), 'x');
+      check('...a bare number at a seasoned folder\'s root is not trusted', organizer.existingEpisodeFile(root, meta(1, 9)) === null);
+    }
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
     // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
     // via the unambiguous S#E# / #x# / EP# markers...

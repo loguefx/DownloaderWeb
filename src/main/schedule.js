@@ -150,6 +150,16 @@ class ScheduleStore extends EventEmitter {
     this._save();
   }
 
+  // Entries saved before the numbering existed have none: they take their
+  // library's (the watcher reads it from other entries of that library).
+  setNumbering(key, numbering) {
+    this.load();
+    const it = this.items.find((x) => x.key === key);
+    if (!it || it.numbering) return;
+    it.numbering = numbering === 'anime' ? 'anime' : 'tmdb';
+    this._save();
+  }
+
   setIds(key, tmdb, imdb) {
     this.load();
     const it = this.items.find((x) => x.key === key);

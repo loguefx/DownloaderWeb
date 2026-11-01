@@ -66,7 +66,7 @@ async function resolveForJob(ref = {}, { onLog = () => {} } = {}) {
   // a name only (Link Click: Bridon Arc) is left to Aniwave.
   // An AniDB-numbered library already uses the anime sites' seasons.
   const src = ref.numbering === 'anime'
-    ? { season: tmdbSeason, episode: tmdbEpisode, mapped: false }
+    ? await require('../tmdb').animeSourceForAnimeNumbering({ tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode })
     : await require('../anime-layout').animeSourceEpisode({
       tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
     });

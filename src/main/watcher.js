@@ -286,7 +286,30 @@ class Watcher {
   //                 has aired episodes, queue them and advance the watch.
   // Future episodes are NEVER queued (the old source-detection path guessed a
   // 1-12 range and re-queued every not-yet-out episode daily).
+  // The season numbering other watch entries of the same library carry
+  // (the plugin stamps it from the library's metadata settings), or null.
+  libraryNumbering(s) {
+    const name = s && s.library && (s.library.name || s.library.id);
+    if (!name) return null;
+    const votes = { anime: 0, tmdb: 0 };
+    for (const x of schedule.list()) {
+      if (!x.numbering || !x.library || (x.library.name || x.library.id) !== name) continue;
+      votes[x.numbering === 'anime' ? 'anime' : 'tmdb'] += 1;
+    }
+    if (votes.anime && !votes.tmdb) return 'anime';
+    if (votes.tmdb && !votes.anime) return 'tmdb';
+    return null; // none, or mixed: leave it
+  }
+
   async checkSeriesTmdb(s, dryRun) {
+    if (!s.numbering) {
+      const n = this.libraryNumbering(s);
+      if (n) {
+        s.numbering = n;
+        schedule.setNumbering(s.key, n);
+        this.onLog(`"${s.series}": season numbering taken from its library "${s.library.name || s.library.id}" (${n === 'anime' ? 'AniDB-style' : 'TMDB'}).`);
+      }
+    }
     const anime = !!s.anime; // season layout: as the plugin showed it
     // The library's season numbering ('anime' = AniDB-style), stored with the
     // watch entry: new episodes are checked and named in it.
@@ -330,11 +353,17 @@ class Watcher {
       return 0;
     }
 
-    // Season/episode numbers are TMDB's (what Jellyfin shows) for anime and
-    // TV alike, so the source URL needs no translation; the anime sources
-    // translate per episode themselves (anime-layout.animeSourceEpisode).
-    const urlMap = null;
+    // TMDB-numbered library: the numbers are TMDB's, the URL needs no
+    // translation (the anime sources translate per episode themselves).
+    // AniDB-numbered: a Vidsrc URL is keyed by TMDB's numbers, so the anime
+    // season's episodes are translated for the URL only (Link Click S3E1 =
+    // TMDB S4E1; Vidsrc "3-1" is the Bridon Arc). Files keep the anime numbers.
     const template = s.template || (s.baseUrl ? urltemplate.toTemplate(s.baseUrl).template : null);
+    let urlMap = null;
+    if (numbering === 'anime' && info.numbering === 'anime' && tmdb.isTmdbKeyedUrl(template || s.baseUrl)) {
+      const animelayout = require('./anime-layout');
+      urlMap = (sn, ep) => animelayout.tmdbPairFromAnimeSeasons(info.seasons, sn, ep);
+    }
     const roots = this.rootsFor(s);
 
     // GLOBAL no-duplicate guard (runs in BOTH dry-run and live): if the on-disk
@@ -663,10 +692,24 @@ class Watcher {
         (dryRun ? ' (report-only mode: an episode whose English dub is out is still queued - you asked for it)' : '')
     );
 
+    const animeMappers = new Map(); // tmdb id -> AniDB->TMDB mapper (or null)
     for (const spec of items) {
+      // AniDB-numbered entry with a TMDB-keyed (Vidsrc) URL: the URL takes
+      // TMDB's pair. Entries parked before this fix carry the anime numbers
+      // in their URL ("LINK CLICK S3E11" -> 123542-3-11, a Bridon Arc slot).
+      let urlPair = { season: spec.season, episode: spec.episode };
+      if (spec.numbering === 'anime' && spec.tmdb && tmdb.isTmdbKeyedUrl(spec.template || spec.baseUrl)) {
+        if (!animeMappers.has(spec.tmdb)) {
+          let m = null;
+          try { m = await tmdb.animeToTmdbMapper(spec.tmdb); } catch (e) { m = null; }
+          animeMappers.set(spec.tmdb, m);
+        }
+        const m = animeMappers.get(spec.tmdb);
+        if (m) urlPair = m(spec.season, spec.episode);
+      }
       const url = urltemplate.buildEpisodeUrl(
-        { template: spec.template, baseUrl: spec.baseUrl, season: spec.season, series: spec.series },
-        spec.episode
+        { template: spec.template, baseUrl: spec.baseUrl, season: urlPair.season, series: spec.series },
+        urlPair.episode
       );
       if (!url) {
         this.onLog(`Pending "${spec.label}" has no usable URL/template; skipping.`);

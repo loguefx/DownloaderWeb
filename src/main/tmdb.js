@@ -177,10 +177,21 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     if (plan && catalog) {
       const anime = animelayout.animeSeasonsFromPlan(plan, catalog, tmdbSeasons);
       if (anime.length) {
-        seasons = anime.map((x) => ({ season: x.season, episodes: x.episodes, year: x.year, parts: x.parts }));
+        seasons = anime.map((x) => (x.extra
+          ? { season: x.season, episodes: x.episodes, year: x.year, parts: x.parts, extra: true }
+          : { season: x.season, episodes: x.episodes, year: x.year, parts: x.parts }));
         layout = 'anime';
         numbering = 'anime';
       }
+    }
+    if (numbering !== 'anime' && tmdbNumbered <= 1 && seasons.filter((x) => x.season > 0).length <= 1) {
+      // One season (or none yet): AniDB's numbering is TMDB's, whatever the
+      // anime sites list (Netflix-only shows are often not on them at all).
+      seasons = seasons.map((x) => (x.season > 0
+        ? Object.assign({}, x, { parts: [{ tmdbSeason: x.season, start: 0, count: Number(x.episodes) || 0 }] })
+        : x));
+      layout = 'anime';
+      numbering = 'anime';
     }
     if (numbering !== 'anime') {
       numberingNote = 'The anime sites could not be read, so TMDB\'s seasons are shown; they may not match an AniDB-numbered library.';
@@ -323,7 +334,52 @@ function exclusiveHint(providerNames) {
   );
 }
 
+// AniDB-numbered (season, episode) -> TMDB's pair, for sources keyed by
+// TMDB's numbers (Vidsrc: /embed/tv/<id>-<season>-<episode>). Link Click
+// S3E1 is TMDB S4E1 - asking Vidsrc for 3-1 returns the Bridon Arc. Returns
+// a mapper (season, episode) -> { season, episode } (identity when the pair
+// is not known), or null when the title has no anime layout.
+async function animeToTmdbMapper(tmdbId, opts = {}) {
+  const id = String(tmdbId || '').trim();
+  if (!/^\d+$/.test(id)) return null;
+  let info = null;
+  try { info = await tmdbInfo(id, 'tv', Object.assign({}, opts, { anime: true, numbering: 'anime' })); } catch (e) { info = null; }
+  if (!info || info.numbering !== 'anime') return null;
+  return (season, episode) =>
+    animelayout.tmdbPairFromAnimeSeasons(info.seasons, season, episode) || { season: Number(season), episode: Number(episode) };
+}
+
+// URLs whose season/episode numbers are TMDB's (Vidsrc embeds).
+function isTmdbKeyedUrl(url) {
+  return /\/embed\/(?:tv|imdb)\//i.test(String(url || ''));
+}
+
+// AniDB-numbered (season, episode) -> what to ask the anime sources for.
+// Seasons the sites list as "<Title> Season N" are asked as-is (unchanged);
+// a season appended from TMDB (a sequel the sites name differently) goes
+// through TMDB's pair and the source plan -> { season, episode, entry? }.
+async function animeSourceForAnimeNumbering({ tmdb: tmdbId, title, season, episode }) {
+  const identity = { season: Number(season), episode: Number(episode), mapped: false };
+  const id = String(tmdbId || '').trim();
+  if (!/^\d+$/.test(id)) return identity;
+  let info = null;
+  try { info = await tmdbInfo(id, 'tv', { anime: true, numbering: 'anime' }); } catch (e) { info = null; }
+  const s = info && info.numbering === 'anime' && (info.seasons || []).find((x) => x.season === Number(season));
+  if (!s || !s.extra) return identity;
+  const pair = animelayout.tmdbPairFromAnimeSeasons(info.seasons, season, episode);
+  if (!pair) return identity;
+  try {
+    const src = await animelayout.animeSourceEpisode({ tmdb: id, title, season: pair.season, episode: pair.episode });
+    return src && src.mapped ? src : identity;
+  } catch (e) {
+    return identity;
+  }
+}
+
 module.exports = {
+  animeToTmdbMapper,
+  isTmdbKeyedUrl,
+  animeSourceForAnimeNumbering,
   getTmdbKey,
   tmdbFetch,
   tmdbInfo,

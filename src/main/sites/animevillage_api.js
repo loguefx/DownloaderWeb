@@ -78,14 +78,29 @@ async function getJson(pathAndQuery, { tries = 3, ok = (o) => o && !o.error } = 
   return null;
 }
 
+// Accents folded ("Fiancé" = "Fiance") and apostrophes dropped ("God's" =
+// "Gods"), so a site spelling either way is the same work.
 const norm = (s) =>
   String(s || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2018\u2019'`]/g, '')
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
 const ROMAN = { ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7, viii: 8, ix: 9, x: 10 };
+
+// A trailing roman numeral ("Shiguang Dailiren III") - but not the romaji
+// word "ii" ("good") after a particle: "Raise wa Tanin ga Ii" (Yakuza
+// Fiance) is season 1, not II. -> 'iii' etc., or null.
+function romanTail(s) {
+  const m = String(s || '').match(/ (ii|iii|iv|v|vi|vii|viii|ix|x)$/);
+  if (!m) return null;
+  if (m[1] === 'ii' && /(?:^| )(?:ga|wa|ha|de|mo|ni|to|no|ya|yo|ne|ka|demo|hou ga) ii$/.test(s)) return null;
+  return m[1];
+}
 
 // Season named by a title: "Season 2", "2nd Season", or a trailing roman
 // numeral ("Shiguang Dailiren III"); 1 when it names none. "Part 2" is not a
@@ -94,8 +109,8 @@ function seasonOfTitle(t) {
   const s = norm(String(t || '').split(':')[0]);
   const m = s.match(/\bseason (\d+)\b/) || s.match(/\b(\d+)(?:st|nd|rd|th) season\b/);
   if (m) return Number(m[1]);
-  const r = s.replace(/\bpart \d+$/, '').trim().match(/ (ii|iii|iv|v|vi|vii|viii|ix|x)$/);
-  return r ? ROMAN[r[1]] : 1;
+  const r = romanTail(s.replace(/\bpart \d+$/, '').trim());
+  return r ? ROMAN[r] : 1;
 }
 
 // A title with its season / part markers removed: the "same work" key.
@@ -106,7 +121,7 @@ function baseName(t) {
   const m = s.match(/^(.*?)\b(?:season \d+|\d+(?:st|nd|rd|th) season)\b/);
   if (m && m[1].trim()) s = m[1];
   s = s.replace(/\bpart \d+\b/g, ' ').replace(/\s+/g, ' ').trim();
-  return s.replace(/ (ii|iii|iv|v|vi|vii|viii|ix|x)$/, '').trim();
+  return romanTail(s) ? s.replace(/ (ii|iii|iv|v|vi|vii|viii|ix|x)$/, '').trim() : s.trim();
 }
 
 // The site's own catalog ids are slugs ("<english-ish-name>[-<5-char tag>]-<n>").

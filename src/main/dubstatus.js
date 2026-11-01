@@ -228,7 +228,7 @@ async function isDubbedForJob({ title, season, episode, tmdb, numbering }) {
   // "Link Click Season 3" E7; TMDB S3 = the "Bridon Arc" entry).
   // An AniDB-numbered library already uses the anime sites' seasons.
   const src = numbering === 'anime'
-    ? { season: Number(season), episode: Number(episode), mapped: false }
+    ? await animeNumberingSource({ tmdb, title, season, episode })
     : await sourceEpisode({ tmdb, title, season, episode });
   if (src.entry) {
     let eps = null;
@@ -250,6 +250,9 @@ async function isDubbedForJob({ title, season, episode, tmdb, numbering }) {
 // TMDB numbers -> the anime sources' (season, episode) or arc entry.
 // Injectable for tests.
 let sourceEpisode = (q) => require('./anime-layout').animeSourceEpisode(q);
+// AniDB-numbered jobs: unchanged for "<Title> Season N" seasons; a sequel
+// the sites name differently goes through TMDB's numbers.
+let animeNumberingSource = (q) => require('./tmdb').animeSourceForAnimeNumbering(q);
 
 module.exports = {
   _setSourceEpisodeForTests(fn) {

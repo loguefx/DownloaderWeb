@@ -881,7 +881,41 @@ function animeSeasonsFromPlan(plan, catalogSeasons, tmdbSeasons) {
     const episodes = parts.length ? parts.reduce((n, p) => n + p.count, 0) : countOf(c);
     out.push({ season: c.season, episodes, year: parts.length ? tYear.get(parts[0].tmdbSeason) || '' : '', parts });
   }
+  // TMDB seasons AFTER the last one the catalog seasons cover are sequels the
+  // anime sites list under another name, never "Season N" ("My Next Life as
+  // a Villainess ... X", "Science Fell in Love ... r=1-sinθ"). They are the
+  // next numbered seasons (each TMDB season one season), not dropped: a
+  // dropped season would be offered nowhere while its files sit in
+  // "Season 2" on disk. Arcs BETWEEN covered seasons (Link Click's Bridon
+  // Arc) stay un-numbered. `extra` marks them: their source is found through
+  // TMDB's numbers (tmdbPairFromAnimeSeasons + the source plan).
+  const lastUsed = out.reduce((m, x) => Math.max(m, ...x.parts.map((p) => p.tmdbSeason)), 0);
+  if (lastUsed > 0) {
+    let next = out.reduce((m, x) => Math.max(m, x.season), 0) + 1;
+    for (const t of (tmdbSeasons || []).filter((x) => x && x.season > lastUsed).sort((a, b) => a.season - b.season)) {
+      const count = countOf(t);
+      if (!count) continue; // announced, nothing listed yet
+      out.push({ season: next++, episodes: count, year: String(t.year || ''), parts: [{ tmdbSeason: t.season, start: 0, count }], extra: true });
+    }
+  }
   return out;
+}
+
+// PURE: an AniDB-numbered (season, episode) -> TMDB's pair, from the anime
+// season list (animeSeasonsFromPlan's parts). Link Click S3E7 -> TMDB S4E7;
+// Ranma S2E1 -> TMDB S1E13. Past the listed parts, the last part keeps
+// counting (an airing season). null = not known (callers keep the numbers).
+function tmdbPairFromAnimeSeasons(seasons, season, episode) {
+  const s = (seasons || []).find((x) => x && Number(x.season) === Number(season));
+  const ep = Number(episode);
+  if (!s || !(ep > 0) || !Array.isArray(s.parts) || !s.parts.length) return null;
+  let off = 0;
+  for (const p of s.parts) {
+    if (ep <= off + p.count) return { season: p.tmdbSeason, episode: p.start + (ep - off) };
+    off += p.count;
+  }
+  const last = s.parts[s.parts.length - 1];
+  return { season: last.tmdbSeason, episode: last.start + last.count + (ep - off) };
 }
 
 // The plan for one title (network: TMDB counts + Aniwave catalog), cached.
@@ -955,6 +989,7 @@ async function urlMapFor(tmdbId, title, opts = {}) {
 }
 
 module.exports = {
+  tmdbPairFromAnimeSeasons,
   aniwaveSeasons,
   anilistSeasons,
   anilistSequelChain,

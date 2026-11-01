@@ -106,6 +106,19 @@ const TV = {
     genres: [{ id: 16 }], origin_country: ['JP'],
     seasons: [{ season_number: 1, episode_count: 12, air_date: '2022-01-01' }, { season_number: 2, episode_count: 12, air_date: '2023-01-01' }]
   },
+  // 94904: a sequel the anime sites name differently ("... X"), never
+  // "Season 2" (My Next Life as a Villainess; Science Fell in Love).
+  94904: {
+    id: 94904, name: 'Villainess Test', first_air_date: '2020-04-04', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }], origin_country: ['JP'],
+    seasons: [{ season_number: 1, episode_count: 12, air_date: '2020-04-04' }, { season_number: 2, episode_count: 12, air_date: '2021-07-03' }]
+  },
+  // 300054: one season, not on the anime sites (a Netflix-only show).
+  300054: {
+    id: 300054, name: 'Single Netflix Anime', first_air_date: '2026-02-26', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }], origin_country: ['JP'],
+    seasons: [{ season_number: 1, episode_count: 25, air_date: '2026-02-26' }]
+  },
   // 789: a plain TV show (2 seasons) - the anime tiers must not touch it.
   789: {
     id: 789, name: 'Plain TV Show', first_air_date: '2020-01-10', poster_path: null, overview: 'x',
@@ -202,6 +215,19 @@ animelayout._internals.cacheSet('awcat:link click', [
   { season: 2, episodes: awEps(12), dubEpisodes: 12, aniwaveId: '2', year: '' },
   { season: 3, episodes: awEps(12), dubEpisodes: 9, aniwaveId: '3', year: '' }
 ]);
+for (const [id, t, y] of [['94904', 'villainess test', '2020'], ['300054', 'single netflix anime', '2026']]) {
+  animelayout._internals.cacheSet('aniwave:' + id, null);
+  animelayout._internals.cacheSet('anilistid:' + id, '');
+  animelayout._internals.cacheSet(`anilist:${t}|${y}`, null);
+  animelayout._internals.cacheSet('anilist:' + t, null);
+}
+animelayout._internals.cacheSet('awcat:villainess test', [{ season: 1, episodes: awEps(12), aniwaveId: 'v1', year: '' }]);
+animelayout._internals.cacheSet('tmdb:94904', [{ season: 1, episodes: 12, year: '2020' }, { season: 2, episodes: 12, year: '2021' }]);
+animelayout._internals.cacheSet('plan:94904|villainess test', animelayout.buildSourcePlan(
+  [{ season: 1, episodes: 12 }, { season: 2, episodes: 12 }],
+  [{ season: 1, episodes: 12 }],
+  [{ entry: { id: 'vx', title: 'Villainess Test X' }, count: 12 }]));
+animelayout._internals.cacheSet('awcat:single netflix anime', null);
 animelayout._internals.cacheSet('aniwave:127000', null);
 animelayout._internals.cacheSet('anilistid:127000', '');
 animelayout._internals.cacheSet('anilist:agreeing anime|2022', null);
@@ -328,6 +354,36 @@ animelayout._internals.cacheSet('aniwave:603', null);
     check('AniDB S1 = TMDB S1', s1 && s1.episodes.length === 11 && s1.episodes[0].name === 'LC S1E1');
     const tm = await tmdb.tmdbInfo('126318', 'tv', { anime: true, numbering: 'tmdb' });
     check('same title in a TMDB library: TMDB seasons (cache kept apart)', tm && tm.seasons.map((x) => x.season + ':' + x.episodes).join('|') === '0:28|1:11|2:12|3:6|4:12|5:0', tm && tm.seasons.map((x) => x.season).join(','));
+    const map = await tmdb.animeToTmdbMapper('126318');
+    const p37 = map && map(3, 7);
+    check('AniDB S3E7 -> TMDB S4E7 for the Vidsrc URL (3-7 would be a Bridon Arc slot)', p37 && p37.season === 4 && p37.episode === 7, JSON.stringify(p37));
+    const p11 = map && map(1, 11);
+    check('AniDB S1E11 -> TMDB S1E11', p11 && p11.season === 1 && p11.episode === 11, JSON.stringify(p11));
+    check('Vidsrc embeds are TMDB-keyed; Aniwave watch URLs are not',
+      tmdb.isTmdbKeyedUrl('https://vidsrc.sh/embed/tv/123542-3-11') && !tmdb.isTmdbKeyedUrl('https://aniwaves.ru/watch/link-click-1/ep-1'));
+    const srcS3 = await tmdb.animeSourceForAnimeNumbering({ tmdb: '126318', title: 'Link Click', season: 3, episode: 7 });
+    check('AniDB S3 asks the anime sites for "Season 3" E7 as before', srcS3.season === 3 && srcS3.episode === 7 && !srcS3.entry, JSON.stringify(srcS3));
+
+    // A sequel the anime sites name differently: TMDB S2 is the AniDB S2,
+    // not dropped (the disk's "Season 2" would be offered under no number).
+    const vil = await tmdb.tmdbInfo('94904', 'tv', { anime: true, numbering: 'anime' });
+    const vshape = vil && vil.seasons.map((x) => x.season + ':' + x.episodes).join('|');
+    check('AniDB numbering keeps a differently-named sequel as Season 2', vshape === '1:12|2:12' && vil.numbering === 'anime', vshape + ' ' + (vil && vil.numbering));
+    const vmap = await tmdb.animeToTmdbMapper('94904');
+    const v25 = vmap && vmap(2, 5);
+    check('  its Vidsrc URL is TMDB S2E5', v25 && v25.season === 2 && v25.episode === 5, JSON.stringify(v25));
+    const vsrc = await tmdb.animeSourceForAnimeNumbering({ tmdb: '94904', title: 'Villainess Test', season: 2, episode: 5 });
+    check('  the anime sources are asked for the "X" entry E5, not "Season 2"', vsrc.entry && vsrc.entry.id === 'vx' && vsrc.episode === 5, JSON.stringify(vsrc));
+
+    // One season, unknown to the anime sites: numbering is unambiguous.
+    const one = await tmdb.tmdbInfo('300054', 'tv', { anime: true, numbering: 'anime' });
+    check('single-season show the anime sites lack: AniDB numbering = TMDB S1, no warning',
+      one && one.numbering === 'anime' && !one.numberingNote && one.seasons.filter((x) => x.season > 0).map((x) => x.episodes).join(',') === '25',
+      one && (one.numbering + ' ' + one.numberingNote));
+    const omap = await tmdb.animeToTmdbMapper('300054');
+    const o9 = omap && omap(1, 9);
+    check('  its URL numbers are TMDB\'s', o9 && o9.season === 1 && o9.episode === 9, JSON.stringify(o9));
+
     const tv = await tmdb.tmdbInfo('789', 'tv', { anime: false, numbering: 'anime' });
     check('live-action TV ignores AniDB numbering (TMDB seasons)', tv && tv.numbering === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.numbering);
   }

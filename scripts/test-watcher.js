@@ -555,6 +555,66 @@ async function main() {
     tmdb.tmdbInfo = realInfo;
     tmdb.tmdbSeason = realSeason;
   }
+  console.log('\n[14] AniDB-numbered library: Vidsrc URLs take TMDB\'s numbers, files keep AniDB\'s');
+  {
+    // Link Click: AniDB S3 = TMDB S4 (TMDB S3 is the 6-episode Bridon Arc).
+    // Asking Vidsrc for "3-2" would fetch a Bridon Arc episode and save it
+    // as S3E2.
+    const realInfo = tmdb.tmdbInfo;
+    const realSeason = tmdb.tmdbSeason;
+    const realMapper = tmdb.animeToTmdbMapper;
+    const lcInfo = {
+      tmdb: '123542', title: 'LINK CLICK', numbering: 'anime', layout: 'anime',
+      seasons: [
+        { season: 1, episodes: 11, parts: [{ tmdbSeason: 1, start: 0, count: 11 }] },
+        { season: 2, episodes: 12, parts: [{ tmdbSeason: 2, start: 0, count: 12 }] },
+        { season: 3, episodes: 12, parts: [{ tmdbSeason: 4, start: 0, count: 12 }] }
+      ]
+    };
+    tmdb.tmdbInfo = async (id, type, opts) => (id === '123542' ? lcInfo : realInfo(id, type, opts));
+    tmdb.tmdbSeason = async (id, season, opts) => (id === '123542' && season === 3
+      ? { tmdb: '123542', season: 3, episodes: eps([[1, past(40)], [2, past(30)], [3, past(20)], [4, future(5)]]) }
+      : realSeason(id, season, opts));
+    mkEp('LINK CLICK/Season 3/LINK CLICK S3E1.mp4');
+    schedule.add({
+      series: 'LINK CLICK', season: 3, mode: 'sub',
+      template: urltemplate.toTemplate(vid('123542', 3, 1)).template, baseUrl: vid('123542', 3, 1),
+      outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '123542', imdb: '', movie: false, numbering: 'anime'
+    });
+    queueCalls.length = 0;
+    await watcher.checkSchedules();
+    const lc = queueCalls.filter((c) => c.series === 'LINK CLICK').sort((a, b) => a.episode - b.episode);
+    check('AniDB S3E2/E3 queued (E1 on disk, E4 not aired)', JSON.stringify(lc.map((c) => [c.season, c.episode])) === '[[3,2],[3,3]]', JSON.stringify(lc.map((c) => [c.season, c.episode])));
+    check('...their Vidsrc URLs are TMDB S4E2/S4E3, never the Bridon Arc', lc.length === 2 && lc[0].url === vid('123542', 4, 2) && lc[1].url === vid('123542', 4, 3), JSON.stringify(lc.map((c) => c.url)));
+    check('...numbering travels with the job', lc.every((c) => c.numbering === 'anime'));
+
+    // An entry parked on the waiting-for-dub list BEFORE this fix carries
+    // the AniDB numbers in its URL (123542-3-11): re-queued with TMDB's.
+    tmdb.animeToTmdbMapper = async (id) => (id === '123542'
+      ? (sn, ep) => M('anime-layout').tmdbPairFromAnimeSeasons(lcInfo.seasons, sn, ep) || { season: sn, episode: ep }
+      : null);
+    const adds = [];
+    manager.add = (rec) => { adds.push(rec); return true; };
+    pending.add({
+      label: 'LINK CLICK S3E11', series: 'LINK CLICK', season: 3, episode: 11,
+      outputRoot: staging, template: null, baseUrl: vid('123542', 3, 11),
+      mode: 'sub', library, minHeight: 1080, anime: false, tmdb: '123542', numbering: 'anime', urlSeason: 3, urlEpisode: 11
+    });
+    await watcher.checkNow();
+    const re = adds.find((a) => a.series === 'LINK CLICK' && a.episode === 11);
+    check('waiting-list entry re-queued with the TMDB URL (4-11, not 3-11)', re && re.url === vid('123542', 4, 11), re && re.url);
+    check('...the file still names AniDB S3E11', re && re.season === 3 && re.episode === 11);
+    tmdb.tmdbInfo = realInfo;
+    tmdb.tmdbSeason = realSeason;
+    tmdb.animeToTmdbMapper = realMapper;
+  }
+  console.log('\n[15] Old entries without a numbering take their library\'s');
+  {
+    const animeLib = { name: 'Anime', locations: [libRoot] };
+    schedule.add({ series: 'Numbered Anime', season: 1, mode: 'sub', template: urltemplate.toTemplate(vid('5551', 1, 1)).template, baseUrl: vid('5551', 1, 1), outputRoot: staging, library: animeLib, minHeight: 0, anime: true, tmdb: '5551', numbering: 'anime' });
+    check('an entry of an AniDB library: the library numbering is "anime"', watcher.libraryNumbering({ library: { name: 'Anime' } }) === 'anime');
+    check('a library with no numbered entries: unknown (left as is)', watcher.libraryNumbering({ library: { name: 'Nope' } }) === null);
+  }
   service.watcherModeSet({ dryRun: true });
 
   // ---- summary ----------------------------------------------------------------

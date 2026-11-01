@@ -111,7 +111,20 @@ function episodes(id) {
   });
 }
 
-const norm = (s) => String(s || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+const norm = (s) => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u2018\u2019'`]/g, '')
+  .toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Plainer search queries for a title the site's search may not take as-is
+// (accents, quotes, guillemets, "!!"): the folded words, then the part
+// before a colon. The pick stays strict (pickShow), so these only widen
+// what is searched, never what is accepted.
+function searchQueries(title) {
+  const t = String(title || '').trim();
+  const folded = t.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u2018\u2019'`]/g, '')
+    .replace(/[^A-Za-z0-9 :\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const head = folded.split(':')[0].trim();
+  return [...new Set([t, folded, head].filter((q) => q && q.length >= 2))];
+}
 
 // The season number a title names ("Season 2", "2nd Season", a trailing
 // "III"; "Part 2" is NOT a season), or 1 when it names none - and the title
@@ -139,8 +152,11 @@ function pickShow(results, title, season = 1) {
 // The Aniwave entry + its episode flags for one season of a title.
 // -> { show, episodes } or null
 async function seasonInfo(title, season = 1) {
-  const results = await search(title);
-  let show = pickShow(results, title, season);
+  let show = null;
+  for (const q of searchQueries(title)) {
+    show = pickShow(await search(q), title, season);
+    if (show) break;
+  }
   if (!show) {
     // Not under the English title: try the work's other names from AniList
     // (romaji / Chinese romanization), each matched the same strict way.

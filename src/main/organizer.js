@@ -122,6 +122,9 @@ const seriesKey = memoize(function seriesKey(name) {
     .replace(/\s*\(\s*\[?\s*tmdbid[-\s]*\d+\s*\]?\s*\)/gi, ' ')
     .replace(/\s*\[\s*tmdbid[-\s]*\d+\s*\]/gi, ' ')
     .replace(/\s*\(\s*\[?\s*(?:tmdb|tvdb|imdb)[-\s]*[A-Za-z0-9]+\s*\]?\s*\)/gi, ' ')
+    // Jellyfin/Sonarr-style ids in square or curly brackets:
+    // "Haikyu!! (2014) [tmdb-60863]", "Show {tvdb-1234}", "[imdbid-tt0123]".
+    .replace(/\s*[[{]\s*(?:tmdb|tvdb|imdb|anidb|anilist)(?:id)?[-=\s]*[A-Za-z0-9]+\s*[\]}]/gi, ' ')
     .replace(/\s*\(\d{4}\)/g, ' ')
     .toLowerCase()
     .replace(/\s+season\s*\d+\s*$/i, '')
@@ -146,6 +149,9 @@ const normSeries = memoize(function normSeries(name) {
     .replace(/\s*\(\s*\[?\s*tmdbid[-\s]*\d+\s*\]?\s*\)/gi, ' ')
     .replace(/\s*\[\s*tmdbid[-\s]*\d+\s*\]/gi, ' ')
     .replace(/\s*\(\s*\[?\s*(?:tmdb|tvdb|imdb)[-\s]*[A-Za-z0-9]+\s*\]?\s*\)/gi, ' ')
+    // Jellyfin/Sonarr-style ids in square or curly brackets:
+    // "Haikyu!! (2014) [tmdb-60863]", "Show {tvdb-1234}", "[imdbid-tt0123]".
+    .replace(/\s*[[{]\s*(?:tmdb|tvdb|imdb|anidb|anilist)(?:id)?[-=\s]*[A-Za-z0-9]+\s*[\]}]/gi, ' ')
     .replace(/\s*\(\d{4}\)/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
@@ -164,6 +170,11 @@ function fuzzySeriesMatch(folderName, seriesName) {
   const b = normSeries(seriesName);
   if (!a || !b) return false;
   if (a === b) return true;
+  // Articles dropped ("Management of Novice Alchemist" is the same series as
+  // "Management of a Novice Alchemist") - only for long, specific names.
+  const noArt = (x) => x.replace(/\b(?:a|an|the)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const na = noArt(a);
+  if (na.length >= 12 && na === noArt(b)) return true;
   const short = a.length <= b.length ? a : b;
   const long = a.length <= b.length ? b : a;
   return short.length >= 12 && long.indexOf(short) >= 0;
@@ -602,8 +613,26 @@ function existingEpisodeFile(outputRoot, meta, ext = null, episodeName = '') {
       return season == null || anchor === season;
     }
     // Non-season folder (series root / sibling): trust episode-only tokens
-    // only when the whole series is flat and we want season 1 or unknown.
-    return !anySeasonFolder && (season == null || season === 1);
+    // only when the series is flat and we want season 1 or unknown. "Flat"
+    // is judged per series folder: a second, flat folder of the same show
+    // ("Management of Novice Alchemist/... 1.mp4" next to "Management of a
+    // Novice Alchemist (2022)/Season 1/...") still holds season 1 - judging
+    // the whole show made its files invisible and they were re-downloaded.
+    if (!(season == null || season === 1)) return false;
+    return !anySeasonFolder || topFolderIsFlat(dir);
+  };
+  const topFolderIsFlat = (dir) => {
+    const rel = path.relative(outputRoot, dir);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+    const topName = rel.split(/[\\/]/)[0];
+    if (seasonFromName(topName) != null) return false;
+    let ents = [];
+    try {
+      ents = fs.readdirSync(path.join(outputRoot, topName), { withFileTypes: true });
+    } catch (e) {
+      return false;
+    }
+    return !ents.some((e) => e.isDirectory() && (() => { const n = seasonFromName(e.name); return n != null && n !== 0; })());
   };
 
   for (const dir of dirs) {

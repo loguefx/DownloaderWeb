@@ -112,6 +112,21 @@ async function main() {
   const lc = await aw.seasonInfo('Link Click', 3);
   check('"Link Click" S3 found as "Shiguang Dailiren III" via its AniList name', lc && lc.show.id === '82741' && lc.episodes.filter((e) => e.dub).length === 2, lc && JSON.stringify(lc.show));
   check('roman-numeral seasons are read', aw.seasonOfTitle('Shiguang Dailiren III') === 3);
+  // Accents / apostrophes: the site spells "Fiance" and "Gods" (no accent,
+  // no apostrophe) and its search does not take the TMDB spelling.
+  aw._setGetForTests(async (p) => {
+    if (p === '/filter?keyword=Yakuza+Fiance+Raise+wa+Tanin+ga+Ii' || p === '/filter?keyword=Yakuza+Fiance') return filterPage([['yakuza-fiance-90001', 'Raise wa Tanin ga Ii', 'Yakuza Fiance: Raise wa Tanin ga Ii'], ['raise-90003', 'Raise wa Tanin ga Ii', 'Raise wa Tanin ga Ii']]);
+    if (p === '/filter?keyword=The+Gorilla+Gods+Go-To+Girl') return filterPage([['gorilla-90002', 'Gorilla no Kami', 'The Gorilla Gods Go-To Girl']]);
+    if (p === '/ajax/episode/list/90001' || p === '/ajax/episode/list/90002') return episodeList(12, [1]);
+    return null;
+  });
+  const yf = await aw.seasonInfo('Yakuza Fiancé: Raise wa Tanin ga Ii', 1);
+  check('"Yakuza Fiancé" found as "Yakuza Fiance" (accent folded, plain query)', yf && yf.show.id === '90001', yf && JSON.stringify(yf.show));
+  const gg = await aw.seasonInfo("The Gorilla God's Go-To Girl", 1);
+  check('"The Gorilla God\'s Go-To Girl" found as "Gorilla Gods" (apostrophe dropped)', gg && gg.show.id === '90002', gg && JSON.stringify(gg.show));
+  check('romaji "...ga Ii" is not season II', aw.seasonOfTitle('Raise wa Tanin ga Ii') === 1 && aw.seasonOfTitle('Shiguang Dailiren II') === 2);
+  const none = await aw.seasonInfo('Yakuza Fiancé: Raise wa Tanin ga Ii', 2);
+  check('...its season 2 is still not invented', none === null);
   aw._setGetForTests(async (p) => {
     requests += 1;
     return Object.prototype.hasOwnProperty.call(SITE, p) ? SITE[p] : null;

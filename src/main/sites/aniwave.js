@@ -61,7 +61,7 @@ module.exports = {
     // Season 3" E7, TMDB S3E2 -> "Link Click: Bridon Arc" E2.
     // An AniDB-numbered library already uses Aniwave's seasons: no translation.
     const src = ref.numbering === 'anime'
-      ? { season: tmdbSeason, episode: tmdbEpisode, mapped: false }
+      ? await require('../tmdb').animeSourceForAnimeNumbering({ tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode })
       : await require('../anime-layout').animeSourceEpisode({
         tmdb: ref.tmdb, title: ref.title, season: tmdbSeason, episode: tmdbEpisode
       });
