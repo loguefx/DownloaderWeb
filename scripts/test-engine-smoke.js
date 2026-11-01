@@ -354,6 +354,37 @@ async function main() {
   check('POST /api/queue/stop -> 200', r.status === 200, r.body.slice(0, 120));
   check('stop parks the workers (sticky)', !!manager._stopRequested, String(manager._stopRequested));
 
+  // ---- an episode already in the TARGET library is never downloaded -------
+  // (Succession S4 was downloaded in full three times and thrown away at
+  // placement: the queue only checked staging before downloading.)
+  {
+    console.log('\n[6c] queue: episode already on a library drive -> skipped, not downloaded');
+    let discovered = 0;
+    const libFile = path.join(libA, 'Show', 'Season 1', 'Show S1E1.mp4');
+    check('fixture: Show S1E1 is on the library drive', fs.existsSync(libFile), libFile);
+    const rec = {
+      label: 'Show S1E1 (pre-check)', series: 'Show', season: 1, episode: 1, mode: 'dub',
+      group: 'precheck', outputRoot: path.join(DATA_DIR, 'staging-precheck'), stopRunOnFail: false,
+      library: { name: 'Anime', locations: [libA] }, minHeight: 0, url: 'https://example.invalid/x', baseUrl: 'https://example.invalid/x',
+      key: 'precheck|Show|1|1', skipSources: [],
+      discover: async () => { discovered += 1; throw new Error('must not be called'); }
+    };
+    const auditBefore = fs.existsSync(path.join(library.dataDir, 'audit.log')) ? fs.readFileSync(path.join(library.dataDir, 'audit.log'), 'utf8').length : 0;
+    manager.resume();
+    manager.add(rec);
+    const t0 = Date.now();
+    let st = null;
+    while (Date.now() - t0 < 20000) {
+      const it = manager.items.find((x) => x.key === 'precheck|Show|1|1');
+      st = it ? it.status : 'pruned';
+      if (st === 'skipped' || st === 'pruned' || st === 'failed' || st === 'downloading') break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    check('item skipped (or pruned as complete) without downloading', (st === 'skipped' || st === 'pruned') && discovered === 0, `status=${st} discover=${discovered}`);
+    const auditAfter = fs.readFileSync(path.join(library.dataDir, 'audit.log'), 'utf8').slice(auditBefore);
+    check('audit records skipped-already-in-library', /skipped-already-in-library/.test(auditAfter), auditAfter.slice(-300));
+  }
+
   // ---- renumber anime files to TMDB's seasons (Link Click) ----------------
   {
     console.log('\n[6b] renumber: anime sites\' season numbering -> TMDB (Jellyfin)');

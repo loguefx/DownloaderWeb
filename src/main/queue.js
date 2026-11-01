@@ -267,6 +267,29 @@ class DownloadManager extends EventEmitter {
 
   // ---- internals ----
 
+  // The episode's file on one of the TARGET library's drives, or ''. Only
+  // the job's own library (the one it will be placed in), with the drive
+  // paths translated to the engine PC's, the same way placement does.
+  _inTargetLibrary(item, meta) {
+    const lib = item && item.library;
+    const locs = lib && Array.isArray(lib.locations) ? lib.locations : [];
+    if (!locs.length) return '';
+    let mappings = [];
+    try { mappings = (require('./engineconfig').get() || {}).pathMappings || []; } catch (e) { mappings = []; }
+    for (const loc of locs) {
+      let root = '';
+      try { root = placer.toEnginePath(loc, mappings); } catch (e) { root = ''; }
+      if (!root) continue;
+      try {
+        const f = organizer.existingEpisodeFile(root, meta, null, (item && item.episodeName) || '');
+        if (f) return f;
+      } catch (e) {
+        // unreadable drive: placement still refuses to overwrite
+      }
+    }
+    return '';
+  }
+
   // Per-site download limits. SFlix uses the global 5-wide queue (NontonGo MP4).
   // Player-bound token CDNs still serialize via _playerBoundHeld.
   _itemLimits(item) {
@@ -646,6 +669,47 @@ class DownloadManager extends EventEmitter {
         const partPath = finalPath + '.part';
         // Any video container in the library counts as present (.mkv and
         // friends are the normal Jellyfin layout).
+        // The TARGET LIBRARY first, before anything is downloaded. This used
+        // to check only staging: an episode already on a library drive was
+        // downloaded in full and thrown away at placement ("already in
+        // library") - Succession S4 was fetched three more times that way.
+        // Same rules as placement: a full-quality copy wins; a below-floor
+        // copy the engine placed may be replaced; anything unreadable holds.
+        const libHit = this._inTargetLibrary(item, meta);
+        if (libHit) {
+          const floorL = this._minHeight(item);
+          const have = await verifyFile(libHit, {});
+          if (have.probeOk && !belowMinHeight(have, floorL)) {
+            library.audit('skipped-already-in-library', libHit, `not downloaded: ${item.label}`);
+            this._log(`Already in the library, not downloading: ${libHit}`);
+            item.status = 'skipped';
+            item.error = null;
+            item.finalPath = libHit;
+            this._emit();
+            this._pruneGroupIfComplete(item.group);
+            return { fatal: false };
+          }
+          if (have.probeOk && !library.isOurs(libHit)) {
+            library.audit('skipped-foreign', libHit, `${have.height}p below the ${floorL}p floor, but not engine-owned`);
+            this._log(`"${path.basename(libHit)}" is ${have.height}p (below ${floorL}p) but was not placed by this engine; left untouched, not downloaded.`);
+            item.status = 'skipped';
+            item.error = 'existing file is not engine-owned; not replaced';
+            this._emit();
+            this._pruneGroupIfComplete(item.group);
+            return { fatal: false };
+          }
+          if (!have.probeOk) {
+            this._log(`Library copy "${path.basename(libHit)}" could not be verified (${have.reason}); holding "${item.label}" without downloading.`);
+            item.status = 'queued';
+            item.error = `existing library file unreadable: ${have.reason}`;
+            this._emit();
+            await delay(Math.min(config.download.retryMaxDelayMs || 60000, (config.download.retryBaseDelayMs || 2000) * 3));
+            continue;
+          }
+          // Below the floor and ours: download the better copy (placement
+          // replaces it under the same name).
+        }
+
         const found = organizer.existingEpisodeFile(item.outputRoot, meta) || '';
         // A .part is an aborted remux until proven otherwise. verifyFile with no
         // minDuration only asks for 20s and 64KB, so promoting one on that basis
