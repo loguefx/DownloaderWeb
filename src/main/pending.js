@@ -23,6 +23,32 @@ class PendingStore extends EventEmitter {
     const items = readJson(this._file(), []);
     this.items = Array.isArray(items) ? items : [];
     this._loaded = true;
+    // One entry per episode: lists saved before entries were identified
+    // by the episode (not its URL) can hold the same episode twice - LINK
+    // CLICK S3E11 parked once with the old URL (3-11) and once with the
+    // corrected TMDB one (4-11). Keep the oldest, with the newest URL.
+    const merged = [];
+    for (const it of this.items) {
+      const prev = merged.find((x) => PendingStore.identity(x) === PendingStore.identity(it));
+      if (!prev) {
+        merged.push(it);
+        continue;
+      }
+      const newer = (it.addedAt || 0) >= (prev.addedAt || 0) ? it : prev;
+      const older = newer === it ? prev : it;
+      Object.assign(older, { baseUrl: newer.baseUrl, template: newer.template, urlSeason: newer.urlSeason, urlEpisode: newer.urlEpisode });
+      if (older !== prev) merged[merged.indexOf(prev)] = older;
+    }
+    if (merged.length !== this.items.length) {
+      this.items = merged;
+      this._save();
+    }
+  }
+
+  // The episode an entry is for, whatever source URL it carries.
+  static identity(spec) {
+    const name = String(spec.series || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return [name, spec.season != null ? Number(spec.season) : '', Number(spec.episode), spec.mode || 'dub'].join('|');
   }
 
   _save() {
@@ -42,6 +68,19 @@ class PendingStore extends EventEmitter {
     this.load();
     const key = PendingStore.key(spec);
     if (this.items.some((it) => it.key === key)) return false;
+    // Already waiting under another URL: same episode - keep the one entry,
+    // with the newer URL (a corrected source address wins).
+    const same = this.items.find((it) => PendingStore.identity(it) === PendingStore.identity(spec));
+    if (same) {
+      if ((spec.baseUrl || spec.template) && (same.baseUrl !== (spec.baseUrl || null) || same.template !== (spec.template || null))) {
+        same.baseUrl = spec.baseUrl || null;
+        same.template = spec.template || null;
+        if (spec.urlSeason != null) same.urlSeason = Number(spec.urlSeason);
+        if (spec.urlEpisode != null) same.urlEpisode = Number(spec.urlEpisode);
+        this._save();
+      }
+      return false;
+    }
     this.items.push({
       key,
       label: spec.label,
@@ -80,6 +119,19 @@ class PendingStore extends EventEmitter {
     if (this.items.length === before) return false;
     this._save();
     return true;
+  }
+
+  // A finished download clears its waiting entry, whoever queued it (the
+  // watch list queued Chained Soldier S2E12; its waiting entry stayed until
+  // the next daily pass found the file). Returns the number removed.
+  removeEpisode(spec) {
+    this.load();
+    const id = PendingStore.identity(spec);
+    const before = this.items.length;
+    this.items = this.items.filter((it) => PendingStore.identity(it) !== id);
+    const n = before - this.items.length;
+    if (n) this._save();
+    return n;
   }
 
   markChecked(key) {

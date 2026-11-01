@@ -569,6 +569,17 @@ class DownloadManager extends EventEmitter {
     }
   }
 
+  // A finished episode is no longer waiting for its dub, whoever queued it.
+  _clearWaiting(item) {
+    if (!item || item.episode == null) return;
+    try {
+      const n = require('./pending').removeEpisode({ series: item.series, season: item.season, episode: item.episode, mode: item.mode || 'dub' });
+      if (n) this._log(`"${item.label}" is downloaded - removed from the waiting-for-dub list.`);
+    } catch (e) {
+      // the daily pass clears it from disk anyway
+    }
+  }
+
   // Every "done" exit goes through here (Jellyfin build plan Part 5).
   // Engine jobs carry a library: the finished file still sits in staging and
   // must be placed onto a library drive first. NO_SPACE leaves the file in
@@ -587,6 +598,7 @@ class DownloadManager extends EventEmitter {
     if (!item.library) {
       item.status = 'done';
       item.progress = 1;
+      this._clearWaiting(item);
       this._emit();
       this._log(note || `Completed: ${path.basename(finishedPath)}`);
       this._pruneGroupIfComplete(item.group);
@@ -625,12 +637,16 @@ class DownloadManager extends EventEmitter {
     item.finalPath = (result && result.finalPath) || finishedPath;
     item.status = 'done';
     item.progress = 1;
+    this._clearWaiting(item);
     this._emit();
+    // The library name can differ from the staging one (named like the
+    // episodes next to it): say which file it became.
+    const placedAs = path.basename(item.finalPath) !== path.basename(finishedPath) ? ` as "${path.basename(item.finalPath)}"` : '';
     this._log(
       result && result.existing
         ? `Completed: "${item.label}" was already in the library; the staging copy was dropped.`
-        : (note || `Completed: ${path.basename(item.finalPath)}`) +
-            ` (placed on ${path.dirname(item.finalPath)})`
+        : (note || `Completed: ${path.basename(finishedPath)}`) +
+            `${placedAs} (placed on ${path.dirname(item.finalPath)})`
     );
     this._pruneGroupIfComplete(item.group);
     return { fatal: false };

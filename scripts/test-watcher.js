@@ -615,6 +615,27 @@ async function main() {
     check('an entry of an AniDB library: the library numbering is "anime"', watcher.libraryNumbering({ library: { name: 'Anime' } }) === 'anime');
     check('a library with no numbered entries: unknown (left as is)', watcher.libraryNumbering({ library: { name: 'Nope' } }) === null);
   }
+  console.log('\n[16] Waiting-for-dub list: one entry per episode, cleared when downloaded');
+  {
+    const base = { series: 'Waiting Dedupe Show', season: 3, episode: 11, mode: 'dub', outputRoot: staging, library, anime: true, tmdb: '123542', numbering: 'anime' };
+    const before = pending.list().length;
+    pending.add(Object.assign({}, base, { label: 'Waiting Dedupe Show S3E11', baseUrl: vid('123542', 3, 11) }));
+    const again = pending.add(Object.assign({}, base, { label: 'Waiting Dedupe Show S3E11', baseUrl: vid('123542', 4, 11), urlSeason: 4, urlEpisode: 11 }));
+    const lc = pending.list().filter((x) => x.series === 'Waiting Dedupe Show' && x.episode === 11);
+    check('same episode parked again with a new URL -> still ONE entry', !again && lc.length === 1 && pending.list().length === before + 1, JSON.stringify(lc.map((x) => x.baseUrl)));
+    check('...carrying the newer (corrected) URL', lc[0] && lc[0].baseUrl === vid('123542', 4, 11) && lc[0].urlSeason === 4, lc[0] && lc[0].baseUrl);
+    // A list saved by the old code with the episode twice is merged on load.
+    const file = path.join(DATA_DIR, 'pending.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    saved.push(Object.assign({}, saved.find((x) => x.series === 'Waiting Dedupe Show'), { key: 'old-dup-key', baseUrl: vid('123542', 3, 11), addedAt: 1 }));
+    fs.writeFileSync(file, JSON.stringify(saved));
+    pending._loaded = false;
+    const lc2 = pending.list().filter((x) => x.series === 'Waiting Dedupe Show' && x.episode === 11);
+    check('an old list holding the episode twice is merged when loaded', lc2.length === 1, JSON.stringify(lc2.map((x) => x.key)));
+    const n = pending.removeEpisode({ series: 'waiting dedupe SHOW', season: 3, episode: 11, mode: 'dub' });
+    check('a finished download clears its waiting entry (any URL, any title case)', n === 1 && !pending.list().some((x) => x.series === 'Waiting Dedupe Show' && x.episode === 11));
+  }
+
   service.watcherModeSet({ dryRun: true });
 
   // ---- summary ----------------------------------------------------------------
