@@ -275,6 +275,25 @@ function noSpaceError(lib) {
 }
 
 // Places item.finalPath (finished + verified in staging) onto a library drive.
+// The library drive + path where this episode's neighbors already sit, when
+// that drive is ready and has room; null otherwise (normal placement).
+function neighborTarget(job, meta, episodeName, sizeBytes) {
+  const cfg = engineconfig.get();
+  const reserve = cfg.reserveBytes || 0;
+  if (!(meta && Number(meta.episode) > 0)) return null;
+  for (const loc of (job && job.locations) || []) {
+    let root = '';
+    try { root = toEnginePath(loc, cfg.pathMappings); } catch (e) { root = ''; }
+    if (!root) continue;
+    const ready = folderReady(root);
+    if (!ready.ready || !(ready.freeUnknown || ready.free >= sizeBytes + reserve)) continue;
+    let p = null;
+    try { p = organizer.neighborStylePath(root, meta, episodeName); } catch (e) { p = null; }
+    if (p) return { folder: root, path: p, free: ready.free || 0, freeUnknown: !!ready.freeUnknown };
+  }
+  return null;
+}
+
 // Throws NO_SPACE when nothing fits; the file stays in staging.
 async function placeItem(item, stagedPath) {
   const job = item && item.library;
@@ -293,7 +312,10 @@ async function placeItem(item, stagedPath) {
   const meta = { series: item.series, season: item.season, episode: item.episode };
   if (/^\d+$/.test(String(item.tmdb || '').trim())) meta.tmdb = String(item.tmdb).trim();
   if (item.presenceAlt) meta.alt = item.presenceAlt;
-  const pick = pickFolder(job, meta, size);
+  // Filling a gap: the drive and folder that hold its neighbors, named like
+  // them (organizer.neighborStylePath), so Jellyfin lists it in order.
+  const styled = neighborTarget(job, meta, item.episodeName || '', size);
+  const pick = styled || pickFolder(job, meta, size);
   if (!pick) {
     library.audit('no-space', staged, job.name || 'library', { bytes: size });
     throw noSpaceError(job);
@@ -301,8 +323,9 @@ async function placeItem(item, stagedPath) {
   if (pick.freeUnknown) {
     library.audit('free-space-unknown', staged, `${pick.folder} does not report its free space; placed without the reserve check`);
   }
-  const finalPath = organizer.expectedPath(pick.folder, meta, '.mp4');
+  const finalPath = styled ? styled.path : organizer.expectedPath(pick.folder, meta, '.mp4');
   const cfg = engineconfig.get();
+  if (styled) library.audit('named-like-neighbors', finalPath, `${item.series} S${item.season}E${item.episode}`);
 
   // Already on the target drive? (episode name lets a hand-named file count)
   const already = organizer.existingEpisodeFile(pick.folder, meta, null, item.episodeName || '');

@@ -592,6 +592,26 @@ async function main() {
       put('LINK CLICK/Season 4/LINK CLICK S04E02.mp4');
       check('AniDB S3E2 found as TMDB S4E2 via alt.pairs', !!has({ series: 'LINK CLICK', season: 3, episode: 2, alt: { pairs: [{ season: 4, episode: 2 }] } }));
     }
+    {
+      // A missing episode is named like its neighbors, in their folder, so
+      // Jellyfin lists it in order (user library: Naruto Shippuden Season 6).
+      const root = path.join(base, 'NeighborStyle');
+      const put = (rel) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); };
+      const NS = 'Naruto Shippuden (2007) [tmdb-31910]/Season 6/';
+      put(NS + 'S06E287 - Naruto Shippuden_S06E287_(Dub) One Worth Betting On.mp4');
+      put(NS + 'S06E289 - Naruto Shippuden_S06E289_(Dub) The Lightning Blade_ Ameyuri Ringo!.mp4');
+      const ns = organizer.neighborStylePath(root, { series: 'Naruto Shippuden', tmdb: '31910', season: 1, episode: 288, alt: { absolute: [{ n: 288, counts: { 1: 500 } }] } }, 'The Lightning Blade: Ameyuri Ringo');
+      check('gap E288 named like E287/E289, in Season 6', ns === path.join(root, NS, 'S06E288 - Naruto Shippuden_S06E288_(Dub) The Lightning Blade_ Ameyuri Ringo.mp4'), String(ns));
+      put('Chained Soldier/Season 2/Chained Soldier Season 2 - EP11.mp4');
+      const cs = organizer.neighborStylePath(root, { series: 'Chained Soldier', season: 2, episode: 12 }, 'Title');
+      check('"... - EP11" -> "... - EP12" (no title added to a title-less style)', cs === path.join(root, 'Chained Soldier/Season 2/Chained Soldier Season 2 - EP12.mp4'), String(cs));
+      for (const sn of [1, 2]) for (const e of [1, 2, 3]) put(`Ranma (1989) [tmdb-57706]/Season 0${sn}/S0${sn}E0${e} - t.mp4`);
+      put('Ranma (1989) [tmdb-57706]/Season 03/S03E02 - t.mp4');
+      const rm = (e) => ({ series: 'Ranma', tmdb: '57706', season: 1, episode: e, alt: { absolute: [{ n: e, counts: { 1: 161 } }] } });
+      check('first episode of a disk season follows the NEXT episode (S03E01, not S02E04)', organizer.neighborStylePath(root, rm(7), 'New') === path.join(root, 'Ranma (1989) [tmdb-57706]/Season 03/S03E01 - New.mp4'), String(organizer.neighborStylePath(root, rm(7), 'New')));
+      check('no neighbor on disk: standard layout (null)', organizer.neighborStylePath(root, { series: 'Nothing Here', season: 1, episode: 5 }, 'x') === null);
+      check('restyle keeps zero padding and the (Dub) tag', organizer.restyleName('One Piece - S02E078 - Old Title.mkv', 1, 'New') === 'One Piece - S02E079 - New.mp4');
+    }
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
     // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
     // via the unambiguous S#E# / #x# / EP# markers...

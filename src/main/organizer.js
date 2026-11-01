@@ -670,6 +670,101 @@ function looseEpisodeOf(base, series) {
   return episodeNumberFromName(b + '.x');
 }
 
+// ---- Library naming style: fill a gap the way its neighbors are named ----
+//
+// A missing episode lands next to the episodes around it, named like them,
+// so Jellyfin lists it in order: Naruto Shippuden E288 between
+// "Season 6/S06E287 - Naruto Shippuden_S06E287_(Dub) One Worth Betting On"
+// and S06E289 becomes "Season 6/S06E288 - Naruto Shippuden_S06E288_(Dub)
+// <its title>" - not "Season 1/Naruto Shippuden S1E288" (TMDB's one season).
+// Returns the full path, or null (no neighbor on disk: the standard layout).
+
+// The episode's other identities, moved by d episodes (a neighbor's).
+function shiftAlt(alt, d) {
+  if (!alt) return null;
+  return {
+    pairs: (alt.pairs || []).map((p) => ({ season: p.season, episode: Number(p.episode) + d })),
+    absolute: (alt.absolute || []).map((a) => ({ n: Number(a.n) + d, counts: a.counts }))
+  };
+}
+
+// A title as the library writes it: characters Windows refuses become "_"
+// ("Helmet Splitter: Jinin" -> "Helmet Splitter_ Jinin").
+function styleTitle(title) {
+  return String(title || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().replace(/[. ]+$/g, '');
+}
+
+// The neighbor's file name with its episode number moved by delta and its
+// title replaced by this episode's. null when the name carries no number we
+// can move safely.
+function restyleName(fileName, delta, title) {
+  const ext = path.extname(fileName);
+  let b = fileName.slice(0, fileName.length - ext.length).replace(/\s*\(\d+\)$/, '');
+  let lastEnd = -1;
+  const pad = (n, w) => String(n).padStart(w, '0');
+  const m = b.match(/s(\d{1,3})e(\d{1,4})(?!\d)/i);
+  if (m) {
+    const ms = parseInt(m[1], 10);
+    const me = parseInt(m[2], 10);
+    const ne = me + delta;
+    if (ne < 1) return null;
+    // Every copy of the marker ("S06E287 - Naruto Shippuden_S06E287_...").
+    b = b.replace(new RegExp(`s0*${ms}e0*${me}(?!\\d)`, 'gi'), (x) => {
+      const mm = x.match(/^(s)(\d+)(e)(\d+)$/i);
+      return mm[1] + mm[2] + mm[3] + pad(ne, mm[4].length);
+    });
+    const re2 = new RegExp(`s0*${ms}e0*${ne}(?!\\d)`, 'gi');
+    let x;
+    while ((x = re2.exec(b))) lastEnd = x.index + x[0].length;
+  } else {
+    const t = b.match(/\b(ep|episode)([\s._-]*)(\d{1,4})(?!\d)/i);
+    if (!t) return null;
+    const ne = parseInt(t[3], 10) + delta;
+    if (ne < 1) return null;
+    const repl = t[1] + t[2] + pad(ne, t[3].length);
+    b = b.slice(0, t.index) + repl + b.slice(t.index + t[0].length);
+    lastEnd = t.index + repl.length;
+  }
+  if (lastEnd < 0) return null;
+  const head = b.slice(0, lastEnd);
+  const tail = b.slice(lastEnd);
+  // After the number: separators and a (Dub)/(Sub) tag are the style; the
+  // rest is the neighbor's OWN title, which never carries over.
+  const tm = tail.match(/^([\s._-]*(?:\((?:dub|sub|eng(?:lish)? dub)\)\s*)?)([\s\S]*)$/i);
+  const sep = tm ? tm[1] : '';
+  const oldTitle = tm ? tm[2] : tail;
+  const t = styleTitle(title);
+  let out;
+  if (oldTitle.trim()) out = t ? head + sep + t : head + sep.replace(/[\s._-]+$/, '');
+  else out = head + sep.replace(/[\s._-]+$/, '');
+  out = out.replace(/[. ]+$/g, '');
+  return out ? out + '.mp4' : null;
+}
+
+function neighborStylePath(outputRoot, meta, episodeName = '') {
+  const ep = parseInt(meta && meta.episode, 10);
+  if (!outputRoot || !(ep > 0)) return null;
+  const preds = [];
+  for (const d of [-1, 1]) {
+    const k = ep + d;
+    if (k < 1) continue;
+    let f = null;
+    try {
+      f = existingEpisodeFile(outputRoot, Object.assign({}, meta, { episode: k, alt: shiftAlt(meta.alt, d) }));
+    } catch (e) {
+      f = null;
+    }
+    if (!f) continue;
+    const name = restyleName(path.basename(f), -d, episodeName);
+    if (name) preds.push(path.join(path.dirname(f), name));
+  }
+  if (!preds.length) return null;
+  // Both neighbors agree, or only one exists. When they disagree the gap is
+  // the first episode of a new disk season: follow the NEXT episode.
+  if (preds.length === 2 && preds[0].toLowerCase() !== preds[1].toLowerCase()) return preds[1];
+  return preds[0];
+}
+
 function existingEpisodeFileOne(outputRoot, meta, ext = null, episodeName = '') {
   if (!outputRoot) return null;
   const exact = expectedPath(outputRoot, meta, '.mp4');
@@ -1083,6 +1178,8 @@ module.exports = {
   buildOutputPath,
   expectedPath,
   existingEpisodeFile,
+  neighborStylePath,
+  restyleName,
   episodeNumberFromName,
   seriesExtent,
   seriesLayoutRisk,

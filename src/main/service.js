@@ -667,6 +667,9 @@ function schedulesAdd(spec) {
     anime: spec.anime != null ? !!spec.anime : null,
     movie: spec.movie != null ? !!spec.movie : null
   };
+  // The library's season numbering ('anime' = AniDB-style) travels with the
+  // entry: new episodes are checked and named in it.
+  if (spec.numbering === 'anime' || spec.numbering === 'tmdb') specKey.numbering = spec.numbering;
   const added = schedule.add(Object.assign({}, specKey, {
     outputRoot: spec.outputRoot || engineconfig.stagingPath()
   }));

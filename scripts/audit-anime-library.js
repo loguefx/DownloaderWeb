@@ -34,6 +34,13 @@
  *   --numbering X      anime (AniDB/AniList library, default) or tmdb
  *   --only a,b         only series whose folder name contains one of these
  *   --json file        also write the full report as JSON
+ *   --add-watch a,b    put these titles on the engine's watch list (engine
+ *                      must be running); it downloads the missing aired
+ *                      episodes at engine start and daily after
+ *   --library X        library for --add-watch (default "Anime")
+ *   --mode dub|sub     default dub (anime: English dub only; others wait)
+ *   --min-height N     default 1080
+ *   --watch-live       also switch the watcher out of report-only mode
  *
  * Needs the engine's TMDB key (engine.json "tmdbApiKey", or TMDB_API_KEY).
  */
@@ -46,7 +53,7 @@ const tmdb = require(path.join(SRC, 'tmdb.js'));
 const animelayout = require(path.join(SRC, 'anime-layout.js'));
 const organizer = require(path.join(SRC, 'organizer.js'));
 
-const OPTS_WITH_VALUE = new Set(['--limit', '--numbering', '--only', '--json']);
+const OPTS_WITH_VALUE = new Set(['--limit', '--numbering', '--only', '--json', '--add-watch', '--library', '--mode', '--min-height']);
 function arg(name, def) {
   const i = process.argv.indexOf('--' + name);
   return i > 0 && process.argv[i + 1] != null ? process.argv[i + 1] : def;
@@ -291,9 +298,106 @@ async function auditOne(g, rootList, numbering) {
   if (loose) row.notes.push(`${loose} file(s) outside "Season N" folders (counted when the engine can read their episode number).`);
   if (g.entries.length > 1) row.notes.push(`Merged ${g.entries.length} folders: ${g.entries.map((e) => e.dir).join(' | ')}`);
 
+  // What the watch list would do with this title (same guards as the daily
+  // check): frozen by the risk list, or held by the layout-safety check.
+  row.seasonsMissing = row.seasons.filter((x) => x.missingCount > 0).map((x) => x.season);
+  try {
+    const risk = ((require(path.join(SRC, 'engineconfig.js')).get() || {}).riskSeries || []).map(String);
+    if (risk.includes(String(id))) row.notes.push('Watch list: FROZEN (its TMDB id is in the engine\'s risk list) - it would download nothing until cleared.');
+  } catch (e) { /* no engine config */ }
+  try {
+    const sourceTotal = layout.reduce((a, x) => a + (Number(x.episodes) || 0), 0);
+    const lr = organizer.seriesLayoutRiskFor(rootList, series, sourceTotal);
+    row.watchHold = lr && lr.mode === 'hold' ? lr.reason : null;
+    if (row.watchHold) row.warnings.push(`Watch list would HOLD this title (downloads nothing): ${lr.reason}.`);
+  } catch (e) { /* best effort */ }
+
   if (row.problems.length) row.status = 'MISMATCH';
   else if (row.warnings.length) row.status = 'WARN';
   return row;
+}
+
+// ---- --add-watch: put titles with missing episodes on the engine's watch list
+// (POST /api/schedules on the running engine). The daily check - and the one
+// at engine start - then downloads every AIRED episode it does not find on any
+// drive (English dub only for anime in dub mode: the rest wait for their dub),
+// starting at the first season with a gap and moving on season by season.
+function engineRequest(method, p, body) {
+  const ec = require(path.join(SRC, 'engineconfig.js')).get() || {};
+  const port = Number(ec.port) || 7878;
+  const payload = body ? JSON.stringify(body) : null;
+  return new Promise((resolve, reject) => {
+    const req = require('http').request({ host: '127.0.0.1', port, path: p, method, headers: Object.assign(
+      { Authorization: 'Bearer ' + ec.apiKey },
+      payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}) }, (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; });
+      res.on('end', () => {
+        let j = null;
+        try { j = JSON.parse(d); } catch (e) { j = null; }
+        if (res.statusCode >= 400) reject(new Error(`engine answered ${res.statusCode}: ${d.slice(0, 200)}`));
+        else resolve(j);
+      });
+    });
+    req.on('error', (e) => reject(new Error(`engine not reachable on 127.0.0.1:${port} (${e.message}) - start the engine and run this again`)));
+    req.setTimeout(15000, () => req.destroy(new Error('timeout')));
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function addToWatch(rows, rootList, numbering) {
+  const terms = String(arg('add-watch', '')).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (!terms.length) return;
+  const libName = arg('library', 'Anime');
+  const mode = arg('mode', 'dub') === 'sub' ? 'sub' : 'dub';
+  const minHeight = Number(arg('min-height', '1080')) || 0;
+  console.log(`\nAdding to the watch list (library "${libName}", ${mode.toUpperCase()}, ${minHeight || 'any'}p):`);
+  for (const r of rows) {
+    const name = String(r.series || '').toLowerCase();
+    const tname = String(r.tmdbName || '').toLowerCase();
+    if (!terms.some((t) => name.includes(t) || tname.includes(t))) continue;
+    if (!r.tmdb) { console.log(`  skip  ${r.series}: no TMDB id`); continue; }
+    if (!r.seasonsMissing || !r.seasonsMissing.length) { console.log(`  skip  ${r.series}: nothing missing`); continue; }
+    if (r.watchHold) { console.log(`  skip  ${r.series}: the watch list would hold it (${r.watchHold})`); continue; }
+    const season = Math.min(...r.seasonsMissing);
+    const spec = {
+      series: r.tmdbName || r.series,
+      season,
+      mode,
+      baseUrl: `https://vidsrc.sh/embed/tv/${r.tmdb}-${season}-1`,
+      library: { id: libName, name: libName, locations: rootList },
+      minHeight,
+      tmdb: String(r.tmdb),
+      anime: true,
+      movie: false,
+      numbering
+    };
+    try {
+      const res = await engineRequest('POST', '/api/schedules', spec);
+      const miss = r.seasons.filter((x) => x.missingCount > 0).map((x) => `S${x.season} ${x.missing}`).join('; ');
+      console.log(`  ${res && res.added ? 'added' : 'kept '} ${spec.series} from season ${season} - missing: ${miss}`);
+    } catch (e) {
+      console.log(`  FAIL  ${spec.series}: ${e.message}`);
+      if (/not reachable/.test(e.message)) return;
+    }
+  }
+  try {
+    if (process.argv.includes('--watch-live')) {
+      await engineRequest('POST', '/api/schedules/mode', { dryRun: false });
+      console.log('Watcher switched to LIVE: the next check downloads (for every watched title).');
+    } else {
+      const st = await engineRequest('GET', '/api/schedules');
+      if (st && st.dryRun !== false) {
+        console.log('NOTE: the watcher is in REPORT-ONLY mode - it lists these episodes but downloads nothing.');
+        console.log('      Re-run with --watch-live (or switch it off in the engine) to let it download.');
+      } else {
+        console.log('Watcher is LIVE: the missing episodes download on the next check (engine start, then daily).');
+      }
+    }
+  } catch (e) {
+    console.log('Could not read the watcher mode: ' + e.message);
+  }
 }
 
 async function main() {
@@ -327,6 +431,7 @@ async function main() {
   console.log('!! MISMATCH: the engine would number or file some episodes differently from your folders - keep those titles off the watch list until fixed.');
   console.log('?? WARN: check the named files; everything else lines up.');
   console.log('"would download" = episodes the engine does not find on any drive (missing, or named in a way it cannot read).');
+  await addToWatch(rows, rootList, numbering);
   const out = arg('json', '');
   if (out) {
     fs.writeFileSync(out, JSON.stringify(rows, null, 2));
@@ -342,4 +447,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { folderTitle, collectSeries, listVideos, auditOne };
+module.exports = { folderTitle, collectSeries, listVideos, auditOne, addToWatch };
