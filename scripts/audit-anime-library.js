@@ -41,6 +41,8 @@
  *   --mode dub|sub     default dub (anime: English dub only; others wait)
  *   --min-height N     default 1080
  *   --watch-live       also switch the watcher out of report-only mode
+ *   --unfreeze         watch titles frozen by the engine's risk list anyway
+ *                      (clears the freeze for those titles only)
  *
  * Needs the engine's TMDB key (engine.json "tmdbApiKey", or TMDB_API_KEY).
  */
@@ -293,6 +295,7 @@ async function auditOne(g, rootList, numbering) {
   row.unattributed = stray.length;
   if (stray.length) {
     row.warnings.push(`${stray.length} of ${videos.length} video file(s) are not recognized as any episode of the layout (e.g. "${path.relative(g.entries[0].root, stray[0].path)}") - if they are episodes, they would be downloaded again.`);
+    if (stray.length <= 10) for (const v of stray) row.notes.push('not recognized: ' + v.path);
   }
   const loose = videos.filter((v) => v.season == null).length;
   if (loose) row.notes.push(`${loose} file(s) outside "Season N" folders (counted when the engine can read their episode number).`);
@@ -303,7 +306,8 @@ async function auditOne(g, rootList, numbering) {
   row.seasonsMissing = row.seasons.filter((x) => x.missingCount > 0).map((x) => x.season);
   try {
     const risk = ((require(path.join(SRC, 'engineconfig.js')).get() || {}).riskSeries || []).map(String);
-    if (risk.includes(String(id))) row.notes.push('Watch list: FROZEN (its TMDB id is in the engine\'s risk list) - it would download nothing until cleared.');
+    row.frozen = risk.includes(String(id));
+    if (row.frozen) row.notes.push('Watch list: FROZEN (its TMDB id is in the engine\'s risk list) - it would download nothing until cleared (--add-watch ... --unfreeze clears it for this title).');
   } catch (e) { /* no engine config */ }
   try {
     const sourceTotal = layout.reduce((a, x) => a + (Number(x.episodes) || 0), 0);
@@ -360,6 +364,10 @@ async function addToWatch(rows, rootList, numbering) {
     if (!r.tmdb) { console.log(`  skip  ${r.series}: no TMDB id`); continue; }
     if (!r.seasonsMissing || !r.seasonsMissing.length) { console.log(`  skip  ${r.series}: nothing missing`); continue; }
     if (r.watchHold) { console.log(`  skip  ${r.series}: the watch list would hold it (${r.watchHold})`); continue; }
+    if (r.frozen && !process.argv.includes('--unfreeze')) {
+      console.log(`  skip  ${r.series}: frozen by the engine's risk list - add --unfreeze to watch it anyway (the engine now finds ${r.seasons.reduce((a, x) => a + x.haveCount, 0)} of its episodes under your numbering)`);
+      continue;
+    }
     const season = Math.min(...r.seasonsMissing);
     const spec = {
       series: r.tmdbName || r.series,
@@ -377,6 +385,12 @@ async function addToWatch(rows, rootList, numbering) {
       const res = await engineRequest('POST', '/api/schedules', spec);
       const miss = r.seasons.filter((x) => x.missingCount > 0).map((x) => `S${x.season} ${x.missing}`).join('; ');
       console.log(`  ${res && res.added ? 'added' : 'kept '} ${spec.series} from season ${season} - missing: ${miss}`);
+      if (r.frozen) {
+        // Per-title override: this watch entry is cleared; the risk list
+        // itself is left as it is.
+        await engineRequest('POST', '/api/schedules/freeze', { tmdb: String(r.tmdb), frozen: false });
+        console.log(`        unfrozen (this title only)`);
+      }
     } catch (e) {
       console.log(`  FAIL  ${spec.series}: ${e.message}`);
       if (/not reachable/.test(e.message)) return;
