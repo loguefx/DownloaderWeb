@@ -636,6 +636,26 @@ async function main() {
     check('a finished download clears its waiting entry (any URL, any title case)', n === 1 && !pending.list().some((x) => x.series === 'Waiting Dedupe Show' && x.episode === 11));
   }
 
+  console.log('\n[17] Daily dub summary: Anime Village asked only what Aniwave and the saved answers do not cover');
+  {
+    const dubstatus = M('dubstatus');
+    const anidb = M('anidb');
+    dubstatus._resetForTests();
+    anidb._clearCaches();
+    const asked = [];
+    // Aniwave: E1-E9 dubbed, E10-E12 not.
+    dubstatus._setAniwaveForTests(async () => ({ show: { id: 'x' }, episodes: Array.from({ length: 12 }, (_, i) => ({ episode: i + 1, dub: i < 9 })) }));
+    dubstatus._setAnimevillageForTests(async (title, season, eps) => { asked.push(...eps); return new Map(eps.map((e) => [e, e === 10])); });
+    const d1 = await anidb.englishDubForTmdb('42', { title: 'Summary Show', season: 1 });
+    check('only E10-E12 asked of Anime Village (Aniwave already shows E1-E9 dubbed)', JSON.stringify(asked.sort((a, b) => a - b)) === '[10,11,12]', JSON.stringify(asked));
+    check('...the count still covers both sources (10 of 12)', d1.available === true && d1.englishDubReleases === 10 && d1.totalReleases === 12, JSON.stringify(d1));
+    asked.length = 0;
+    await anidb.englishDubForTmdb('42', { title: 'Summary Show', season: 1, force: true });
+    check('next summary reuses the saved answers - Anime Village not asked again', asked.length === 0, JSON.stringify(asked));
+    dubstatus._setAniwaveForTests(async () => null);
+    dubstatus._setAnimevillageForTests(async (title, season, eps) => new Map(eps.map((e) => [Number(e), true])));
+  }
+
   service.watcherModeSet({ dryRun: true });
 
   // ---- summary ----------------------------------------------------------------

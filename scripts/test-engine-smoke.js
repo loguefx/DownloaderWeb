@@ -470,6 +470,39 @@ async function main() {
   check('unknown endpoint -> 404', r.status === 404);
 
   manager.stopAll('smoke test done');
+  // ---- staging report / cleanup: only copies already in a library and
+  //      capture leftovers are ever deleted ------------------------------
+  {
+    const st = engineconfig.stagingPath();
+    const lib2 = path.join(DATA_DIR, 'lib-staging-test');
+    const put = (p, bytes = 2048) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'.repeat(bytes)); return p; };
+    // in the library already (staging copy is a leftover)
+    put(path.join(lib2, 'Leftover Show', 'Season 1', 'Leftover Show S01E01.mkv'));
+    const leftover = put(path.join(st, 'Leftover Show', 'Season 1', 'Leftover Show S1E1.mp4'));
+    // capture junk nobody owns
+    const junkDir = path.join(st, 'Leftover Show', 'Season 1', 'Leftover Show S1E2.mp4.part.hls');
+    put(path.join(junkDir, 'seg1.ts'));
+    // owned by a queued download (its .part) - must survive
+    const ownedFinal = path.join(st, 'Busy Show', 'Season 1', 'Busy Show S1E1.mp4');
+    const ownedPart = put(ownedFinal + '.part');
+    manager.items.push({ id: 990001, label: 'Busy Show S1E1', series: 'Busy Show', season: 1, episode: 1, status: 'queued', finalPath: ownedFinal, library: { name: 'T', locations: [lib2] } });
+    // not in a library, not queued - kept
+    const unplaced = put(path.join(st, 'Mystery Show', 'Season 1', 'Mystery Show S1E5.mp4'));
+    let rr = await req('GET', '/api/staging/report', null, { authorization: `Bearer ${KEY}` });
+    const g = rr.json && rr.json.groups;
+    check('staging report -> 200 with groups', rr.status === 200 && g && g.inLibrary && g.junk, rr.body.slice(0, 200));
+    check('...a copy already in the library is "inLibrary"', g && g.inLibrary.files.some((f) => f.path === leftover), JSON.stringify(g && g.inLibrary.files.map((f) => f.path)));
+    check('...an unowned capture folder is "junk"', g && g.junk.files.some((f) => f.path === junkDir));
+    check('...a queued download\'s .part is "active"', g && g.active.files.some((f) => f.path === ownedPart && f.item === 'Busy Show S1E1'));
+    check('...a video in no library and no queue is "unplaced"', g && g.unplaced.files.some((f) => f.path === unplaced));
+    check('...the report deleted nothing', fs.existsSync(leftover) && fs.existsSync(junkDir) && fs.existsSync(ownedPart) && fs.existsSync(unplaced));
+    rr = await req('POST', '/api/staging/clean', null, { authorization: `Bearer ${KEY}` });
+    check('clean -> deletes the library copy and the leftover', rr.status === 200 && !fs.existsSync(leftover) && !fs.existsSync(junkDir), rr.body.slice(0, 200));
+    check('...keeps the queued download\'s .part and the unplaced video', fs.existsSync(ownedPart) && fs.existsSync(unplaced));
+    check('...and reports what it freed', rr.json && rr.json.cleaned && rr.json.cleaned.deleted === 2, JSON.stringify(rr.json && rr.json.cleaned));
+    manager.items = manager.items.filter((x) => x.id !== 990001);
+  }
+
   await api.stop();
 
   // ---- summary -----------------------------------------------------------------

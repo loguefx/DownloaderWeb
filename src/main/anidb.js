@@ -170,12 +170,22 @@ function ensure(tmdbId, { title = '', season = 1 } = {}) {
 }
 
 // Injectable for tests: (title, season) -> { aniwave: Map|null, animevillage: Map|null }
+// Aniwave first (one request for the whole season); Anime Village is asked
+// only about the episodes Aniwave does not show dubbed, through the engine's
+// saved per-episode answers (dubstatus, kept for days) - so the daily
+// summary line no longer re-asks Anime Village about every episode (two
+// stream requests each: LINK CLICK took 80 s and the burst set off the
+// site's timeouts for the downloads running at the same time).
 let sources = async (title, season) => {
   const dubstatus = require('./dubstatus');
-  const [aniwave, animevillage] = await Promise.all([
-    dubstatus.aniwaveDubMap(title, season).catch(() => null),
-    require('./sites/animevillage_api').dubMap(title, season).catch(() => null)
-  ]);
+  const aniwave = await dubstatus.aniwaveDubMap(title, season).catch(() => null);
+  let animevillage = null;
+  if (aniwave && aniwave.size) {
+    const need = [...aniwave.keys()].filter((ep) => aniwave.get(ep) !== true);
+    if (need.length) animevillage = await dubstatus.animevillageDubMap(title, season, need).catch(() => null);
+  } else {
+    animevillage = await require('./sites/animevillage_api').dubMap(title, season).catch(() => null);
+  }
   return { aniwave, animevillage };
 };
 

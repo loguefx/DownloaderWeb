@@ -223,6 +223,19 @@ async function handle(req, res, u) {
   const seg = parts[1];
 
   try {
+    // ---- staging: what fills it; cleanup of leftovers only ----
+    //   GET  /api/staging/report   read-only
+    //   POST /api/staging/clean    deletes ONLY copies already in a library
+    //                              and capture leftovers no download owns
+    if (seg === 'staging' && parts[2] === 'report' && req.method === 'GET') {
+      json(res, 200, service.stagingReport({ apply: false }));
+      return;
+    }
+    if (seg === 'staging' && parts[2] === 'clean' && req.method === 'POST') {
+      json(res, 200, service.stagingReport({ apply: true }));
+      return;
+    }
+
     // ---- health ----
     if (req.method === 'GET' && seg === 'health') {
       json(res, 200, service.health());

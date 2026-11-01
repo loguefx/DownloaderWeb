@@ -147,6 +147,183 @@ function stagingInfo() {
   };
 }
 
+// ---- staging report / cleanup ----
+// What is filling the staging folder (and its drive), file by file:
+//   active     belongs to a download still in the queue (queued, running,
+//              placing, waiting or failed - a retry resumes from it): NEVER
+//              touched
+//   inLibrary  a finished video whose episode is already on a library drive
+//              (any identity the presence check knows): the staging copy is
+//              a leftover - safe to delete
+//   junk       capture leftovers (.part / .hls / .part.m3u8) no queue item
+//              owns: safe to delete
+//   unplaced   a video that is neither in a library nor queued: listed, kept
+//   other      anything else: listed, kept
+// apply: true deletes ONLY inLibrary + junk, then empty folders.
+const STAGING_VIDEO = /\.(mp4|mkv|avi|m4v|ts|webm)$/i;
+const STAGING_JUNK = /\.part$|\.part\.hls$|\.hls$|\.part\.m3u8$|\.tmp$|_temp_\d+_\d+\.mp4$/i;
+
+function stagingWalk(root) {
+  const out = [];
+  const walk = (dir, depth) => {
+    if (depth > 6) return;
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        // a capture folder ("<name>.part.hls/") is one junk item as a whole
+        if (/\.part\.hls$|\.hls$/i.test(e.name)) {
+          out.push({ path: p, dir: true, bytes: dirBytes(p), mtime: mtimeOf(p) });
+          continue;
+        }
+        walk(p, depth + 1);
+      } else if (e.isFile()) {
+        let st = null;
+        try { st = fs.statSync(p); } catch (err) { st = null; }
+        out.push({ path: p, dir: false, bytes: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 });
+      }
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+function dirBytes(d) {
+  let n = 0;
+  const walk = (x, depth) => {
+    if (depth > 4) return;
+    let ents = [];
+    try { ents = fs.readdirSync(x, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      const p = path.join(x, e.name);
+      if (e.isDirectory()) walk(p, depth + 1);
+      else { try { n += fs.statSync(p).size; } catch (err) { /* gone */ } }
+    }
+  };
+  walk(d, 0);
+  return n;
+}
+function mtimeOf(p) {
+  try { return fs.statSync(p).mtimeMs; } catch (e) { return 0; }
+}
+
+// Every library location the engine knows (watch list, waiting list, queue),
+// as engine paths.
+function knownLibraryRoots() {
+  const roots = new Set();
+  const add = (lib) => {
+    for (const loc of (lib && Array.isArray(lib.locations) ? lib.locations : [])) {
+      try { roots.add(placer.toEnginePath(loc)); } catch (e) { /* ignore */ }
+    }
+  };
+  try { schedule.list().forEach((s) => add(s.library)); } catch (e) { /* ignore */ }
+  try { pending.list().forEach((s) => add(s.library)); } catch (e) { /* ignore */ }
+  try { (manager.items || []).forEach((it) => add(it.library)); } catch (e) { /* ignore */ }
+  return [...roots].filter(Boolean);
+}
+
+// The episode a staging file is (<staging>/<Series>/Season N/<Series> SxEy.mp4).
+function stagingMeta(root, file) {
+  const rel = path.relative(root, file).split(/[\\/]/);
+  if (rel.length < 2) return null;
+  const series = rel[0];
+  const seasonDir = rel.length >= 3 ? rel[rel.length - 2] : '';
+  const base = path.basename(file);
+  const m = base.match(/s0*(\d{1,3})e0*(\d{1,4})(?!\d)/i);
+  let season = m ? parseInt(m[1], 10) : organizer.seasonFromName(seasonDir);
+  const episode = m ? parseInt(m[2], 10) : organizer.episodeNumberFromName(base);
+  if (season == null && episode != null) season = 1;
+  return { series, season: season != null ? season : null, episode: episode != null ? episode : null };
+}
+
+function stagingReport(opts = {}) {
+  const root = engineconfig.stagingPath();
+  const info = stagingInfo();
+  const files = stagingWalk(root);
+  // Paths owned by queue items that are not finished (a retry resumes from
+  // the .part / capture folder next to the final path).
+  const owned = [];
+  for (const it of manager.items || []) {
+    if (!it || it.status === 'done' || it.status === 'cancelled') continue;
+    if (it.finalPath) owned.push({ prefix: String(it.finalPath), label: it.label, status: it.status });
+  }
+  const ownerOf = (p) => owned.find((o) => p === o.prefix || p.startsWith(o.prefix + '.') || p.startsWith(o.prefix + path.sep));
+  const libRoots = knownLibraryRoots();
+  const groups = { active: [], inLibrary: [], junk: [], unplaced: [], other: [] };
+  organizer.withScanCache(() => {
+    for (const f of files) {
+      const o = ownerOf(f.path);
+      const row = { path: f.path, bytes: f.bytes, modified: f.mtime ? new Date(f.mtime).toISOString() : null };
+      if (o) {
+        groups.active.push(Object.assign(row, { item: o.label, status: o.status }));
+        continue;
+      }
+      if (f.dir || STAGING_JUNK.test(f.path)) {
+        groups.junk.push(row);
+        continue;
+      }
+      if (!STAGING_VIDEO.test(f.path)) {
+        groups.other.push(row);
+        continue;
+      }
+      const meta = stagingMeta(root, f.path);
+      let hit = null;
+      if (meta && meta.episode != null) {
+        for (const r of libRoots) {
+          try {
+            const x = organizer.existingEpisodeFile(r, meta);
+            if (x && path.resolve(x) !== path.resolve(f.path)) {
+              hit = x;
+              break;
+            }
+          } catch (e) { /* unreadable drive: not proof */ }
+        }
+      }
+      if (hit) groups.inLibrary.push(Object.assign(row, { libraryFile: hit }));
+      else groups.unplaced.push(row);
+    }
+  });
+  const sum = (list) => list.reduce((n, x) => n + (x.bytes || 0), 0);
+  const report = {
+    staging: root,
+    drive: { totalBytes: info.totalBytes || 0, freeBytes: info.freeBytes || 0 },
+    stagingBytes: sum(files),
+    libraryRoots: libRoots,
+    groups: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, { count: v.length, bytes: sum(v), files: v.sort((a, b) => b.bytes - a.bytes) }]))
+  };
+  report.otherDataOnDriveBytes = Math.max(0, (report.drive.totalBytes - report.drive.freeBytes) - report.stagingBytes);
+  if (opts.apply) {
+    let deleted = 0;
+    let freed = 0;
+    const failedPaths = [];
+    for (const row of [...groups.inLibrary, ...groups.junk]) {
+      // Re-check ownership right before deleting: a download may have
+      // started since the report was built.
+      if (ownerOf(row.path)) continue;
+      try {
+        fs.rmSync(row.path, { recursive: true, force: true });
+        deleted += 1;
+        freed += row.bytes || 0;
+        try { library.audit('staging-cleanup', row.path, row.libraryFile ? `already in library: ${row.libraryFile}` : 'capture leftover'); } catch (e) { /* ignore */ }
+      } catch (e) {
+        failedPaths.push(row.path);
+      }
+    }
+    // Empty series / season folders left behind.
+    const prune = (dir) => {
+      let ents = [];
+      try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+      for (const e of ents) if (e.isDirectory()) prune(path.join(dir, e.name));
+      try {
+        if (dir !== root && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch (e) { /* ignore */ }
+    };
+    prune(root);
+    report.cleaned = { deleted, freedBytes: freed, failed: failedPaths };
+  }
+  return report;
+}
+
 function health() {
   const pkg = require(path.join(__dirname, '..', '..', 'package.json'));
   return {
@@ -1276,5 +1453,6 @@ module.exports = {
   verifyDrives,
   onLog,
   recentLog,
-  stagingInfo
+  stagingInfo,
+  stagingReport
 };
