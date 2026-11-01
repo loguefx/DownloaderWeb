@@ -67,14 +67,38 @@ let get = (pathAndQuery) =>
     req.on('error', () => resolve(null));
   });
 
+// Site health. When the site gives NO answer at all (timeouts, no JSON) every
+// lookup would wait out its retries again - 40 s per episode, per retry,
+// while it is down. It is then skipped for a while (DOWN_MS) and the
+// lookups answer "unreachable" at once; the anime downloads go straight to
+// Aniwave and dub-only episodes to the waiting-for-dub list. Any real
+// answer (even "Anime not found") brings it back.
+const DOWN_MS = 10 * 60 * 1000;
+let downUntil = 0;
+function isDown() {
+  return Date.now() < downUntil;
+}
+function markDown(ms = DOWN_MS) {
+  downUntil = Date.now() + ms;
+}
+function downMinutesLeft() {
+  return Math.max(0, Math.ceil((downUntil - Date.now()) / 60000));
+}
+
 // The API's answer, retried while it is missing or an { error } (the site's
 // backend is often briefly "down").
 async function getJson(pathAndQuery, { tries = 3, ok = (o) => o && !o.error } = {}) {
+  let answered = false;
   for (let i = 0; i < tries; i++) {
     const o = await get(pathAndQuery);
+    if (o != null) {
+      answered = true;
+      downUntil = 0;
+    }
     if (ok(o)) return o;
     if (i < tries - 1) await pauseMs(1500 * (i + 1));
   }
+  if (!answered) markDown();
   return null;
 }
 
@@ -147,8 +171,13 @@ function search(q) {
   if (query.length < 2) return Promise.resolve([]);
   return cached('s:' + query.toLowerCase(), async () => {
     let best = null;
+    let answered = false;
     for (let i = 0; i < 4; i++) {
       const o = await get(`/api/search?search=${encodeURIComponent(query)}&page=1&perPage=15`);
+      if (o != null) {
+        answered = true;
+        downUntil = 0;
+      }
       const media = o && o.data && o.data.Page && Array.isArray(o.data.Page.media) ? o.data.Page.media : [];
       const rows = media.map((m) => ({ id: String(m.id), names: namesOf(m), format: String(m.format || ''), slug: isSlug(String(m.id)) }));
       // The catalog's answer (marked "_fallback", slug ids) is definitive,
@@ -160,6 +189,7 @@ function search(q) {
       if (rows.length && !best) best = rows;
       if (i < 3) await pauseMs(1500 * (i + 1));
     }
+    if (!answered) markDown(); // the site gave no answer at all
     return best;
   });
 }
@@ -299,6 +329,7 @@ async function episodeDub(show, ep) {
 // are left out. A show (or an asked-for episode) the catalog does not list
 // has no dub here: false. null when the site gave no usable answer.
 async function dubMap(title, season = 1, { names = [], only = null } = {}) {
+  if (isDown()) return null; // unknown, not "no dub"
   const ctx = {};
   const show = await findShow(title, season, names, { ctx });
   const want = only ? only.map(Number) : null;
@@ -334,7 +365,9 @@ function cachedDubMap(showId) {
 //   -> { status: 'resolved', show, episode, stream, category }
 //    | { status: 'no_show' | 'no_episode' | 'no_dub' | 'no_sub' | 'unreachable', reason }
 async function resolveEpisode({ title, season = 1, episode, mode = 'dub', names = [] }) {
+  if (isDown()) return { status: 'unreachable', reason: `Anime Village is not answering - skipped for ${downMinutesLeft()} more min` };
   const show = await findShow(title, season, names);
+  if (!show && isDown()) return { status: 'unreachable', reason: 'Anime Village is not answering - skipped for 10 min' };
   if (!show) return { status: 'no_show', reason: `"${title}" season ${season} is not on Anime Village` };
   const eps = await episodes(show.id);
   if (!eps) {
@@ -374,7 +407,10 @@ module.exports = {
   dubMap,
   cachedDubMap,
   resolveEpisode,
+  isDown,
+  markDown,
   _setGetForTests(fn, { noPause = true } = {}) {
+    downUntil = 0;
     get = fn;
     if (noPause) pauseMs = () => Promise.resolve();
     cache.clear();

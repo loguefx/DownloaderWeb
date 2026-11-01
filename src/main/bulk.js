@@ -9,6 +9,12 @@ const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
 const cfsolve = require('./cfsolve');
+
+// Cloudflare-gated catalogs whose challenge did not clear without a solver:
+// skipped until this time (site id -> ms), so each episode does not spend
+// ~20 s per site re-checking a challenge that will not clear on its own.
+const CF_BLOCK_MS = 30 * 60 * 1000;
+const cfBlockedUntil = new Map();
 const vpn = require('./vpn');
 const library = require('./library');
 const { createDiscoverWindow, destroyOwned, passCloudflare } = require('./discoverwindow');
@@ -450,14 +456,37 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                 for (const cand of cfCands) {
                   if (controller.signal.aborted) break;
                   if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
-                  let pageUrl = null;
-                  try {
-                    pageUrl = await cand.findTitle(ref, cfHooks, log);
-                  } catch (e) {
-                    log(`Last-resort search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
+                  // Without a solver a challenge that did not clear will not
+                  // clear on the next episode either: skip that site for a
+                  // while instead of spending ~20 s on it every time.
+                  const cfKey = cand.id || cand.name;
+                  if (skipCf && (cfBlockedUntil.get(cfKey) || 0) > Date.now()) {
+                    log(`Skipping ${cand.name || cand.id}: its Cloudflare check did not clear recently (no solver configured).`);
                     continue;
                   }
-                  if (!pageUrl) continue;
+                  let cfFailed = false;
+                  const candHooks = Object.assign({}, cfHooks, {
+                    cloudflare: async (page) => {
+                      const ok = await passCloudflare(win, page, log, cfOpts);
+                      if (!ok) cfFailed = true;
+                      return ok;
+                    }
+                  });
+                  const noteCf = () => {
+                    if (skipCf && cfFailed) cfBlockedUntil.set(cfKey, Date.now() + CF_BLOCK_MS);
+                  };
+                  let pageUrl = null;
+                  try {
+                    pageUrl = await cand.findTitle(ref, candHooks, log);
+                  } catch (e) {
+                    log(`Last-resort search on ${cand.name || cand.id} failed: ${(e && e.message) || e}`);
+                    noteCf();
+                    continue;
+                  }
+                  if (!pageUrl) {
+                    noteCf();
+                    continue;
+                  }
                   log(`Last resort: found on ${cand.name || cand.id}; loading…`);
                   try {
                     await loadWithTimeout(win, pageUrl, 30000);
@@ -465,6 +494,8 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                     continue;
                   }
                   if (!(await passCloudflare(win, pageUrl, log, cfOpts))) {
+                    cfFailed = true;
+                    noteCf();
                     if (skipCf) {
                       log(`Cloudflare challenge on ${cand.name || cand.id} and no solver configured; skipping it without waiting.`);
                     } else {

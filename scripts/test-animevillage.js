@@ -205,6 +205,24 @@ async function main() {
   animenames._setForTests(async () => null); // AniList unreachable
   check('AniList unreachable -> no names, nothing cached', (await animenames.namesFor('Nowhere', 1)).length === 0);
 
+  console.log('\n[breaker] Anime Village not answering is skipped for a while');
+  {
+    let calls = 0;
+    av._setGetForTests(async () => { calls += 1; return null; }); // timeouts / no JSON
+    const r1 = await av.resolveEpisode({ title: 'Chained Soldier', season: 2, episode: 12, mode: 'dub' });
+    const c1 = calls;
+    const r2 = await av.resolveEpisode({ title: 'Chained Soldier', season: 2, episode: 12, mode: 'dub' });
+    check('no answer at all -> marked down', av.isDown() === true && c1 > 0, `calls=${c1}`);
+    check('next lookup answers "unreachable" at once, without asking the site', r2.status === 'unreachable' && calls === c1 && /not answering/.test(r2.reason), JSON.stringify(r2));
+    check('a dub lookup while down is unknown (null), never "no dub"', (await av.dubMap('Chained Soldier', 2)) === null && calls === c1);
+    check('(first lookup was not a definite answer either)', r1.status !== 'resolved', JSON.stringify(r1));
+    // A real answer - even an error object like "Anime not found" - is the
+    // site answering: it is never marked down for that.
+    av._setGetForTests(async () => ({ error: 'Anime not found' }));
+    await av.resolveEpisode({ title: 'The Girl Downstairs', season: 1, episode: 1, mode: 'dub' });
+    check('"Anime not found" (a real answer) does not mark it down', av.isDown() === false);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

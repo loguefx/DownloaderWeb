@@ -828,7 +828,11 @@ class DownloadManager extends EventEmitter {
                   capTimer = setTimeout(() => res({ status: 'none', reason: 'Anime Village did not answer in 40 s' }), 40000);
                 })
               ]).finally(() => clearTimeout(capTimer));
-              if (outcome && outcome.status !== 'resolved' && /40 s/.test(outcome.reason || '')) this._log(`${outcome.reason}; trying Aniwave.`);
+              if (outcome && outcome.status !== 'resolved' && /40 s/.test(outcome.reason || '')) {
+                // Hanging, not answering: skip it for a while for every item.
+                require('./sites/animevillage_api').markDown();
+                this._log(`${outcome.reason}; trying Aniwave (Anime Village skipped for 10 min).`);
+              }
             } catch (e) {
               this._log('Anime Village lookup failed (' + ((e && e.message) || e) + '); trying Aniwave.');
               outcome = null;
@@ -965,10 +969,18 @@ class DownloadManager extends EventEmitter {
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;
           item.error = reason;
+          // Not on ANY source (every site searched, no stream, no dub copy):
+          // retrying seconds later finds the same nothing and holds the only
+          // worker for ~25 min (Vivant S3E1). Two tries, then the daily
+          // checks take over (waiting-for-dub list for anime, the watch list
+          // otherwise).
+          if (/no video sources found|no 1080p stream on any source|no dub copy on the source site|no search result/i.test(reason)) {
+            item._notFound = true;
+          }
           // No-1080p episodes: the fallback sites are Cloudflare-gated, so extra
           // retries just burn time on "Still waiting for Cloudflare". Cap at 2.
           // Licensed exclusives: nothing will ever find it; cap at 1.
-          const max = item._noQuality || item._exclusive
+          const max = item._noQuality || item._exclusive || item._notFound
             ? Math.max(1, Math.min(item._exclusive ? 1 : 2, config.download.maxRetries || 6))
             : Math.max(1, config.download.maxRetries || 6);
           if (item.attempts >= max) {
@@ -1183,6 +1195,17 @@ class DownloadManager extends EventEmitter {
           integrity.record(finalPath, integ, ctx);
           if (!integ.ok) {
             this._dropShortFile(partPath);
+            // The same server serves the same broken file again (One Piece
+            // E174 from "vidplay", 9 s short audio, 3 identical tries): the
+            // next try uses the episode's other servers. When every server
+            // has failed, the picker tries them all again.
+            const labBad = detection && detection.sourceLabel;
+            if (labBad) {
+              item.skipSources = Array.isArray(item.skipSources) ? item.skipSources : [];
+              const key = String(labBad).toLowerCase();
+              if (!item.skipSources.includes(key)) item.skipSources.push(key);
+              this._log(`"${item.label}": the copy from "${labBad}" failed the playback check; the next try uses a different server.`);
+            }
             throw new Error(`playback check failed: ${integ.problems.join('; ')}`);
           }
         }

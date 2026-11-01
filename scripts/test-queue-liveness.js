@@ -359,6 +359,29 @@ async function main() {
     config.download.maxRetries = 6;
   }
 
+  // ---- 6c. Not on any source: two tries, then the daily checks ------------
+  console.log('\n[6c] An episode no source has is not retried six times back to back');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    config.download.maxRetries = 6;
+    const vid = manager.add({
+      label: 'Vivant S3E1',
+      series: 'Vivant',
+      season: 3,
+      episode: 1,
+      url: 'https://example.invalid/vivant-s3e1',
+      outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'failed', reason: 'No video sources found on the page' })
+    });
+    const vitem = manager.items.find((x) => x.id === vid);
+    for (let i = 0; i < 100 && !(vitem && vitem.status === 'failed'); i++) await sleep(50);
+    check('stops after 2 tries (not 6)', vitem && vitem.status === 'failed' && vitem.attempts === 2, JSON.stringify(vitem && [vitem.status, vitem.attempts]));
+    manager.removeByIds([vid]);
+    await sleep(100);
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');
