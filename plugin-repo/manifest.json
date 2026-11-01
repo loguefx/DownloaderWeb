@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.42",
+                "changelog": "Library check sees episodes filed under other numbers: it sends the title's TMDB id and the library's numbering, so the engine finds a folder tagged [tmdb-N] under any name and an episode saved under its absolute number (\"S02E25\") or TMDB's season. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v42/MediaDownloader.12.1.0.42.zip",
+                "checksum": "7694c45bfc6a8dd671f390c24eea6f55",
+                "timestamp": "2026-11-01T03:59:56.000Z"
+            },
+            {
+                "version": "10.11.0.42",
+                "changelog": "Library check sees episodes filed under other numbers: it sends the title's TMDB id and the library's numbering, so the engine finds a folder tagged [tmdb-N] under any name and an episode saved under its absolute number (\"S02E25\") or TMDB's season. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v42/MediaDownloader.10.11.0.42.zip",
+                "checksum": "faeb92d83fae8f37139547b8828b5217",
+                "timestamp": "2026-11-01T03:59:56.000Z"
+            },
+            {
+                "version": "10.10.0.42",
+                "changelog": "Library check sees episodes filed under other numbers: it sends the title's TMDB id and the library's numbering, so the engine finds a folder tagged [tmdb-N] under any name and an episode saved under its absolute number (\"S02E25\") or TMDB's season. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v42/MediaDownloader.10.10.0.42.zip",
+                "checksum": "a05331866d027adf4bd471574ef8fc44",
+                "timestamp": "2026-11-01T03:59:56.000Z"
+            },
+            {
                 "version": "12.1.0.41",
                 "changelog": "Anime-tab cards find their TMDB series: a season card (\"Ranma1/2 Season 3\") resolves to the series (the 2024 one, not the 1989 show) and opens on that season. The title-search fallback no longer takes the first result. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

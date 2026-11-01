@@ -551,6 +551,43 @@ async function main() {
       fs.writeFileSync(path.join(root, 'Management of a Novice Alchemist (2022)', 'Management 9.mp4'), 'x');
       check('...a bare number at a seasoned folder\'s root is not trusted', organizer.existingEpisodeFile(root, meta(1, 9)) === null);
     }
+    {
+      // Real folder shapes from the user's anime library audit.
+      const root = path.join(base, 'AuditShapes');
+      const put = (rel) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); };
+      const has = (meta) => organizer.existingEpisodeFile(root, meta);
+      // "Season 2" is not episode 2; "05 - 10 Years Later" is not a range.
+      put('Chained Soldier/Season 2/Chained Soldier Season 2 - EP1.mp4');
+      check('"Season 2 - EP1" is not S2E2', has({ series: 'Chained Soldier', season: 2, episode: 2 }) === null);
+      check('...it is S2E1', !!has({ series: 'Chained Soldier', season: 2, episode: 1 }));
+      put('Monster (2004) [tmdb-30981]/Season 01/S01E05 - 10 Years Later.mp4');
+      check('"S01E05 - 10 Years Later" is not S1E7', has({ series: 'Monster', season: 1, episode: 7 }) === null);
+      put('Mob Psycho 100/Mob Psycho 100 - 05.mkv');
+      check('"Mob Psycho 100 - 05" is E5, not E100', !!has({ series: 'Mob Psycho 100', season: 1, episode: 5 }) && has({ series: 'Mob Psycho 100', season: 1, episode: 100 }) === null);
+      // A folder tagged with the job's TMDB id, under another name.
+      put('Can You Keep a Secret_ (2025) [tmdb-262141]/Season 01/S01E03 - x.mp4');
+      check('[tmdb-N] folder found under any name', !!has({ series: 'I Have a Crush at Work', tmdb: '262141', season: 1, episode: 3 }));
+      check('...and is where new episodes go', organizer.existingSeriesFolder(root, { series: 'I Have a Crush at Work', tmdb: '262141' }) === path.join(root, 'Can You Keep a Secret_ (2025) [tmdb-262141]'));
+      // A spin-off tagged with ANOTHER id is never this show.
+      put('Dragon Ball Z Kai (2009) [tmdb-61709]/Season 01/S01E04 - x.mp4');
+      check('"Dragon Ball Z Kai [tmdb-61709]" is not Dragon Ball Z (12971)', has({ series: 'Dragon Ball Z', tmdb: '12971', season: 1, episode: 4 }) === null);
+      // Absolute numbering: Blue Lock S2 filed as S02E25-E38 (S1 has 24).
+      put('Blue Lock (2022) [tmdb-131041]/S02/S02E25 - BLUE LOCK_S02E25_Tryouts.mp4');
+      const bl = { series: 'BLUE LOCK', tmdb: '131041', season: 2, episode: 1 };
+      check('Blue Lock S2E1 is not found without its absolute number', has(bl) === null);
+      check('...and is found as absolute 25 ("S02E25", S2 has only 14)', !!has(Object.assign({}, bl, { alt: { absolute: [{ n: 25, counts: { 1: 24, 2: 14 } }] } })));
+      check('...but a real S2E5 file is never read as absolute 5', organizer.existingEpisodeFile(root, { series: 'BLUE LOCK', tmdb: '131041', season: 1, episode: 5, alt: { absolute: [{ n: 5, counts: { 1: 24, 2: 14 } }] } }) === null);
+      // Disk splits TMDB's one long season: Ranma 1/2 TMDB S1 = 161, disk
+      // Season 01..03 of 3 each (complete runs).
+      for (const sn of [1, 2, 3]) for (const e of [1, 2, 3]) put(`Ranma (1989) [tmdb-57706]/Season 0${sn}/S0${sn}E0${e} - t.mp4`);
+      const rm = (e) => ({ series: 'Ranma', tmdb: '57706', season: 1, episode: e, alt: { absolute: [{ n: e, counts: { 1: 161 } }] } });
+      check('Ranma TMDB S1E4 = disk Season 2 E1', /Season 02[\\/]S02E01/.test(has(rm(4)) || ''), String(has(rm(4))));
+      check('Ranma TMDB S1E9 = disk Season 3 E3', /Season 03[\\/]S03E03/.test(has(rm(9)) || ''), String(has(rm(9))));
+      check('Ranma TMDB S1E10 is missing (not invented)', has(rm(10)) === null);
+      // An AniDB-numbered job sees a TMDB-numbered file through its pair.
+      put('LINK CLICK/Season 4/LINK CLICK S04E02.mp4');
+      check('AniDB S3E2 found as TMDB S4E2 via alt.pairs', !!has({ series: 'LINK CLICK', season: 3, episode: 2, alt: { pairs: [{ season: 4, episode: 2 }] } }));
+    }
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
     // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
     // via the unambiguous S#E# / #x# / EP# markers...

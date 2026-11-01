@@ -384,6 +384,13 @@ animelayout._internals.cacheSet('aniwave:603', null);
     const o9 = omap && omap(1, 9);
     check('  its URL numbers are TMDB\'s', o9 && o9.season === 1 && o9.episode === 9, JSON.stringify(o9));
 
+    // Every identity of an episode, for the no-duplicates presence check.
+    const lcA = tmdb.episodeAlternatesFromInfo(await tmdb.tmdbInfo('126318', 'tv', { anime: true, numbering: 'anime' }), 'anime', 3, 2);
+    check('alternates: AniDB S3E2 -> TMDB pair S4E2', lcA.pairs.some((p) => p.season === 4 && p.episode === 2), JSON.stringify(lcA.pairs));
+    check('alternates: absolute 25 over the AniDB seasons (11+12+2)', lcA.absolute.some((a) => a.n === 25), JSON.stringify(lcA.absolute.map((a) => a.n)));
+    check('alternates: absolute 31 over TMDB\'s seasons (11+12+6+2)', lcA.absolute.some((a) => a.n === 31), JSON.stringify(lcA.absolute.map((a) => a.n)));
+    const tvA = tmdb.episodeAlternatesFromInfo({ seasons: [{ season: 1, episodes: 24 }, { season: 2, episodes: 14 }] }, 'tmdb', 2, 1);
+    check('alternates: TMDB S2E1 after a 24-episode S1 = absolute 25, no pair', tvA.pairs.length === 0 && tvA.absolute[0].n === 25 && tvA.absolute[0].counts[2] === 14, JSON.stringify(tvA));
     const tv = await tmdb.tmdbInfo('789', 'tv', { anime: false, numbering: 'anime' });
     check('live-action TV ignores AniDB numbering (TMDB seasons)', tv && tv.numbering === 'tmdb' && tv.seasons[0].episodes === 12, tv && tv.numbering);
   }

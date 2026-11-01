@@ -509,6 +509,16 @@ class Watcher {
         continue;
       }
       const meta = { series: s.series, season, episode: e.episode };
+      // Folder by [tmdb-N] id, and the episode's other identities (absolute
+      // number, TMDB pair): never queue what is filed under another number.
+      if (/^\d+$/.test(String(s.tmdb || '').trim())) {
+        meta.tmdb = String(s.tmdb).trim();
+        try {
+          meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!s.anime, numbering: s.numbering }, season, e.episode);
+        } catch (err) {
+          meta.alt = null;
+        }
+      }
       let onDisk = false;
       for (const root of roots) {
         try {
@@ -721,6 +731,14 @@ class Watcher {
       // in the library.
       let onDisk = false;
       const meta = { series: spec.series, season: spec.season, episode: spec.episode };
+      if (/^\d+$/.test(String(spec.tmdb || '').trim())) {
+        meta.tmdb = String(spec.tmdb).trim();
+        try {
+          meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!spec.anime, numbering: spec.numbering }, spec.season, spec.episode);
+        } catch (e) {
+          meta.alt = null;
+        }
+      }
       for (const root of this.rootsFor(spec)) {
         try {
           // Any video container (.mkv etc.), like every other presence check.

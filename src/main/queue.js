@@ -675,6 +675,20 @@ class DownloadManager extends EventEmitter {
         // library") - Succession S4 was fetched three more times that way.
         // Same rules as placement: a full-quality copy wins; a below-floor
         // copy the engine placed may be replaced; anything unreadable holds.
+        // Every identity the episode may be filed under in the library: by
+        // the folder's [tmdb-N] id, its TMDB pair (AniDB-numbered jobs) and
+        // its absolute number ("S02E25" for Blue Lock S2E1; Ranma's disk
+        // Season 2 for TMDB S1E24). Never downloads what is there under
+        // another number.
+        if (/^\d+$/.test(String(item.tmdb || '').trim()) && item.episode != null) {
+          meta.tmdb = String(item.tmdb).trim();
+          try {
+            meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!item.anime, numbering: item.numbering }, item.season, item.episode);
+          } catch (e) {
+            meta.alt = null;
+          }
+          if (meta.alt) item.presenceAlt = meta.alt;
+        }
         const libHit = this._inTargetLibrary(item, meta);
         if (libHit) {
           const floorL = this._minHeight(item);

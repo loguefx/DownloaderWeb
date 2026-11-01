@@ -1352,7 +1352,10 @@
                     // Scoped to the library picked in "Save to library": that
                     // library's drives (plus staging and the queue) are what
                     // the engine itself checks before downloading into it.
-                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, epNames: epNames, minHeight: Number(t.quality) || 0, library: t.library })
+                    // The TMDB id + numbering let the engine find a folder tagged
+                    // [tmdb-N] under any name, and an episode filed under its
+                    // absolute number or TMDB's pair (no duplicate downloads).
+                    return post('MediaDownloader/LibraryCheck', { series: t.title, kind: 'series', season: s.season, episodes: eps, epNames: epNames, minHeight: Number(t.quality) || 0, library: t.library, tmdb: t.tmdb || '', numbering: numberingOf(t.library), anime: !!t.anime })
                         .then((r) => {
                             ((r && r.episodes) || []).forEach((e) => {
                                 s.status[e.episode] = e.status;

@@ -287,7 +287,12 @@ async function placeItem(item, stagedPath) {
     throw new Error('placer: staged file missing: ' + staged);
   }
   const size = fs.statSync(staged).size;
+  // The TMDB id finds a library folder tagged with it under any name ("Can
+  // You Keep a Secret? [tmdb-262141]"); alt = the episode's other identities
+  // (absolute number, TMDB pair), worked out by the queue's library check.
   const meta = { series: item.series, season: item.season, episode: item.episode };
+  if (/^\d+$/.test(String(item.tmdb || '').trim())) meta.tmdb = String(item.tmdb).trim();
+  if (item.presenceAlt) meta.alt = item.presenceAlt;
   const pick = pickFolder(job, meta, size);
   if (!pick) {
     library.audit('no-space', staged, job.name || 'library', { bytes: size });

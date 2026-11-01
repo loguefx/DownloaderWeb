@@ -830,8 +830,24 @@ async function libraryCheck(payload) {
   //    Each folder is listed once for the whole check (withScanCache), not
   //    once per episode - on a network share that was 10-20 s of a frozen
   //    engine for a season with nothing on disk.
+  // Folder by [tmdb-N] id + the episode's other identities (absolute number,
+  // TMDB pair), worked out before the synchronous scan.
+  const tmdbId = /^\d+$/.test(String((payload && payload.tmdb) || '').trim()) ? String(payload.tmdb).trim() : '';
+  const alts = new Map();
+  if (tmdbId && !movie && season != null) {
+    for (const ep of episodes) {
+      if (ep == null) continue;
+      try {
+        alts.set(ep, await require('./tmdb').episodeAlternates(tmdbId, { anime: !!payload.anime, numbering: payload.numbering }, season, ep));
+      } catch (e) {
+        // no alternates: the plain check still runs
+      }
+    }
+  }
   const resolved = organizer.withScanCache(() => episodes.map((ep) => {
     const meta = { series, season, episode: ep };
+    if (tmdbId) meta.tmdb = tmdbId;
+    if (alts.get(ep)) meta.alt = alts.get(ep);
     const epName = ep != null ? (epNames[ep] || epNames[String(ep)] || '') : '';
     let foundPath = null;
     for (const folder of folders) {

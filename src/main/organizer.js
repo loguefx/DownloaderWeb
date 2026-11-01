@@ -180,6 +180,33 @@ function fuzzySeriesMatch(folderName, seriesName) {
   return short.length >= 12 && long.indexOf(short) >= 0;
 }
 
+// The TMDB id a folder name carries ("Haikyu!! (2014) [tmdb-60863]",
+// "[tmdbid-60863]", "{tmdb-60863}"), or null.
+function folderTmdbId(name) {
+  const m = String(name || '').match(/[[{(]\s*tmdb(?:id)?[-=\s]*(\d+)\s*[\]})]/i);
+  return m ? m[1] : null;
+}
+
+// Does a library folder hold this series? -> 'id' | 'exact' | 'fuzzy' | null
+//   'id'     the folder carries the job's TMDB id (any folder name: "Can You
+//            Keep a Secret? [tmdb-262141]" is TMDB's "I Have a Crush at Work");
+//   'exact'  same name (year / id tokens ignored), whatever id it carries;
+//   'fuzzy'  a strong name variant - but never a folder tagged with ANOTHER
+//            TMDB id: "Dragon Ball Z (1989) [tmdb-12971]" is not "Dragon Ball
+//            Z Kai", "Mobile Suit Gundam_ The Witch from Mercury" not "Mobile
+//            Suit Gundam Wing".
+function folderMatchKind(folderName, meta) {
+  const seriesName = meta && meta.series;
+  const want = meta && /^\d+$/.test(String(meta.tmdb || '').trim()) ? String(meta.tmdb).trim() : null;
+  const id = folderTmdbId(folderName);
+  if (want && id && id === want) return 'id';
+  const key = seriesKey(seriesName);
+  if (key && seriesKey(folderName) === key) return 'exact';
+  if (want && id && id !== want) return null;
+  if (fuzzySeriesMatch(folderName, seriesName)) return 'fuzzy';
+  return null;
+}
+
 // Containers the engine recognizes as video in a library. The engine still
 // WRITES .mp4; it must also SEE .mkv/.avi/.m4v/.ts so a Jellyfin-style
 // library counts as "in library".
@@ -216,7 +243,6 @@ function buildBaseName({ series, season, episode }) {
 function existingSeriesFolder(outputRoot, meta) {
   const seriesName = meta && meta.series;
   if (!outputRoot || !seriesName) return null;
-  const want = seriesKey(seriesName);
   let ents = [];
   try {
     ents = fs.readdirSync(outputRoot, { withFileTypes: true });
@@ -224,13 +250,17 @@ function existingSeriesFolder(outputRoot, meta) {
     return null; // unreadable root: no existing folder
   }
   ents.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0));
+  // The job's TMDB id first, then the exact name, then a fuzzy variant.
+  let exact = null;
   let fuzzy = null;
   for (const ent of ents) {
     if (!ent.isDirectory()) continue;
-    if (want && seriesKey(ent.name) === want) return path.join(outputRoot, ent.name);
-    if (!fuzzy && fuzzySeriesMatch(ent.name, seriesName)) fuzzy = path.join(outputRoot, ent.name);
+    const kind = folderMatchKind(ent.name, meta);
+    if (kind === 'id') return path.join(outputRoot, ent.name);
+    if (kind === 'exact' && !exact) exact = path.join(outputRoot, ent.name);
+    if (kind === 'fuzzy' && !fuzzy) fuzzy = path.join(outputRoot, ent.name);
   }
-  return fuzzy;
+  return exact || fuzzy;
 }
 
 // The series folder inside the chosen download root: <root>/<Series> - or the
@@ -348,15 +378,9 @@ function seriesDirs(outputRoot, meta) {
     try {
       for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
         if (!ent.isDirectory()) continue;
-        // Exact key first (unchanged behavior); a strong fuzzy variant is an
-        // additive extra, so recognition only ever grows.
-        if (want && seriesKey(ent.name) === want) {
-          const dir = path.join(outputRoot, ent.name);
-          addDir(dir);
-          addSeasonDirs(dir);
-          continue;
-        }
-        if (!fuzzySeriesMatch(ent.name, seriesName)) continue;
+        // Same TMDB id, same name, or a strong variant not tagged with
+        // another show's id (folderMatchKind).
+        if (!folderMatchKind(ent.name, meta)) continue;
         const dir = path.join(outputRoot, ent.name);
         addDir(dir);
         addSeasonDirs(dir);
@@ -461,7 +485,7 @@ function seriesHasSeasonFolders(outputRoot, meta) {
     try {
       for (const ent of fs.readdirSync(outputRoot, { withFileTypes: true })) {
         if (!ent.isDirectory()) continue;
-        if ((want && seriesKey(ent.name) === want) || fuzzySeriesMatch(ent.name, seriesName)) {
+        if (folderMatchKind(ent.name, meta)) {
           roots.add(path.join(outputRoot, ent.name));
         }
       }
@@ -539,7 +563,109 @@ function seasonFromName(name) {
 // `episodeName` (optional) is the episode's real title (e.g. "Pilot"). When
 // provided, a file named by that title alone - with no episode number at all -
 // also counts as present. This is the last-resort match for hand-named files.
+// Presence check for one episode, under every identity it may be filed as.
+// meta.alt (optional, from tmdb.episodeAlternates):
+//   pairs     other (season, episode) numbers of the SAME episode - an
+//             AniDB-numbered job's TMDB pair (Link Click S3E1 = TMDB S4E1);
+//   absolute  [{ n, counts }] its absolute number over a season layout
+//             (counts = { season: episodes }): Blue Lock S2E1 is absolute 25,
+//             filed as "S02E25"; Ranma 1/2 TMDB S1E24 is the disk's
+//             "Season 2/S02E01" when the disk splits TMDB's one season.
+// Recognition only grows: the plain check runs first, unchanged.
 function existingEpisodeFile(outputRoot, meta, ext = null, episodeName = '') {
+  const hit = existingEpisodeFileOne(outputRoot, meta, ext, episodeName);
+  if (hit || !meta || !meta.alt || !outputRoot) return hit;
+  const base = Object.assign({}, meta);
+  delete base.alt;
+  const alt = meta.alt;
+  for (const p of alt.pairs || []) {
+    if (!p || (Number(p.season) === Number(base.season) && Number(p.episode) === Number(base.episode))) continue;
+    const f = existingEpisodeFileOne(outputRoot, Object.assign({}, base, { season: p.season, episode: p.episode }), ext, '');
+    if (f) return f;
+  }
+  for (const a of alt.absolute || []) {
+    const f = absoluteEpisodeFile(outputRoot, base, a, ext);
+    if (f) return f;
+  }
+  return null;
+}
+
+// An episode filed under its ABSOLUTE number (see existingEpisodeFile):
+//   1. "S02E25" / "S01E26": the S/E marker's episode is the absolute number,
+//      and that marker's own season is too short to have such an episode -
+//      so the file cannot be a real S2E25 (Blue Lock S2 has 14);
+//   2. the disk splits one layout season into several complete season
+//      folders (Ranma 1/2: TMDB S1 = 161 episodes, disk Season 1..7 of 23
+//      each, numbered from 1): absolute 24 = disk S2E1. Only when every
+//      season folder before it holds a complete 1..N run.
+function absoluteEpisodeFile(outputRoot, meta, a, ext) {
+  const n = Number(a && a.n);
+  if (!(n > 0)) return null;
+  const counts = (a && a.counts) || {};
+  const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlternation(ext)})$`, 'i');
+  const dirs = seriesDirs(outputRoot, Object.assign({}, meta, { season: null, episode: null }));
+  const bySeason = new Map(); // disk season -> Map(episode -> file)
+  for (const dir of dirs) {
+    let files = [];
+    try {
+      files = fs.readdirSync(dir);
+    } catch (e) {
+      continue;
+    }
+    const anchor = seasonFromName(path.basename(dir));
+    for (const f of files) {
+      if (!extRe.test(f)) continue;
+      const b = f.replace(/\s*\(\d+\)\s*\.[A-Za-z0-9]+$/, '').replace(/\.[A-Za-z0-9]+$/, '');
+      const m = b.match(/s0*(\d{1,3})e0*(\d{1,4})(?!\d)/i);
+      if (m) {
+        const ms = parseInt(m[1], 10);
+        const me = parseInt(m[2], 10);
+        const have = Number(counts[ms]);
+        if (me === n && !(have >= n)) return path.join(dir, f);
+      }
+      if (anchor != null && anchor > 0) {
+        const e = m ? (parseInt(m[1], 10) === anchor ? parseInt(m[2], 10) : null) : looseEpisodeOf(b, meta && meta.series);
+        if (e > 0) {
+          if (!bySeason.has(anchor)) bySeason.set(anchor, new Map());
+          if (!bySeason.get(anchor).has(e)) bySeason.get(anchor).set(e, path.join(dir, f));
+        }
+      }
+    }
+  }
+  // 2. disk season folders split a longer layout season.
+  const want = Number(meta && meta.season);
+  const disk = bySeason.get(want > 0 ? want : 1);
+  const layoutCount = Number(counts[want > 0 ? want : 1]);
+  if (!disk || !(layoutCount > disk.size) || bySeason.size < 2) return null;
+  let cum = 0;
+  for (let s = 1; bySeason.has(s); s++) {
+    const eps = bySeason.get(s);
+    const max = Math.max(...eps.keys());
+    if (n <= cum + max) return eps.get(n - cum) || null;
+    if (eps.size !== max) return null; // a gap: cannot count across it
+    cum += max;
+  }
+  return null;
+}
+
+// The episode number a file names ON ITS OWN, for files without an S/E
+// marker: the series title is removed first ("Mob Psycho 100 - 05" is 5,
+// "009-1 - Episode 02" is 2), then season words ("Season 2", "2nd Season",
+// "Part 2") are never read as the episode (episodeNumberFromName).
+function looseEpisodeOf(base, series) {
+  let b = String(base || '');
+  const words = normSeries(series).split(' ').filter(Boolean);
+  if (words.length) {
+    const esc = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const titleRe = new RegExp(esc.join('[^a-z0-9]*'), 'gi');
+    b = b.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u2019']/g, '').replace(titleRe, ' ');
+  }
+  const e = b.match(/(?<![a-z0-9])e\.?\s*0*(\d{1,4})(?!\d)/i);
+  if (e) return parseInt(e[1], 10);
+  return episodeNumberFromName(b + '.x');
+}
+
+function existingEpisodeFileOne(outputRoot, meta, ext = null, episodeName = '') {
   if (!outputRoot) return null;
   const exact = expectedPath(outputRoot, meta, '.mp4');
   if (fs.existsSync(exact)) return exact;
@@ -584,22 +710,11 @@ function existingEpisodeFile(outputRoot, meta, ext = null, episodeName = '') {
   // naming styles a real library uses, while a bare number is NEVER trusted at
   // a series root when season folders exist (it would be ambiguous which
   // season it belongs to).
-  const loosePatterns = [
-    `(?<![a-z0-9])ep\\.?\\s*0*${ep}(?!\\d)`, // "EP18", "EP 18", "ep.18"
-    `(?<![a-z0-9sx])e\\.?\\s*0*${ep}(?!\\d)`, // "E18", "E 18" (not "S1E18"/"1x18")
-    `(?<![a-z0-9])episode\\s*0*${ep}(?!\\d)`, // "Episode 18"
-    // bare number, guarded so it is a STANDALONE episode token: not part of a
-    // longer number (digit), not a season ("S1"/"1E"/"1x"), not a resolution
-    // ("720p"), not a dimension ("1920x1080"). Dot-separated ("Show.18") still
-    // counts - common in anime/scene naming.
-    `(?<![\\dxXsS])0*${ep}(?![\\dxXpPeE])`
-  ];
-  const looseRe = new RegExp(loosePatterns.join('|'), 'i');
-  // flat episode range "01-02" / "1-3" (two-part episodes), same digit guards.
-  const looseRangeRe = new RegExp(
-    `(?<![\\dxXsS])0*(\\d{1,3})(?![\\dxXpPeE])\\s*[-–]\\s*0*(\\d{1,3})(?![\\dxXpPeE])`,
-    'i'
-  );
+  // flat episode range "01-02" / "1-3" (two-part episodes), same digit guards,
+  // at the end of the name or before a tag.
+  const looseRangeRe = /(?<![\dxXsS])0*(\d{1,3})(?![\dxXpPeE])\s*[-–]\s*0*(\d{1,3})(?![\dxXpPeE])\s*(?:$|[[(])/i;
+  // Any S/E-style marker ("S01E05", "1x05", "Season 2 - Episode 3").
+  const strictMarkerRe = /s\d{1,3}\s*e\d{1,4}(?!\d)|(?<!\d)\d{1,2}[xX]\d{1,4}(?!\d)|season\s*\d+\s*-\s*episode\s*\d+/i;
 
   const dirs = seriesDirs(outputRoot, meta);
   // True when the series already has REAL season subfolders - i.e. it is NOT a
@@ -659,14 +774,21 @@ function existingEpisodeFile(outputRoot, meta, ext = null, episodeName = '') {
         if (a > b) [a, b] = [b, a];
         if (ep >= a && ep <= b) return path.join(dir, f);
       }
-      if (loose) {
-        if (looseRe.test(base)) return path.join(dir, f);
+      // LOOSE: only for a file that names no S/E marker of its own (a
+      // marked file is that episode and no other), read the way a person
+      // would: the number the name gives the episode - never the season's
+      // "2" in "Season 2 - EP1", never "10" in "S01E05 - 10 Years Later".
+      if (loose && !strictMarkerRe.test(base)) {
+        const n = looseEpisodeOf(base, meta && meta.series);
+        if (n === ep) return path.join(dir, f);
+        // Two-part file "Show 01-02": the range must END the name (or be
+        // followed by a tag), so a title's "05 - 10 Years" is no range.
         const lm = base.match(looseRangeRe);
-        if (lm) {
+        if (lm && n === parseInt(lm[1], 10)) {
           let a = parseInt(lm[1], 10);
           let b = parseInt(lm[2], 10);
           if (a > b) [a, b] = [b, a];
-          if (ep >= a && ep <= b) return path.join(dir, f);
+          if (b - a <= 3 && ep >= a && ep <= b) return path.join(dir, f);
         }
       }
       // Last resort: the file is named by the episode's own TITLE, with no

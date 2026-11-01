@@ -376,7 +376,62 @@ async function animeSourceForAnimeNumbering({ tmdb: tmdbId, title, season, episo
   }
 }
 
+// PURE: every other identity of one episode, for the presence check
+// (organizer.existingEpisodeFile meta.alt): its TMDB pair when the job is
+// AniDB-numbered, and its absolute number over the shown season layout and
+// over TMDB's own seasons. A library filed either way is then seen.
+function episodeAlternatesFromInfo(info, numbering, season, episode) {
+  const out = { pairs: [], absolute: [] };
+  const s = Number(season);
+  const e = Number(episode);
+  if (!info || !(s > 0) || !(e > 0)) return out;
+  const absOver = (list, ss, ee) => {
+    const seasons = (list || []).filter((x) => x && Number(x.season) > 0);
+    if (!seasons.some((x) => Number(x.season) === ss)) return null;
+    const counts = {};
+    let n = 0;
+    for (const x of seasons) {
+      counts[x.season] = Number(x.episodes) || 0;
+      if (Number(x.season) < ss) n += Number(x.episodes) || 0;
+    }
+    return { n: n + ee, counts };
+  };
+  const seen = new Set();
+  const addAbs = (a) => {
+    if (!a) return;
+    const k = a.n + '|' + JSON.stringify(a.counts);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.absolute.push(a);
+  };
+  let tmdbPair = { season: s, episode: e };
+  if (numbering === 'anime' && info.numbering === 'anime') {
+    const p = animelayout.tmdbPairFromAnimeSeasons(info.seasons, s, e);
+    if (p) {
+      tmdbPair = p;
+      if (p.season !== s || p.episode !== e) out.pairs.push(p);
+    }
+  }
+  addAbs(absOver(info.seasons, s, e));
+  if (Array.isArray(info.tmdbSeasons)) addAbs(absOver(info.tmdbSeasons, tmdbPair.season, tmdbPair.episode));
+  return out;
+}
+
+// The same, reading the layout (cached) for a TMDB id. Never throws; an
+// unknown title answers no alternates.
+async function episodeAlternates(tmdbId, opts, season, episode) {
+  const id = String(tmdbId || '').trim();
+  if (!/^\d+$/.test(id)) return null;
+  const numbering = numberingOf(opts);
+  let info = null;
+  try { info = await tmdbInfo(id, 'tv', { anime: !!(opts && opts.anime), numbering }); } catch (e) { info = null; }
+  const alt = episodeAlternatesFromInfo(info, numbering, season, episode);
+  return alt.pairs.length || alt.absolute.length ? alt : null;
+}
+
 module.exports = {
+  episodeAlternatesFromInfo,
+  episodeAlternates,
   animeToTmdbMapper,
   isTmdbKeyedUrl,
   animeSourceForAnimeNumbering,

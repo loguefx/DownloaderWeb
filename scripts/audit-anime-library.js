@@ -149,8 +149,9 @@ function collectSeries(rootList) {
       if (!e.isDirectory() || e.name.startsWith('.') || /^\$|^System Volume/i.test(e.name)) continue;
       const t = folderTitle(e.name);
       const entry = { root, dir: path.join(root, e.name), folder: e.name, ...t };
+      // Same id, or the engine's name match - never two different ids.
       const g = groups.find((x) => (t.tmdb && x.tmdb === t.tmdb) ||
-        x.entries.some((y) => organizer.fuzzySeriesMatch(y.name, t.name)));
+        (!(t.tmdb && x.tmdb && x.tmdb !== t.tmdb) && x.entries.some((y) => organizer.fuzzySeriesMatch(y.name, t.name))));
       if (g) {
         g.entries.push(entry);
         if (!g.tmdb && t.tmdb) g.tmdb = t.tmdb;
@@ -184,7 +185,11 @@ async function auditOne(g, rootList, numbering) {
     how = 'name search';
   }
   const info = await tmdb.tmdbInfo(id, 'tv', { anime: true, numbering });
-  if (!info) { row.status = 'ERROR'; row.problems.push(`TMDB id ${id} could not be read`); return row; }
+  if (!info) {
+    row.status = 'ERROR';
+    row.problems.push(`TMDB id ${id} could not be read as a TV series${how === 'folder id' ? ' - the folder\'s [tmdb-' + id + '] may be a movie id or wrong' : ''}.`);
+    return row;
+  }
   row.tmdb = id;
   row.tmdbName = info.title;
   row.tmdbYear = info.year;
@@ -197,9 +202,19 @@ async function auditOne(g, rootList, numbering) {
   // The name the plugin / watch list files this show under (TMDB's), and
   // whether the engine finds YOUR folder from it.
   const series = info.title || g.name;
-  const found = rootList.map((r) => organizer.existingSeriesFolder(r, { series })).filter(Boolean);
+  const found = rootList.map((r) => organizer.existingSeriesFolder(r, { series, tmdb: id })).filter(Boolean);
   if (!found.length) {
-    row.problems.push(`The engine would not find your folder under TMDB's name "${series}" - it would start a new "${organizer.sanitize(series)}" folder and download everything again. Rename the folder to "${organizer.sanitize(series)}"${info.year ? ` (${info.year})` : ''}.`);
+    row.problems.push(`The engine would not find your folder under TMDB's name "${series}" - it would start a new folder and download everything again. Add the id to your folder name: "${g.entries[0].folder} [tmdbid-${id}]".`);
+  }
+  // A folder id whose TMDB title shares no word with the folder name is
+  // probably the wrong id (Galaxy Angel A [tmdb-96860] is "A3!").
+  if (how === 'folder id') {
+    const words = (x) => new Set(organizer.normSeries(x).split(' ').filter((w) => w.length > 2));
+    const a = words(g.name);
+    const b = words(series);
+    if (a.size && b.size && ![...a].some((w) => b.has(w))) {
+      row.warnings.push(`The folder's [tmdb-${id}] is TMDB's "${series}" - check it is the right show (episode counts and new episodes come from it).`);
+    }
   }
 
   // Every layout episode -> the file the engine's check finds (any drive).
@@ -211,9 +226,12 @@ async function auditOne(g, rootList, numbering) {
       const miss = [];
       for (let ep = 1; ep <= (Number(s.episodes) || 0); ep++) {
         let file = null;
+        // Exactly what the queue / watch list check: folder by id, plus the
+        // episode's other identities (TMDB pair, absolute number).
+        const alt = tmdb.episodeAlternatesFromInfo(info, numbering, s.season, ep);
         for (const r of rootList) {
-          file = organizer.existingEpisodeFile(r, { series, season: s.season, episode: ep });
-          if (!file && series !== g.name) file = organizer.existingEpisodeFile(r, { series: g.name, season: s.season, episode: ep });
+          file = organizer.existingEpisodeFile(r, { series, tmdb: id, season: s.season, episode: ep, alt });
+          if (!file && series !== g.name) file = organizer.existingEpisodeFile(r, { series: g.name, tmdb: id, season: s.season, episode: ep, alt });
           if (file) break;
         }
         if (file) { have.push(ep); attributed.add(path.resolve(file)); } else miss.push(ep);
@@ -231,14 +249,23 @@ async function auditOne(g, rootList, numbering) {
     if (!diskSeasons.has(v.season)) diskSeasons.set(v.season, []);
     diskSeasons.get(v.season).push(v);
   }
+  // Season folders whose files the engine cannot place in the layout under
+  // ANY identity: those episodes would be downloaded again.
+  const maxLayout = Math.max(0, ...layoutSeasons.keys());
   for (const [n, files] of [...diskSeasons.entries()].sort((a, b) => a[0] - b[0])) {
-    const count = layoutSeasons.get(n);
-    if (count == null) {
-      row.problems.push(`"Season ${n}" is on disk (${files.length} files) but the layout has no Season ${n} - those episodes would be offered again under other numbers.`);
+    const lost = files.filter((f) => !attributed.has(path.resolve(f.path)));
+    if (!lost.length) continue;
+    if (n > maxLayout + 5) {
+      row.notes.push(`"Season ${n}" (${files.length} files) looks like specials/OVAs - the engine never downloads into it.`);
       continue;
     }
-    const over = files.map((f) => organizer.episodeNumberFromName(f.name)).filter((e) => e > count);
-    if (over.length) row.problems.push(`Season ${n}: disk has ${range(over)} but the layout's Season ${n} has only ${count} episodes.`);
+    const count = layoutSeasons.get(n);
+    if (count == null) {
+      row.problems.push(`"Season ${n}" is on disk (${lost.length} unrecognized files) but the layout has no Season ${n} - those episodes would be offered again under other numbers.`);
+      continue;
+    }
+    const over = lost.map((f) => organizer.episodeNumberFromName(f.name)).filter((e) => e > count);
+    if (over.length) row.problems.push(`Season ${n}: disk has ${range(over)} but the layout's Season ${n} has only ${count} episodes, and they match no other numbering.`);
   }
   const stray = videos.filter((v) => !attributed.has(path.resolve(v.path)) && v.season !== 0 && !/\b(?:specials?|extras?|ova|ovas|movies?|featurettes?)\b/i.test(path.relative(path.dirname(v.path), v.path) + ' ' + path.basename(path.dirname(v.path))));
   row.files = videos.length;
