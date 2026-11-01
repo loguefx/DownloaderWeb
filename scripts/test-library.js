@@ -568,6 +568,10 @@ async function main() {
       put('Can You Keep a Secret_ (2025) [tmdb-262141]/Season 01/S01E03 - x.mp4');
       check('[tmdb-N] folder found under any name', !!has({ series: 'I Have a Crush at Work', tmdb: '262141', season: 1, episode: 3 }));
       check('...and is where new episodes go', organizer.existingSeriesFolder(root, { series: 'I Have a Crush at Work', tmdb: '262141' }) === path.join(root, 'Can You Keep a Secret_ (2025) [tmdb-262141]'));
+      // A remake with the same name but another id is not this show.
+      put('Ranma ½ (1989) [tmdb-57706]/Season 01/S01E01 - x.mp4');
+      check('Ranma ½ (2024, tmdb 259140) does not use the 1989 folder', has({ series: 'Ranma ½', tmdb: '259140', season: 1, episode: 1 }) === null && organizer.existingSeriesFolder(root, { series: 'Ranma ½', tmdb: '259140' }) === null);
+      check('...without an id, the name still matches (old jobs)', !!has({ series: 'Ranma ½', season: 1, episode: 1 }));
       // A spin-off tagged with ANOTHER id is never this show.
       put('Dragon Ball Z Kai (2009) [tmdb-61709]/Season 01/S01E04 - x.mp4');
       check('"Dragon Ball Z Kai [tmdb-61709]" is not Dragon Ball Z (12971)', has({ series: 'Dragon Ball Z', tmdb: '12971', season: 1, episode: 4 }) === null);

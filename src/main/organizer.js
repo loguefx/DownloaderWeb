@@ -190,7 +190,8 @@ function folderTmdbId(name) {
 // Does a library folder hold this series? -> 'id' | 'exact' | 'fuzzy' | null
 //   'id'     the folder carries the job's TMDB id (any folder name: "Can You
 //            Keep a Secret? [tmdb-262141]" is TMDB's "I Have a Crush at Work");
-//   'exact'  same name (year / id tokens ignored), whatever id it carries;
+//   'exact'  same name (year / id tokens ignored) - unless both carry
+//            different TMDB ids (a remake: Ranma ½ 1989 vs 2024);
 //   'fuzzy'  a strong name variant - but never a folder tagged with ANOTHER
 //            TMDB id: "Dragon Ball Z (1989) [tmdb-12971]" is not "Dragon Ball
 //            Z Kai", "Mobile Suit Gundam_ The Witch from Mercury" not "Mobile
@@ -199,10 +200,14 @@ function folderMatchKind(folderName, meta) {
   const seriesName = meta && meta.series;
   const want = meta && /^\d+$/.test(String(meta.tmdb || '').trim()) ? String(meta.tmdb).trim() : null;
   const id = folderTmdbId(folderName);
-  if (want && id && id === want) return 'id';
+  if (want && id) {
+    // Both carry a TMDB id: the id decides. A remake shares the name
+    // ("Ranma ½ (1989) [tmdb-57706]" is not the 2024 series).
+    if (id === want) return 'id';
+    return null;
+  }
   const key = seriesKey(seriesName);
   if (key && seriesKey(folderName) === key) return 'exact';
-  if (want && id && id !== want) return null;
   if (fuzzySeriesMatch(folderName, seriesName)) return 'fuzzy';
   return null;
 }
