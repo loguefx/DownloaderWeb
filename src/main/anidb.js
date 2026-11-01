@@ -204,6 +204,9 @@ async function englishDubForTmdb(tmdbId, { title = '', season = 1, force = false
     src = { aniwave: null, animevillage: null };
   }
   const base = { tmdbId: id || null, anidbId: await idP, englishDubReleases: 0, totalReleases: 0, sample: '', at: Date.now() };
+  // An EMPTY Anime Village answer (catalog loaded, show or episodes not
+  // found - the site flaking) is no answer: never "no dub" from it.
+  if (src.animevillage && src.animevillage.size === 0) src.animevillage = null;
   const eps = new Map();
   for (const m of [src.aniwave, src.animevillage]) {
     if (!m) continue;
@@ -214,6 +217,13 @@ async function englishDubForTmdb(tmdbId, { title = '', season = 1, force = false
   let available = null;
   if (dubbed > 0) available = true;
   else if (src.animevillage) available = false;
+  // Dubs do not disappear: a check that sees FEWER dubbed episodes than the
+  // last one (a source flaking mid-check - Smoking Behind the Supermarket
+  // went from "9 of 12" to "none" within the hour) keeps the earlier answer.
+  const prev = _results.get(k);
+  if (prev && prev.available === true && dubbed < prev.englishDubReleases) {
+    return remember(k, Object.assign({}, prev, { at: Date.now() }));
+  }
   return remember(k, Object.assign(base, {
     available,
     englishDubReleases: dubbed,

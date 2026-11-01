@@ -329,6 +329,36 @@ async function main() {
   srv.close();
   config.download.maxRetries = 6;
 
+  // ---- 6b. Anime DUB: no dub source answers -> waiting list, not failed ----
+  console.log('\n[6b] Anime DUB with no dub source answering goes on the waiting-for-dub list');
+  {
+    config.download.maxRetries = 2;
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    let parkedWith = null;
+    const wid = manager.add({
+      label: 'Chained Soldier S2E12',
+      series: 'Chained Soldier',
+      season: 2,
+      episode: 12,
+      anime: true,
+      mode: 'dub',
+      url: 'https://example.invalid/chained-s2e12',
+      skipSources: ['animevillage'], // no network in the test
+      outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'failed', reason: 'no dub copy on the source site' }),
+      onUnavailable: (o) => { parkedWith = o; }
+    });
+    const witem = manager.items.find((x) => x.id === wid);
+    for (let i = 0; i < 100 && !(witem && (witem.status === 'waiting' || witem.status === 'failed')); i++) await sleep(50);
+    check('given up -> "waiting", not "failed"', witem && witem.status === 'waiting', JSON.stringify(witem && [witem.status, witem.attempts, witem.error]));
+    check('...handed to the waiting-for-dub list (onUnavailable)', parkedWith && parkedWith.status === 'unavailable', JSON.stringify(parkedWith));
+    manager.removeByIds([wid]);
+    await sleep(100);
+    config.download.retryBaseDelayMs = savedBase;
+    config.download.maxRetries = 6;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

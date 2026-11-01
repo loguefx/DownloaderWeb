@@ -979,6 +979,23 @@ class DownloadManager extends EventEmitter {
               this.items.splice(idx, 1);
               this.items.push(item);
             }
+            // Anime DUB: the dub sources not answering (Anime Village timing
+            // out, Aniwave without that episode's dub) is "not available
+            // yet", not a dead episode - it goes on the waiting-for-dub list,
+            // which re-checks it every day and downloads it once a source
+            // has it. (Marked failed, it sat until the next full watch pass.)
+            if (item.anime && (item.mode || 'dub') === 'dub' && !item._exclusive && typeof item.onUnavailable === 'function') {
+              item.status = 'waiting';
+              item.error = `no dub source answered after ${item.attempts} tries (${reason}) - on the waiting-for-dub list, re-checked daily`;
+              this._emit();
+              this._log(`Waiting for dub: ${item.label} - ${item.error}.`);
+              try {
+                item.onUnavailable({ status: 'unavailable', reason });
+              } catch (e) {
+                // ignore
+              }
+              return { fatal: false };
+            }
             item.status = 'failed';
             this._emit();
             if (item._exclusive) {

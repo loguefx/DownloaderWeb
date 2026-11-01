@@ -59,6 +59,7 @@ async function main() {
   M._setMappingUrlsForTests([`http://127.0.0.1:${srv.address().port}/anime-list-mini.json`]);
 
   let calls = 0;
+  let flaky = null;
   M._setSourcesForTests(async (title, season) => {
     calls += 1;
     if (title === 'Smoking Behind the Supermarket with You') {
@@ -70,6 +71,8 @@ async function main() {
     }
     if (title === 'Sub Only') return { aniwave: new Map([[1, false]]), animevillage: new Map([[1, false], [2, false]]) };
     if (title === 'Down') return { aniwave: new Map([[1, false]]), animevillage: null };
+    if (title === 'Empty AV') return { aniwave: new Map([[1, false], [2, false]]), animevillage: new Map() };
+    if (title === 'Flaky') return flaky;
     return { aniwave: null, animevillage: null };
   });
 
@@ -85,6 +88,20 @@ async function main() {
   console.log('\n[2] Unknown is never "no dub"');
   d = await M.englishDubForTmdb('6', { title: 'Down', season: 1 });
   check('Aniwave "no" + Anime Village unreachable -> unknown', d.available === null && d.reason === 'unreachable', JSON.stringify(d));
+
+  d = await M.englishDubForTmdb('9', { title: 'Empty AV', season: 1 });
+  check('an EMPTY Anime Village answer (site flaking) is unknown, not "no dub"', d.available === null, JSON.stringify(d));
+  // Smoking Behind: "9 of 12" one pass, "none" (Anime Village flaking) the
+  // next - a dub that existed does not disappear.
+  flaky = { aniwave: null, animevillage: new Map(Array.from({ length: 12 }, (_, i) => [i + 1, i < 9])) };
+  d = await M.englishDubForTmdb('10', { title: 'Flaky', season: 1 });
+  check('first check: 9 of 12 dubbed', d.available === true && d.englishDubReleases === 9, JSON.stringify(d));
+  flaky = { aniwave: null, animevillage: new Map(Array.from({ length: 12 }, (_, i) => [i + 1, false])) };
+  d = await M.englishDubForTmdb('10', { title: 'Flaky', season: 1, force: true });
+  check('a later flaky check seeing none keeps "9 of 12"', d.available === true && d.englishDubReleases === 9, JSON.stringify(d));
+  flaky = { aniwave: null, animevillage: new Map(Array.from({ length: 12 }, (_, i) => [i + 1, i < 11])) };
+  d = await M.englishDubForTmdb('10', { title: 'Flaky', season: 1, force: true });
+  check('...and a real increase is taken (11 of 12)', d.available === true && d.englishDubReleases === 11, JSON.stringify(d));
 
   console.log('\n[3] Inputs, caching, dedupe');
   d = await M.englishDubForTmdb('7', {});
