@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.41",
+                "changelog": "Anime-tab cards find their TMDB series: a season card (\"Ranma1/2 Season 3\") resolves to the series (the 2024 one, not the 1989 show) and opens on that season. The title-search fallback no longer takes the first result. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v41/MediaDownloader.12.1.0.41.zip",
+                "checksum": "ce0e2101d5f8d8bd35d9cb7a792e07dc",
+                "timestamp": "2026-11-01T00:04:18.000Z"
+            },
+            {
                 "version": "12.1.0.40",
                 "changelog": "Anime seasons follow each library's metadata provider: an AniDB / AniList library gets the anime seasons (Link Click: Season 3 = the 2026 season, arcs and specials unnumbered), a TheMovieDb library gets TMDB's seasons. Detected from the library's settings; switching libraries reloads the seasons. Rename preview works both ways. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",
@@ -320,6 +328,14 @@
                 "timestamp": "2026-10-02T21:43:11.977Z"
             },
             {
+                "version": "10.11.0.41",
+                "changelog": "Anime-tab cards find their TMDB series: a season card (\"Ranma1/2 Season 3\") resolves to the series (the 2024 one, not the 1989 show) and opens on that season. The title-search fallback no longer takes the first result. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v41/MediaDownloader.10.11.0.41.zip",
+                "checksum": "97cfd37cb0d0e23586cd6749be7d0468",
+                "timestamp": "2026-11-01T00:04:18.000Z"
+            },
+            {
                 "version": "10.11.0.40",
                 "changelog": "Anime seasons follow each library's metadata provider: an AniDB / AniList library gets the anime seasons (Link Click: Season 3 = the 2026 season, arcs and specials unnumbered), a TheMovieDb library gets TMDB's seasons. Detected from the library's settings; switching libraries reloads the seasons. Rename preview works both ways. Needs the matching engine update.",
                 "targetAbi": "10.11.0.0",
@@ -630,6 +646,14 @@
                 "sourceUrl": "https://github.com/loguefx/DownloaderWeb/releases/download/v1/MediaDownloader.10.11.0.1.zip",
                 "checksum": "157e16b8036798740d169bb5da01b0b9",
                 "timestamp": "2026-10-02T21:43:11.977Z"
+            },
+            {
+                "version": "10.10.0.41",
+                "changelog": "Anime-tab cards find their TMDB series: a season card (\"Ranma1/2 Season 3\") resolves to the series (the 2024 one, not the 1989 show) and opens on that season. The title-search fallback no longer takes the first result. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v41/MediaDownloader.10.10.0.41.zip",
+                "checksum": "5ce07475022b4d0692ae28bcc805b926",
+                "timestamp": "2026-11-01T00:04:18.000Z"
             },
             {
                 "version": "10.10.0.40",
