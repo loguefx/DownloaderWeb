@@ -588,6 +588,18 @@ async function main() {
       check('Ranma TMDB S1E4 = disk Season 2 E1', /Season 02[\\/]S02E01/.test(has(rm(4)) || ''), String(has(rm(4))));
       check('Ranma TMDB S1E9 = disk Season 3 E3', /Season 03[\\/]S03E03/.test(has(rm(9)) || ''), String(has(rm(9))));
       check('Ranma TMDB S1E10 is missing (not invented)', has(rm(10)) === null);
+      // ...but a per-season folder's small numbers are never read as
+      // absolute ones: Aggretsuko (TMDB S1 = 100) with S01E01 missing and
+      // Season 2/S02E01 on disk - S1E1 is still missing.
+      put('Aggretsuko/Season 02/S02E01 - Time to Grow Up.mp4');
+      put('Aggretsuko/Season 02/S02E02 - x.mp4');
+      const ag = (e) => ({ series: 'Aggretsuko', season: 1, episode: e, alt: { absolute: [{ n: e, counts: { 1: 100 } }] } });
+      check('Aggretsuko S1E1 (missing) is not "found" as S02E01', has(ag(1)) === null, String(has(ag(1))));
+      // while an absolutely numbered season folder still counts (One Piece).
+      put('One Piece (1999) [tmdb-37854]/Season 02 - Drum Island Arc/One Piece - S02E078 - x.mp4');
+      put('One Piece (1999) [tmdb-37854]/Season 02 - Drum Island Arc/One Piece - S02E062 - y.mp4');
+      const op = { series: 'One Piece', tmdb: '37854', season: 1, episode: 78, alt: { absolute: [{ n: 78, counts: { 1: 1180 } }] } };
+      check('One Piece S1E78 still found as S02E078 (absolutely numbered folder)', /S02E078/.test(has(op) || ''), String(has(op)));
       // An AniDB-numbered job sees a TMDB-numbered file through its pair.
       put('LINK CLICK/Season 4/LINK CLICK S04E02.mp4');
       check('AniDB S3E2 found as TMDB S4E2 via alt.pairs', !!has({ series: 'LINK CLICK', season: 3, episode: 2, alt: { pairs: [{ season: 4, episode: 2 }] } }));
@@ -609,6 +621,12 @@ async function main() {
       put('Ranma (1989) [tmdb-57706]/Season 03/S03E02 - t.mp4');
       const rm = (e) => ({ series: 'Ranma', tmdb: '57706', season: 1, episode: e, alt: { absolute: [{ n: e, counts: { 1: 161 } }] } });
       check('first episode of a disk season follows the NEXT episode (S03E01, not S02E04)', organizer.neighborStylePath(root, rm(7), 'New') === path.join(root, 'Ranma (1989) [tmdb-57706]/Season 03/S03E01 - New.mp4'), String(organizer.neighborStylePath(root, rm(7), 'New')));
+      // The only neighbor is a backup copy: no neighbor style (never file the
+      // new episode inside "_Fix_Backup").
+      put('Backup Show/_Fix_Backup/Season 03/Backup Show - S03E137 - t.mp4');
+      check('a neighbor inside "_Fix_Backup" is never used', organizer.neighborStylePath(root, { series: 'Backup Show', season: 3, episode: 138 }, 'x') === null, String(organizer.neighborStylePath(root, { series: 'Backup Show', season: 3, episode: 138 }, 'x')));
+      put('Special A (2008) [tmdb-37195]/Season 01/S01E05 - t.mp4');
+      check('...but a show NAMED like one ("Special A") still gets its neighbor style', /Season 01[\\/]S01E06/.test(organizer.neighborStylePath(root, { series: 'Special A', tmdb: '37195', season: 1, episode: 6 }, 'New') || ''), String(organizer.neighborStylePath(root, { series: 'Special A', tmdb: '37195', season: 1, episode: 6 }, 'New')));
       check('no neighbor on disk: standard layout (null)', organizer.neighborStylePath(root, { series: 'Nothing Here', season: 1, episode: 5 }, 'x') === null);
       check('restyle keeps zero padding and the (Dub) tag', organizer.restyleName('One Piece - S02E078 - Old Title.mkv', 1, 'New') === 'One Piece - S02E079 - New.mp4');
     }

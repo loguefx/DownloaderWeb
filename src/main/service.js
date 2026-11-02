@@ -247,7 +247,17 @@ function stagingReport(opts = {}) {
     if (!it || it.status === 'done' || it.status === 'cancelled') continue;
     if (it.finalPath) owned.push({ prefix: String(it.finalPath), label: it.label, status: it.status });
   }
-  const ownerOf = (p) => owned.find((o) => p === o.prefix || p.startsWith(o.prefix + '.') || p.startsWith(o.prefix + path.sep));
+  // Windows paths compare without case ("Season 1" = "season 1"): a queued
+  // download's .part must never look unowned over a letter's case.
+  const canon = (x) => {
+    const r = path.resolve(String(x || ''));
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  for (const o of owned) o.key = canon(o.prefix);
+  const ownerOf = (p) => {
+    const c = canon(p);
+    return owned.find((o) => c === o.key || c.startsWith(o.key + '.') || c.startsWith(o.key + path.sep));
+  };
   const libRoots = knownLibraryRoots();
   const groups = { active: [], inLibrary: [], junk: [], unplaced: [], other: [] };
   organizer.withScanCache(() => {
@@ -1032,7 +1042,18 @@ async function libraryCheck(payload) {
       }
     }
   }
-  const resolved = organizer.withScanCache(() => episodes.map((ep) => {
+  // In batches, yielding between them (withScanCacheAsync): a long season
+  // (One Piece, 1180 episodes x 3 network drives) used to hold every other
+  // engine request until the whole scan was done.
+  const resolved = await organizer.withScanCacheAsync(async () => {
+    const out = [];
+    for (const ep of episodes) {
+      out.push(resolveOne(ep));
+      if (out.length % 40 === 0) await new Promise((r) => setImmediate(r));
+    }
+    return out;
+  });
+  function resolveOne(ep) {
     const meta = { series, season, episode: ep };
     if (tmdbId) meta.tmdb = tmdbId;
     if (alts.get(ep)) meta.alt = alts.get(ep);
@@ -1052,7 +1073,7 @@ async function libraryCheck(payload) {
       }
     }
     return { ep, foundPath };
-  }));
+  }
   // 2) Probe the found files with limited parallelism. ffprobe is the slow
   //    part, and a 24-episode season used to wait on 24 SERIAL probes;
   //    four at a time keeps the disk/CPU happy while cutting the wait ~4x.

@@ -629,6 +629,8 @@ function absoluteEpisodeFile(outputRoot, meta, a, ext) {
   const extRe = new RegExp(`(?:\\s*\\(\\d+\\))?\\.(?:${extAlternation(ext)})$`, 'i');
   const dirs = seriesDirs(outputRoot, Object.assign({}, meta, { season: null, episode: null }));
   const bySeason = new Map(); // disk season -> Map(episode -> file)
+  const minOf = new Map(); // S/E marker season -> lowest episode number it carries
+  const markerHits = []; // files whose S/E marker episode IS the absolute number
   for (const dir of dirs) {
     let files = [];
     try {
@@ -645,7 +647,8 @@ function absoluteEpisodeFile(outputRoot, meta, a, ext) {
         const ms = parseInt(m[1], 10);
         const me = parseInt(m[2], 10);
         const have = Number(counts[ms]);
-        if (me === n && !(have >= n)) return path.join(dir, f);
+        if (!minOf.has(ms) || me < minOf.get(ms)) minOf.set(ms, me);
+        if (me === n && !(have >= n)) markerHits.push({ ms, file: path.join(dir, f) });
       }
       if (anchor != null && anchor > 0) {
         const e = m ? (parseInt(m[1], 10) === anchor ? parseInt(m[2], 10) : null) : looseEpisodeOf(b, meta && meta.series);
@@ -655,6 +658,16 @@ function absoluteEpisodeFile(outputRoot, meta, a, ext) {
         }
       }
     }
+  }
+  // 1. "S02E25" read as absolute 25 - only when that can be nothing else:
+  //    the number differs from the episode's own (Blue Lock S2E1 = 25), or
+  //    the marker's season is numbered absolutely on disk (One Piece
+  //    "Season 02" starts at S02E062). A per-season folder (S02E01..)
+  //    carrying the same small number is ANOTHER episode: Aggretsuko S1E1
+  //    is not "S02E01" (that masked missing episodes as present).
+  const own = Number(meta && meta.episode);
+  for (const h of markerHits) {
+    if (n !== own || (h.ms > 1 && (minOf.get(h.ms) || 1) > 1)) return h.file;
   }
   // 2. disk season folders split a longer layout season.
   const want = Number(meta && meta.season);
@@ -760,6 +773,8 @@ function restyleName(fileName, delta, title) {
   return out ? out + '.mp4' : null;
 }
 
+const NOT_A_SEASON_HOME = /backup|^_|\bold\b|trash|recycle|\bextras?\b|specials?|featurettes?|\bova\b|\bmovies?\b|\btemp\b/i;
+
 function neighborStylePath(outputRoot, meta, episodeName = '') {
   const ep = parseInt(meta && meta.episode, 10);
   if (!outputRoot || !(ep > 0)) return null;
@@ -774,6 +789,12 @@ function neighborStylePath(outputRoot, meta, episodeName = '') {
       f = null;
     }
     if (!f) continue;
+    // Never file a new episode inside a backup / old / extras folder (One
+    // Piece's "_Fix_Backup" holds copies): only a real season folder's
+    // neighbor sets the place and the name.
+    const rel = path.relative(outputRoot, path.dirname(f)).split(/[\\/]/);
+    // (the series folder itself is not judged: "Special A", "Old Boy")
+    if (rel.slice(1).some((seg) => NOT_A_SEASON_HOME.test(seg))) continue;
     const name = restyleName(path.basename(f), -d, episodeName);
     if (name) preds.push(path.join(path.dirname(f), name));
   }
