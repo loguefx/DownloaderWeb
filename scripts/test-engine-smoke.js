@@ -475,18 +475,21 @@ async function main() {
     const animeids = M('animeids');
     animeids._setFetchForTests(async () => [
       { anilist_id: 191788, themoviedb_id: { tv: 126437 }, season: { tmdb: 2 } },
-      { anilist_id: 97940, themoviedb_id: { tv: 73223 }, season: { tmdb: 1 } }
+      { anilist_id: 97940, themoviedb_id: { tv: 73223 }, season: { tmdb: 1 } },
+      { anilist_id: 112151, themoviedb_id: { movie: 635302 }, type: 'MOVIE' }
     ], fs.mkdtempSync(path.join(DATA_DIR, 'ids-')));
     const layoutMod = M('anime-layout');
     layoutMod._setAnilistRequestForTests(async () => ({ status: 200, body: { data: { Page: { pageInfo: { total: 3 }, media: [
       { id: 191788, title: { english: 'Aoashi Season 2' }, coverImage: { large: 'p1' }, seasonYear: 2026 },
       { id: 97940, title: { english: 'Black Clover' }, coverImage: { large: 'p2' }, seasonYear: 2017 },
-      { id: 5551234, title: { english: 'Unmapped Show' }, coverImage: { large: 'p3' }, seasonYear: 2026 }
+      { id: 5551234, title: { english: 'Unmapped Show' }, coverImage: { large: 'p3' }, seasonYear: 2026 },
+      { id: 112151, format: 'MOVIE', title: { english: 'Demon Slayer: Mugen Train' }, coverImage: { large: 'p4' }, seasonYear: 2020 }
     ] } } } }));
     const rb = await req('GET', '/api/anime/browse?category=trending', null, { authorization: `Bearer ${KEY}` });
     const cards = (rb.json && rb.json.results) || [];
     const card = (id) => cards.find((c) => c.anilist === String(id)) || {};
-    check('anime browse -> 200 with cards', rb.status === 200 && cards.length === 3, rb.body.slice(0, 200));
+    check('anime browse -> 200 with cards', rb.status === 200 && cards.length === 4, rb.body.slice(0, 200));
+    check('...an anime film is a MOVIE card with its TMDB movie id', card(112151).type === 'movie' && card(112151).tmdb === '635302', JSON.stringify(card(112151)));
     check('...Aoashi Season 2 card carries TMDB 126437, season 2', card(191788).tmdb === '126437' && card(191788).tmdbSeason === 2, JSON.stringify(card(191788)));
     check('...Black Clover card carries TMDB 73223', card(97940).tmdb === '73223', JSON.stringify(card(97940)));
     check('...an unmapped card has no id (resolved when opened)', !card(5551234).tmdb);

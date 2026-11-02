@@ -539,6 +539,12 @@ async function tmdbForAnilist(anilistId, opts = {}) {
   } catch (e) {
     mapped = null;
   }
+  // An anime film: the mapping's TMDB movie id is the whole answer.
+  if (mapped && mapped.type === 'movie') {
+    const mv = { tmdb: String(mapped.tmdb), type: 'movie', season: null, name: '', year: 0, matchedBy: 'anime-lists', entryTitle: String(opts.title || '') };
+    cacheSet(key, mv);
+    return mv;
+  }
   if (mapped && mapped.type !== 'tv') mapped = null;
   let mappedRes = null;
   if (mapped) {

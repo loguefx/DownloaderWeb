@@ -117,7 +117,10 @@ async function main() {
   console.log(`\n[engine] real HTTP API up at ${ENGINE_URL}`);
 
   // ---- build + run the C# plugin harness -----------------------------------
-  const dotnet = process.env.DOTNET || path.join(os.homedir(), '.dotnet', 'dotnet');
+  // DOTNET, else the per-user install, else `dotnet` on the PATH (a system
+  // install - the suite used to fail on those before testing anything).
+  const userDotnet = path.join(os.homedir(), '.dotnet', process.platform === 'win32' ? 'dotnet.exe' : 'dotnet');
+  const dotnet = process.env.DOTNET || (fs.existsSync(userDotnet) ? userDotnet : 'dotnet');
   const tfm = process.env.TFM || 'net8.0'; // net8.0=10.10  net9.0=10.11  net10.0=12.1
   const testsDir = path.join(REPO, 'Jellyfin.Plugin.MediaDownloader.Tests');
   const dll = path.join(testsDir, 'bin', 'Debug', tfm, 'Jellyfin.Plugin.MediaDownloader.Tests.dll');

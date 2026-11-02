@@ -1213,6 +1213,7 @@
                                         return;
                                     }
                                     t.tmdb = m.tmdb;
+                                    if (m.type === 'movie') t.kind = 'movie';
                                     if (m.name) t.title = m.name;
                                     if (m.year) t.year = String(m.year);
                                     // Open on the season the card was.

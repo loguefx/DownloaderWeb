@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.47",
+                "changelog": "Anime films on the Anime tab open as movies (with their TMDB movie id) instead of series ending in 'no TMDB id'. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v47/MediaDownloader.12.1.0.47.zip",
+                "checksum": "af6cb3a19e09c6042a18f958f859ecc1",
+                "timestamp": "2026-11-02T08:20:23.000Z"
+            },
+            {
+                "version": "10.11.0.47",
+                "changelog": "Anime films on the Anime tab open as movies (with their TMDB movie id) instead of series ending in 'no TMDB id'. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v47/MediaDownloader.10.11.0.47.zip",
+                "checksum": "a07f73a074a89d0044ae46610a7c2da8",
+                "timestamp": "2026-11-02T08:20:23.000Z"
+            },
+            {
+                "version": "10.10.0.47",
+                "changelog": "Anime films on the Anime tab open as movies (with their TMDB movie id) instead of series ending in 'no TMDB id'. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v47/MediaDownloader.10.10.0.47.zip",
+                "checksum": "6cc1d2759625bb31ecad72f87c924b4d",
+                "timestamp": "2026-11-02T08:20:23.000Z"
+            },
+            {
                 "version": "12.1.0.46",
                 "changelog": "Anime-tab cards: the season opened follows an AniDB-numbered library's own seasons (TMDB season translated through the layout), and downloads use the TMDB series name instead of the AniList card title. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

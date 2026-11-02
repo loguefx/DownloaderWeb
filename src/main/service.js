@@ -884,7 +884,15 @@ function frozenReport() {
   });
   return { riskSeries: risk, watched };
 }
-function schedulesCheckNow() {
+// "Check for new episodes now": the waiting-for-dub list first (a dub that
+// came out today downloads now, not at the next daily pass), then the watch
+// list - the same order as the daily pass.
+async function schedulesCheckNow() {
+  try {
+    await watcher.checkNow();
+  } catch (e) {
+    // the watch list still runs
+  }
   return watcher.checkSchedules();
 }
 

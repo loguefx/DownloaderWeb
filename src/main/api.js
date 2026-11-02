@@ -337,6 +337,7 @@ async function handle(req, res, u) {
             pageInfo { currentPage total }
             media(sort: $sort, type: ANIME, isAdult: false) {
               id
+              format
               title { english romaji }
               coverImage { large }
               description(asHtml: false)
@@ -366,7 +367,11 @@ async function handle(req, res, u) {
         }
         const results = pg.media.map((m) => ({
           ...((() => {
+            const movie = String(m.format || '').toUpperCase() === 'MOVIE';
             const e = animeids.peek(m.id);
+            // An anime film is a movie card (it used to open as a series and,
+            // with no TV id to find, end in "no TMDB id").
+            if (movie) return Object.assign({ type: 'movie' }, e && e.type === 'movie' ? { tmdb: e.tmdb } : {});
             return e && e.type === 'tv' ? { tmdb: e.tmdb, tmdbSeason: e.season || null } : {};
           })()),
           anilist: String(m.id),

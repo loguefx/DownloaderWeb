@@ -577,6 +577,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     if (fs.existsSync(p) && fs.statSync(p).size > 0) have += 1;
   }
   let done = 0; // parts fetched THIS run (resumed parts are already in `have`)
+  let lastLogged = -1; // each count is logged once ("143/143" used to repeat)
   const report = () => {
     const n = Math.min(have + done, jobs.length);
     if (onProgress) {
@@ -588,7 +589,8 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     }
     // Visible progress: a long download must show life in the log, and a HUNG
     // one must be obvious from where the counting stopped.
-    if (onLog && (n % 10 === 0 || n === jobs.length)) {
+    if (onLog && n !== lastLogged && (n % 10 === 0 || n === jobs.length)) {
+      lastLogged = n;
       onLog(`Downloaded ${n}/${jobs.length} part(s)...`);
     }
   };
