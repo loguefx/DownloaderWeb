@@ -569,6 +569,27 @@ class DownloadManager extends EventEmitter {
     }
   }
 
+  // Stopped (Stop all) or removed while it was being worked on.
+  _interrupted(item) {
+    return !!(this._stopRequested || !this.items.includes(item) || (item && item._controller && item._controller.signal && item._controller.signal.aborted));
+  }
+
+  // Do the dub sources list this anime episode as English-dubbed? (Aniwave's
+  // episode list, Anime Village's saved answers.) true / false / null, never
+  // slower than 20 s.
+  async _knownDubbed(item) {
+    if (!item || item.episode == null) return null;
+    try {
+      const ds = require('./dubstatus');
+      return await Promise.race([
+        ds.isDubbedForJob({ title: item.series, season: item.season, episode: item.episode, tmdb: item.tmdb, numbering: item.numbering }),
+        new Promise((res) => setTimeout(() => res(null), 20000))
+      ]);
+    } catch (e) {
+      return null;
+    }
+  }
+
   // A finished episode is no longer waiting for its dub, whoever queued it.
   _clearWaiting(item) {
     if (!item || item.episode == null) return;
@@ -953,6 +974,25 @@ class DownloadManager extends EventEmitter {
           }
         }
 
+        // Stop / Remove interrupted this search: an interrupted dub search can
+        // come back "unavailable" - that is a cancel, never "no dub yet".
+        if (status === 'unavailable' && this._interrupted(item)) {
+          this._releaseDownloadSlot(item);
+          if (this.items.includes(item)) item.status = 'cancelled';
+          this._emit();
+          return { fatal: false };
+        }
+        // Anime DUB "not released yet" from one page scan (the page showed no
+        // DUB server row in time) while the dub sources' own episode list says
+        // it IS dubbed: a scan miss, not a missing dub. Retry instead of
+        // parking it - One Piece E1123+ went to the waiting list this way.
+        if (status === 'unavailable' && item.anime && (item.mode || 'dub') === 'dub' && (await this._knownDubbed(item)) === true) {
+          this._log(`"${item.label}": the page showed no DUB server, but the dub sources list this episode as dubbed - retrying instead of waiting.`);
+          outcome = { status: 'failed', reason: 'DUB server did not show on the page (the episode is listed as dubbed)' };
+          status = 'failed';
+          item._listedDubbed = true;
+        }
+
         if (status === 'unavailable') {
           this._releaseDownloadSlot(item);
           item.status = 'waiting';
@@ -1012,7 +1052,8 @@ class DownloadManager extends EventEmitter {
             // yet", not a dead episode - it goes on the waiting-for-dub list,
             // which re-checks it every day and downloads it once a source
             // has it. (Marked failed, it sat until the next full watch pass.)
-            if (item.anime && (item.mode || 'dub') === 'dub' && !item._exclusive && typeof item.onUnavailable === 'function') {
+            if (item.anime && (item.mode || 'dub') === 'dub' && !item._exclusive && typeof item.onUnavailable === 'function' &&
+                !this._interrupted(item) && !item._listedDubbed && (await this._knownDubbed(item)) !== true) {
               item.status = 'waiting';
               item.error = `no dub source answered after ${item.attempts} tries (${reason}) - on the waiting-for-dub list, re-checked daily`;
               this._emit();

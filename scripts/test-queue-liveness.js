@@ -79,6 +79,9 @@ async function main() {
   const vpn = M('vpn');
   const library = M('library');
   const manager = M('queue');
+  // The dub sources are not reachable from the tests: "is this episode listed
+  // as dubbed?" answers unknown unless a section sets its own answer.
+  M('dubstatus').isDubbedForJob = async () => null;
 
   vpn._setStatus(true, 'liveness-test', 'test'); // gate must not block
   library.dataDir = path.join(DATA_DIR, 'libdata');
@@ -335,6 +338,9 @@ async function main() {
     config.download.maxRetries = 2;
     const savedBase = config.download.retryBaseDelayMs;
     config.download.retryBaseDelayMs = 20;
+    const dsB = require(path.join(__dirname, '..', 'src', 'main', 'dubstatus.js'));
+    const realIsB = dsB.isDubbedForJob;
+    dsB.isDubbedForJob = async () => null; // sources unknown (no network in the test)
     let parkedWith = null;
     const wid = manager.add({
       label: 'Chained Soldier S2E12',
@@ -355,6 +361,64 @@ async function main() {
     check('...handed to the waiting-for-dub list (onUnavailable)', parkedWith && parkedWith.status === 'unavailable', JSON.stringify(parkedWith));
     manager.removeByIds([wid]);
     await sleep(100);
+    dsB.isDubbedForJob = realIsB;
+    config.download.retryBaseDelayMs = savedBase;
+    config.download.maxRetries = 6;
+  }
+
+  // ---- 6b2. "No DUB row" on the page while the sources list it as dubbed ----
+  console.log('\n[6b2] A dub the sources list is never parked as "not released" from one page scan');
+  {
+    const ds = require(path.join(__dirname, '..', 'src', 'main', 'dubstatus.js'));
+    const realIs = ds.isDubbedForJob;
+    config.download.maxRetries = 2;
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    const mk = (label, ep, parked) => manager.add({
+      label, series: 'One Piece', season: 1, episode: ep, anime: true, mode: 'dub',
+      url: 'https://example.invalid/op-' + ep, skipSources: ['animevillage'],
+      outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'unavailable', reason: 'DUB not released yet' }),
+      onUnavailable: () => { parked.push(ep); }
+    });
+    // Listed as dubbed -> retried, then failed (visible), never waiting.
+    ds.isDubbedForJob = async () => true;
+    const parked1 = [];
+    const id1 = mk('One Piece S1E1140', 1140, parked1);
+    const it1 = manager.items.find((x) => x.id === id1);
+    for (let i = 0; i < 100 && !(it1 && (it1.status === 'failed' || it1.status === 'waiting')); i++) await sleep(50);
+    check('listed dubbed + page shows no DUB row -> retried, ends "failed", not "waiting"', it1 && it1.status === 'failed' && parked1.length === 0, JSON.stringify(it1 && [it1.status, it1.attempts, parked1]));
+    manager.removeByIds([id1]);
+    await sleep(100);
+    // Really not dubbed -> waiting list, as before.
+    ds.isDubbedForJob = async () => false;
+    const parked2 = [];
+    const id2 = mk('One Piece S1E1170', 1170, parked2);
+    const it2 = manager.items.find((x) => x.id === id2);
+    for (let i = 0; i < 100 && !(it2 && (it2.status === 'failed' || it2.status === 'waiting')); i++) await sleep(50);
+    check('not dubbed -> waiting list (unchanged)', it2 && it2.status === 'waiting' && parked2.length === 1, JSON.stringify(it2 && [it2.status, parked2]));
+    manager.removeByIds([id2]);
+    await sleep(100);
+    // Stopped while the search runs -> cancelled, never parked.
+    ds.isDubbedForJob = async () => null;
+    const parked3 = [];
+    let release = null;
+    const id3 = manager.add({
+      label: 'One Piece S1E1141', series: 'One Piece', season: 1, episode: 1141, anime: true, mode: 'dub',
+      url: 'https://example.invalid/op-1141', skipSources: ['animevillage'], outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => new Promise((res) => { release = () => res({ status: 'unavailable', reason: 'DUB not released yet' }); }),
+      onUnavailable: () => { parked3.push(1141); }
+    });
+    for (let i = 0; i < 100 && !release; i++) await sleep(20);
+    manager.stopAll('test');
+    release && release();
+    await sleep(200);
+    const it3 = manager.items.find((x) => x.id === id3);
+    check('Stop during the dub search -> cancelled, not put on the waiting list', parked3.length === 0 && (!it3 || it3.status === 'cancelled'), JSON.stringify(it3 && [it3.status, parked3]));
+    manager.removeByIds([id3]);
+    manager.resume && manager.resume();
+    manager._stopRequested = null;
+    ds.isDubbedForJob = realIs;
     config.download.retryBaseDelayMs = savedBase;
     config.download.maxRetries = 6;
   }
