@@ -1321,6 +1321,10 @@
                     get('MediaDownloader/TmdbInfo?tmdb=' + encodeURIComponent(t.tmdb) + '&type=' + (t.kind === 'movie' ? 'movie' : 'tv') + (t.anime ? '&anime=1' : '') + numQ).then((info) => {
                         if (stale()) return;
                         t.info = info || null;
+                        // An Anime-tab card is named like its AniList entry ("Aoashi
+                        // Season 2", "TOUGEN ANKI: Nikko Kegon Falls Arc"); downloads,
+                        // file names and the library check use the TMDB series name.
+                        if (info && info.title && t.r && t.r.anilist) t.title = info.title;
                         // Animation from Japan/China/Korea/Taiwan opened from the
                         // TV tab is handled as anime by the engine: default it to
                         // the Anime library too (before the library check runs).
@@ -1343,7 +1347,16 @@
                             const firstNumbered = t.seasons.find((s) => s.season > 0) || t.seasons[0];
                             t.active = firstNumbered ? firstNumbered.season : null;
                             // Opened from a season card ("Season 3"): show that season.
-                            if (t.preferSeason && t.seasons.some((x) => x.season === t.preferSeason)) t.active = t.preferSeason;
+                            // preferSeason is TMDB's number (the Anime-Lists mapping /
+                            // the resolver). An AniDB-numbered layout lists which TMDB
+                            // season(s) each of its seasons is made of: open that one
+                            // (Link Click's TMDB S4 is AniDB S3; the Bridon Arc, TMDB
+                            // S3, is no AniDB season - the first season stays open).
+                            const parts = ((info && info.seasons) || []).filter((x) => Array.isArray(x.parts) && x.parts.length);
+                            if (t.preferSeason && info && info.numbering === 'anime' && parts.length) {
+                                const own = parts.find((x) => x.parts.some((p) => Number(p.tmdbSeason) === t.preferSeason));
+                                if (own) t.active = own.season;
+                            } else if (t.preferSeason && t.seasons.some((x) => x.season === t.preferSeason)) t.active = t.preferSeason;
                             // Matched by the series name from an arc / later-season card:
                             // the season that aired in the card's year.
                             else if (t.preferYear) {

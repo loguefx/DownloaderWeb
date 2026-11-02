@@ -246,8 +246,12 @@ async function anilistGql(query, variables) {
     if (wait > 0) await anilistSleep(wait);
     const r = await anilistRequest(query, variables);
     if (r && r.status === 429) {
-      const ra = Math.min(60, Math.max(1, Number(r.retryAfter) || 30));
-      anilistBlockedUntil = Date.now() + ra * 1000;
+      const ra = Math.max(1, Number(r.retryAfter) || 30);
+      anilistBlockedUntil = Date.now() + Math.min(ra, 60) * 1000;
+      // The plugin waits ~90 s for the engine: never hold a request longer
+      // than that - a long block answers "no answer" now, the callers fall
+      // back (the Anime-Lists mapping, the title search).
+      if (ra > 45 || attempt >= 1) return null;
       continue;
     }
     return r ? r.body : null;
@@ -682,9 +686,12 @@ async function anilistSeasons(title, opts = {}) {
         'query($id: Int) { Media(id: $id, type: ANIME) { id title { english romaji } episodes seasonYear } }',
         { id: Number(alId) }
       );
-      media = r && r.data && r.data.Media;
+      // No answer (unreachable / rate-limited) is not "no such entry": never
+      // cached, asked again next time.
+      if (!r || !r.data) return null;
+      media = r.data.Media;
     } catch (e) {
-      media = null;
+      return null;
     }
   } else {
     if (t.length < 3) return null;
@@ -697,7 +704,8 @@ async function anilistSeasons(title, opts = {}) {
           'id format title { english romaji } episodes seasonYear startDate { year } } } }',
         { title: t }
       );
-      raw = search && search.data && ((search.data.Page && search.data.Page.media) || search.data.Media);
+      if (!search || !search.data) return null; // no answer: not cached
+      raw = (search.data.Page && search.data.Page.media) || search.data.Media;
     } catch (e) {
       return null;
     }

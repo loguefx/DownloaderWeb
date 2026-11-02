@@ -189,6 +189,27 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     const miss = await mod.anilistSeasons('No Such Anime Title', { fetcher: async () => ({ data: { Media: [] } }) });
     check('search miss -> null', miss === null);
 
+    // AniList not answering (unreachable / 429 after retries -> null) is not
+    // "no such anime": nothing is cached, the next ask gets the real answer.
+    mod._resetCache();
+    let up = false;
+    const flaky = async (q) => {
+      if (!up) return null;
+      return q.includes('search')
+        ? { data: { Media: [{ id: 1, title: { english: 'Golden Kamuy', romaji: '' }, episodes: 12, seasonYear: 2018 }] } }
+        : { data: { Media: { relations: { edges: [] } } } };
+    };
+    const down1 = await mod.anilistSeasons('Golden Kamuy', { fetcher: flaky });
+    up = true;
+    const back = await mod.anilistSeasons('Golden Kamuy', { fetcher: flaky });
+    check('no answer from AniList is not cached as "no data"', down1 === null && back && back[0].episodes.length === 12, JSON.stringify(back && back.length));
+    mod._resetCache();
+    up = false;
+    const down2 = await mod.anilistSeasons('x', { anilistId: '16498', fetcher: flaky });
+    up = true;
+    const back2 = await mod.anilistSeasons('x', { anilistId: '16498', fetcher: async (q) => q.includes('relations') ? { data: { Media: { relations: { edges: [] } } } } : { data: { Media: { id: 16498, title: { english: 'Attack on Titan' }, episodes: 25, seasonYear: 2013 } } } });
+    check('...also by AniList id (it used to cache the failure)', down2 === null && back2 && back2[0].episodes.length === 25);
+
     // Direct-id path: with a known AniList id, NO search is performed at all.
     mod._resetCache();
     const byId = await mod.anilistSeasons('Whatever The Title Says', {
