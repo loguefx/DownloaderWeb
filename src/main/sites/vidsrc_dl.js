@@ -114,34 +114,73 @@ function request(url, headers, timeoutMs) {
 // for movie/tv, tmdb/imdb (Runner tt31349844, 2026-10). Returns '' on any
 // failure so the caller can still try the token-less API (older deployments).
 // One relay chain: vs_src.php -> landing page -> player page -> apiToken.
+// Each hop's outcome is kept (tokenChain.last[relay]) so a failure says WHICH
+// hop broke - "Vidsrc API status 403" alone cannot tell a site change from an
+// IP block.
+const lastChain = {};
+// window.CFG / window.CONFIG values, whether written as JSON ("k":"v"), as a
+// JS literal (k: 'v') or with escaped slashes (\/embed\/player).
+function pageValue(text, key) {
+  const re = new RegExp('["\']?' + key + '["\']?\\s*[:=]\\s*["\'`]([^"\'`]+)["\'`]');
+  const m = String(text || '').match(re);
+  return m ? m[1].replace(/\\\//g, '/') : '';
+}
 async function tokenChain(relay, ref) {
   const id = ref.imdb ? ref.imdb : ref.tmdb;
-  if (!id) return '';
+  const note = (why) => {
+    lastChain[relay] = why;
+    return '';
+  };
+  if (!id) return note('no TMDB/IMDB id');
   const isTv = ref.type === 'tv';
   const params =
     `type=${isTv ? 'tv' : 'movie'}&id=${encodeURIComponent(id)}` +
     (isTv ? `&season=${encodeURIComponent(ref.season)}&episode=${encodeURIComponent(ref.episode)}` : '');
   // 10s per hop: a healthy host answers in <2s; the old 20s meant a slow host
   // ate a third of the whole discovery budget before the next one was tried.
-  const r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 10000);
-  if (r.status !== 200) return '';
+  let r;
+  try {
+    r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 10000);
+  } catch (e) {
+    return note(`vs_src.php ${(e && e.message) || e}`);
+  }
+  if (r.status !== 200) return note(`vs_src.php HTTP ${r.status}`);
   let j;
   try {
     j = JSON.parse(r.body.toString('utf8'));
   } catch (e) {
-    return '';
+    return note('vs_src.php answered something that is not JSON');
   }
-  if (!j || !j.src) return '';
+  if (!j || !j.src) return note('vs_src.php gave no player page' + (j && (j.error || j.message) ? ` (${j.error || j.message})` : ''));
   const base = String(j.src).match(/^https?:\/\/[^/]+/);
-  if (!base) return '';
-  const lr = await request(j.src, { Referer: relay + '/' }, 10000);
-  if (lr.status !== 200) return '';
-  const pm = lr.body.toString('utf8').match(/playerUrl":"([^"]+)"/);
-  if (!pm) return '';
-  const pr = await request(base[0] + pm[1], { Referer: j.src }, 10000);
-  if (pr.status !== 200) return '';
-  const tm = pr.body.toString('utf8').match(/apiToken":"([^"]+)"/);
-  return tm ? tm[1] : '';
+  if (!base) return note('vs_src.php player page is not a URL');
+  let lr;
+  try {
+    lr = await request(j.src, { Referer: relay + '/' }, 10000);
+  } catch (e) {
+    return note(`landing page ${(e && e.message) || e}`);
+  }
+  if (lr.status !== 200) return note(`landing page HTTP ${lr.status}`);
+  const playerUrl = pageValue(lr.body.toString('utf8'), 'playerUrl');
+  if (!playerUrl) return note('landing page has no playerUrl (the site changed its page)');
+  const playerHref = /^https?:/i.test(playerUrl) ? playerUrl : base[0] + (playerUrl.startsWith('/') ? '' : '/') + playerUrl;
+  let pr;
+  try {
+    pr = await request(playerHref, { Referer: j.src }, 10000);
+  } catch (e) {
+    return note(`player page ${(e && e.message) || e}`);
+  }
+  if (pr.status !== 200) return note(`player page HTTP ${pr.status}`);
+  const tok = pageValue(pr.body.toString('utf8'), 'apiToken');
+  if (!tok) return note('player page has no apiToken (the site changed its page)');
+  lastChain[relay] = 'ok';
+  return tok;
+}
+// Why the last token fetch failed, per relay ("" when it worked).
+function tokenFailure() {
+  const bad = Object.entries(lastChain).filter(([, v]) => v && v !== 'ok');
+  if (!bad.length || Object.values(lastChain).includes('ok')) return '';
+  return bad.map(([relay, why]) => `${relay.replace(/^https?:\/\//, '')}: ${why}`).join('; ');
 }
 
 // Race a set of promises and resolve with { value, index } of the FIRST one
@@ -305,6 +344,10 @@ async function fetchStreamUrls(ref) {
   let lastErr = null;
   let lastStatus = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
+    // Two token-less 403s with the player chain (walked fresh after the
+    // first) still giving no token: more tries only repeat it (~75 s per
+    // episode before the browser path). Say why and move on.
+    if (attempt >= 2 && lastStatus === 403 && !apiToken) break;
     if (attempt > 0) {
       const limited = RATE_LIMITED.has(lastStatus);
       const backoff =
@@ -321,7 +364,7 @@ async function fetchStreamUrls(ref) {
         apiToken = await getApiToken(ref, { fresh: true });
         if (apiToken) url = API_BASE + '?' + qs + '&stream_urls&api_token=' + encodeURIComponent(apiToken);
       } catch (e) {
-        /* keep retrying token-less */
+        apiToken = '';
       }
     }
     let r;
@@ -342,12 +385,20 @@ async function fetchStreamUrls(ref) {
     try {
       j = JSON.parse(bodyText);
     } catch (e) {
-      lastErr = new Error('Vidsrc API did not return JSON (HTTP ' + r.status + '): ' + bodyText.slice(0, 120));
+      lastErr = new Error(
+        'Vidsrc API did not return JSON (HTTP ' + r.status + '): ' + bodyText.slice(0, 120) +
+          (apiToken ? '' : ` - no API token${tokenFailure() ? ': ' + tokenFailure() : ''}`)
+      );
       if (RETRYABLE.has(r.status)) continue;
       throw lastErr;
     }
     if (String(j.status_code) !== '200') {
-      lastErr = new Error('Vidsrc API status ' + j.status_code);
+      const said = j.message || j.error || j.status_message || '';
+      const why = !apiToken ? tokenFailure() : '';
+      lastErr = new Error(
+        'Vidsrc API status ' + j.status_code + (said ? ` (${String(said).slice(0, 80)})` : '') +
+          (apiToken ? '' : ` - no API token${why ? ': ' + why : ''}`)
+      );
       if (RETRYABLE.has(r.status)) continue;
       throw lastErr;
     }
@@ -698,7 +749,8 @@ async function download(ref, outPath, opts = {}) {
 
 module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
-  isBlocked, isBlockPage,
+  isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS,
+  chainResult: (relay) => lastChain[relay] || '',
   _setBlockedUntilForTests(t) { blockedUntil = t; }
 };
 

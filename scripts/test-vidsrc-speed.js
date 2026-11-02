@@ -83,6 +83,7 @@ const LATE_MS = 400; // how late the winner answers in 'loser-first' mode
 let staleTokenOnce = false; // scenario: first data-API call 403s (stale token)
 let dataApiCalls = 0;
 let playerTokenHits = 0;
+let pageChanged = false; // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
   if (u.includes('vidsrc.sh/vs_src.php')) {
@@ -101,6 +102,7 @@ function routeFor(u) {
   }
   if (u.includes('cdn-good.example/embed/movie/1')) {
     mark('landing');
+    if (pageChanged) return { status: 200, body: () => Buffer.from('<html>new player</html>') };
     return { status: 200, body: () => Buffer.from('window.CFG = {"playerUrl":"/embed/player/9?vs=y"};') };
   }
   if (u.includes('cdn-good.example/embed/player/9')) {
@@ -187,7 +189,7 @@ function fakeGet(url, options, cb) {
     res.statusCode = route.status;
     cb(res);
     process.nextTick(() => {
-      if (route.status === 200) res.emit('data', route.body());
+      if (route.body) res.emit('data', route.body());
       res.emit('end');
     });
   };
@@ -316,6 +318,31 @@ const at = (name) => {
   check('a FRESH token was re-acquired after the 403 (player chain walked again)', playerTokenHits >= 1, 'player-token hits: ' + playerTokenHits);
   check('resolved to verified 1080p despite the stale token', !!best3 && best3.realHeight === 1080, best3 && `${best3.host} ${best3.realWidth}x${best3.realHeight}`);
   check(`finished in ${total3}ms (< 15000ms)`, total3 < 15000, total3 + 'ms');
+
+  // ---- Scenario 4: the site changed its page; no token can be had --------
+  // The API refuses token-less calls. The error must say which hop broke
+  // (not just "Vidsrc API status 403"), and the resolver must not spend
+  // ~75 s repeating token-less calls before the browser path.
+  pageChanged = true;
+  staleTokenOnce = false;
+  dataApiCalls = 0;
+  mode = 'winner-first';
+  console.log('\n[8] No API token (site changed its page): the error says why, and it gives up fast');
+  await vs.getApiToken({ type: 'tv', tmdb: '777777', season: 1, episode: 1 }, { fresh: true }); // drop the cached token
+  dataApiCalls = 0;
+  let err4 = null;
+  const start4 = Date.now();
+  try {
+    await vs.fetchStreamUrls({ type: 'tv', tmdb: '777777', season: 1, episode: 1 });
+  } catch (e) {
+    err4 = e;
+  }
+  const total4 = Date.now() - start4;
+  check('failed', !!err4);
+  check('the error names the broken hop', err4 && /no API token.*landing page has no playerUrl/.test(err4.message), err4 && err4.message);
+  check('at most 2 token-less API calls', dataApiCalls <= 2, 'data-api calls: ' + dataApiCalls);
+  check(`gave up in ${total4}ms (< 20000ms)`, total4 < 20000, total4 + 'ms');
+  check('JS-literal / escaped page values are read', vs.pageValue("CFG = {playerUrl: '\\/embed\\/player\\/9'}", 'playerUrl') === '/embed/player/9');
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
