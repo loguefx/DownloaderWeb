@@ -229,7 +229,36 @@ async function aniwaveCatalogSeasons(title, opts = {}) {
 // Tier 2: AniList
 // ---------------------------------------------------------------------------
 
-function anilistGql(query, variables) {
+// AniList allows a client only so many requests a minute (~30 now) and
+// answers HTTP 429 with a Retry-After when it is exceeded. Every 429 used to
+// come back as "no answer" - an Anime-tab card then had "no TMDB id". Requests
+// are spaced out, and a 429 is waited out (Retry-After, at most 60 s) and
+// retried, for every caller at once (one shared "blocked until").
+const ANILIST_GAP_MS = 700;
+let anilistNextAt = 0;
+let anilistBlockedUntil = 0;
+const anilistSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function anilistGql(query, variables) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const now = Date.now();
+    const wait = Math.max(anilistBlockedUntil - now, anilistNextAt - now, 0);
+    anilistNextAt = Math.max(now, anilistNextAt) + ANILIST_GAP_MS;
+    if (wait > 0) await anilistSleep(wait);
+    const r = await anilistRequest(query, variables);
+    if (r && r.status === 429) {
+      const ra = Math.min(60, Math.max(1, Number(r.retryAfter) || 30));
+      anilistBlockedUntil = Date.now() + ra * 1000;
+      continue;
+    }
+    return r ? r.body : null;
+  }
+  return null;
+}
+
+// One POST to AniList -> { status, body, retryAfter } (body null unless 200).
+// Injectable for tests.
+let anilistRequest = (query, variables) => anilistPost(query, variables);
+function anilistPost(query, variables) {
   const payload = JSON.stringify({ query, variables });
   return new Promise((resolve, reject) => {
     const req = https.request(
@@ -242,14 +271,16 @@ function anilistGql(query, variables) {
         const chunks = [];
         res.on('data', (d) => chunks.push(d));
         res.on('end', () => {
-          if (res.statusCode !== 200) return resolve(null);
-          try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-          catch (e) { resolve(null); }
+          const out = { status: res.statusCode, retryAfter: res.headers['retry-after'], body: null };
+          if (res.statusCode === 200) {
+            try { out.body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { out.body = null; }
+          }
+          resolve(out);
         });
       }
     );
-    req.on('error', () => reject(new Error('anilist unreachable')));
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.on('error', () => resolve(null));
+    req.setTimeout(10000, () => { req.destroy(); });
     req.write(payload);
     req.end();
   });
@@ -464,12 +495,56 @@ const ENTRY_QUERY =
   'title { english romaji native } relations { edges { relationType node { id type format startDate { year } seasonYear ' +
   'title { english romaji } synonyms } } } } }';
 
+// A TMDB series known from the Anime-Lists mapping -> the resolver's answer.
+// Season: the mapping's, else the TMDB season that aired in the card's year
+// (opts.year), else null (the caller counts it another way).
+async function mappedTmdbResult(mapped, opts = {}) {
+  const apiKey = tmdbKey(opts);
+  const get = opts.tmdbFetcher || ((u) => httpJson(u, 10000));
+  let det = null;
+  if (apiKey) {
+    try {
+      det = await get('https://api.themoviedb.org/3/tv/' + encodeURIComponent(mapped.tmdb) + '?language=en-US&api_key=' + encodeURIComponent(apiKey));
+    } catch (e) {
+      det = null;
+    }
+  }
+  const first = Number(String((det && det.first_air_date) || '').slice(0, 4)) || 0;
+  const y = Number(opts.year) || 0;
+  let season = mapped.season || null;
+  if (!season && det && y && Array.isArray(det.seasons)) {
+    const hit = det.seasons
+      .filter((s) => s && s.season_number > 0 && Number(String(s.air_date || '').slice(0, 4)) === y)
+      .sort((a, b) => a.season_number - b.season_number)[0];
+    if (hit) season = hit.season_number;
+  }
+  if (!season && y && first && y <= first) season = 1;
+  return { tmdb: String(mapped.tmdb), name: (det && det.name) || '', year: first, season, matchedBy: 'anime-lists', entryTitle: String(opts.title || '') };
+}
+
 async function tmdbForAnilist(anilistId, opts = {}) {
   const id = Number(anilistId);
   if (!(id > 0)) return null;
   const key = 'al2tmdb:' + id;
   const hit = cacheGet(key);
   if (hit !== undefined) return hit;
+  // 1. The Anime-Lists mapping: deterministic, no AniList request at all.
+  let mapped = null;
+  try {
+    mapped = await (opts.animeIds || require('./animeids')).tmdbFor(id);
+  } catch (e) {
+    mapped = null;
+  }
+  if (mapped && mapped.type !== 'tv') mapped = null;
+  let mappedRes = null;
+  if (mapped) {
+    mappedRes = await mappedTmdbResult(mapped, opts);
+    if (mappedRes.season) {
+      cacheSet(key, mappedRes);
+      return mappedRes;
+    }
+    // Season not known yet: the AniList walk below counts it (best effort).
+  }
   const gql = opts.fetcher || anilistGql;
   const tvLike = (f) => !f || SEASON_FORMATS.has(f);
   // Walk PREQUELs (seasons only) to the first season.
@@ -491,8 +566,17 @@ async function tmdbForAnilist(anilistId, opts = {}) {
     cur = prev.node.id;
   }
   if (!media) {
+    if (mappedRes) {
+      // The mapping knows the series; only the season is unknown.
+      return Object.assign(mappedRes, { season: 1 });
+    }
     tmdbForAnilist.lastReason = 'AniList did not answer (unreachable or rate-limiting the engine) - try again in a minute';
     return null;
+  }
+  if (mappedRes) {
+    const v = Object.assign(mappedRes, { season: hops + 1 });
+    cacheSet(key, v);
+    return v;
   }
   const entry = media._entry || media;
   const root = media;
@@ -1043,6 +1127,11 @@ async function urlMapFor(tmdbId, title, opts = {}) {
 
 module.exports = {
   baseSeriesTitle,
+  _setAnilistRequestForTests(fn) {
+    anilistRequest = fn || ((q, v) => anilistPost(q, v));
+    anilistNextAt = 0;
+    anilistBlockedUntil = 0;
+  },
   tmdbPairFromAnimeSeasons,
   aniwaveSeasons,
   anilistSeasons,

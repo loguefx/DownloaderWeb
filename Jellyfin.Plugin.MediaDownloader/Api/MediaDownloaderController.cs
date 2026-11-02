@@ -470,8 +470,10 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         [HttpGet("AnimeTmdb")]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(StatusCodes.Status404NotFound)]
-        public async Task<IActionResult> AnimeTmdb([FromQuery] int anilist) =>
-            await ProxyAsync(() => _engine.GetRawAsync($"api/anime/tmdb?anilist={anilist}")).ConfigureAwait(false);
+        public async Task<IActionResult> AnimeTmdb([FromQuery] int anilist, [FromQuery] int year = 0, [FromQuery] string title = null) =>
+            await ProxyAsync(() => _engine.GetRawAsync($"api/anime/tmdb?anilist={anilist}"
+                + (year > 0 ? $"&year={year}" : string.Empty)
+                + (string.IsNullOrEmpty(title) ? string.Empty : "&title=" + Uri.EscapeDataString(title)))).ConfigureAwait(false);
 
         [HttpGet("TmdbSeason")]
         [ProducesResponseType(StatusCodes.Status200OK)]

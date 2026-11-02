@@ -1145,6 +1145,10 @@
                         manual: { season: 1, from: 1, to: 1 },
                         library: libDefault(kind, anime),
                         libraryLocked: false,
+                        // An Anime-tab card mapped straight to its TMDB series: open the
+                        // season it is (the mapping's, else the one that aired that year).
+                        preferSeason: (r.anilist && r.tmdbSeason) ? Number(r.tmdbSeason) : null,
+                        preferYear: (r.anilist && r.tmdb && !r.tmdbSeason) ? (Number(r.year) || null) : null,
                         modeAudio: ((S.config && S.config.DefaultMode) || 'dub'),
                         quality: String((S.config && S.config.DefaultMinHeight != null) ? S.config.DefaultMinHeight : 1080),
                         watch: false,
@@ -1197,7 +1201,9 @@
                         const anilistId = t.r && t.r.anilist;
                         if (anilistId && !t.anilistTried) {
                             t.anilistTried = true;
-                            get('MediaDownloader/AnimeTmdb?anilist=' + encodeURIComponent(anilistId))
+                            get('MediaDownloader/AnimeTmdb?anilist=' + encodeURIComponent(anilistId) +
+                                (Number(t.year) ? '&year=' + encodeURIComponent(t.year) : '') +
+                                (t.title ? '&title=' + encodeURIComponent(t.title) : ''))
                                 .then((m) => {
                                     if (stale()) return;
                                     if (!m || !m.tmdb) {

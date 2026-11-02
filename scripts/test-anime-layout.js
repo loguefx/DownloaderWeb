@@ -22,6 +22,9 @@ const assert = require('assert');
 process.env.TMDB_API_KEY = process.env.TMDB_API_KEY || 'test-key';
 
 const mod = require(path.join(__dirname, '..', 'src', 'main', 'anime-layout.js'));
+// The Anime-Lists mapping is scripted per test (empty here): the resolver
+// tests below exercise the AniList walk and the TMDB name search.
+require(path.join(__dirname, '..', 'src', 'main', 'animeids.js'))._setFetchForTests(async () => [], require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'animeids-empty-')));
 
 let pass = 0;
 let fail = 0;

@@ -356,7 +356,19 @@ async function handle(req, res, u) {
           json(res, 502, { error: 'AniList returned no results' });
           return;
         }
+        // The TMDB id straight from the Anime-Lists mapping (no AniList walk,
+        // no title guessing): the card opens like any TMDB title.
+        const animeids = require('./animeids');
+        try {
+          await Promise.race([animeids.ensure(), new Promise((r) => setTimeout(r, 8000))]);
+        } catch (e) {
+          // cards without a mapped id are resolved when opened
+        }
         const results = pg.media.map((m) => ({
+          ...((() => {
+            const e = animeids.peek(m.id);
+            return e && e.type === 'tv' ? { tmdb: e.tmdb, tmdbSeason: e.season || null } : {};
+          })()),
           anilist: String(m.id),
           title: (m.title && (m.title.english || m.title.romaji)) || '',
           poster: (m.coverImage && m.coverImage.large) || '',
@@ -382,7 +394,12 @@ async function handle(req, res, u) {
       const anilist = parseInt(u.searchParams.get('anilist') || '', 10);
       if (!(anilist > 0)) { json(res, 400, { error: 'anilist id is required' }); return; }
       animelayout.tmdbForAnilist.lastReason = '';
-      const r = await animelayout.tmdbForAnilist(anilist);
+      // The card's year/title help place it: a later season is the TMDB season
+      // that aired that year.
+      const r = await animelayout.tmdbForAnilist(anilist, {
+        year: parseInt(u.searchParams.get('year') || '', 10) || 0,
+        title: (u.searchParams.get('title') || '').slice(0, 200)
+      });
       if (!r) { json(res, 404, { error: 'No TMDB series found for this AniList entry: ' + (animelayout.tmdbForAnilist.lastReason || 'no match') + '.' }); return; }
       json(res, 200, r);
       return;
