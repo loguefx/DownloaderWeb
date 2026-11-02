@@ -43,7 +43,7 @@ async function main() {
     if (!tok && /timeout/.test(vs.chainResult(relay))) {
       const t1 = Date.now();
       try {
-        tok = await vs.tokenChain(relay, ref, { relayMs: 45000, pageMs: 45000 });
+        tok = await vs.tokenChain(relay, ref, { relayMs: 45000, pageMs: 45000, ignoreDead: true });
       } catch (e) {
         tok = '';
       }

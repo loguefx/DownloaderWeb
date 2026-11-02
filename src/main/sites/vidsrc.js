@@ -62,7 +62,9 @@ function mirrorUrls(pageUrl) {
     out.push(abs);
   };
   if (current) add(current);
-  for (const origin of HOSTS) add(origin);
+  // A mirror whose domain no longer resolves is not loaded (each costs a
+  // page-load timeout per episode).
+  for (const origin of HOSTS) if (!vidsrcDl.isDeadHost(origin)) add(origin);
   return out;
 }
 

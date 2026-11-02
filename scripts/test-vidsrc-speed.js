@@ -83,11 +83,17 @@ const LATE_MS = 400; // how late the winner answers in 'loser-first' mode
 let staleTokenOnce = false; // scenario: first data-API call 403s (stale token)
 let dataApiCalls = 0;
 let playerTokenHits = 0;
-let pageChanged = false; // scenario: the landing page no longer carries playerUrl
+let pageChanged = false;
+let relayDnsGone = false;
+let vsrcRelayHits = 0; // scenario: vidsrc.sh's name does not resolve // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
   if (u.includes('vidsrc.sh/vs_src.php')) {
     mark('slow-relay-vsrc');
+    if (relayDnsGone) {
+      vsrcRelayHits += 1;
+      return { error: Object.assign(new Error('getaddrinfo ENOTFOUND vidsrc.sh'), { code: 'ENOTFOUND' }) };
+    }
     // winner-first: slow loser; loser-first: fast-failing loser
     return mode === 'loser-first' ? { status: 500 } : { delay: SLOW_MS, status: 500 };
   }
@@ -183,6 +189,10 @@ function fakeGet(url, options, cb) {
   const route = routeFor(u);
   const req = new EventEmitter();
   req.setTimeout = () => req;
+  if (route.error) {
+    setTimeout(() => req.emit('error', route.error), 0);
+    return req;
+  }
   const fire = () => {
     if (route.endMark) mark(route.endMark); // marked when the (delayed) answer arrives
     const res = new EventEmitter();
@@ -343,6 +353,23 @@ const at = (name) => {
   check('at most 2 token-less API calls', dataApiCalls <= 2, 'data-api calls: ' + dataApiCalls);
   check(`gave up in ${total4}ms (< 20000ms)`, total4 < 20000, total4 + 'ms');
   check('JS-literal / escaped page values are read', vs.pageValue("CFG = {playerUrl: '\\/embed\\/player\\/9'}", 'playerUrl') === '/embed/player/9');
+
+  // ---- Scenario 5: a relay mirror's domain is gone (vidsrcme.ru) --------
+  console.log('\n[9] A mirror whose name does not resolve is skipped afterwards');
+  pageChanged = false;
+  relayDnsGone = true;
+  vsrcRelayHits = 0;
+  const r9 = { type: 'tv', tmdb: '888888', season: 1, episode: 1 };
+  const tA = await vs.getApiToken(r9, { fresh: true });
+  check('the other mirror still gives the token', tA === 'tokB', JSON.stringify(tA));
+  check('the dead mirror is marked', vs.isDeadHost('https://vidsrc.sh'));
+  const hitsBefore = vsrcRelayHits;
+  await vs.getApiToken(r9, { fresh: true });
+  check('...and not asked again', vsrcRelayHits === hitsBefore, `${vsrcRelayHits - hitsBefore} more`);
+  const mirrors = require(path.join(REPO, 'src/main/sites/vidsrc.js')).mirrorUrls('https://vidsrcme.ru/embed/tv/1-1-1');
+  check('the browser path does not load the dead mirror', !mirrors.some((m) => m.includes('vidsrc.sh')), JSON.stringify(mirrors));
+  vs._resetDeadHostsForTests();
+  relayDnsGone = false;
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

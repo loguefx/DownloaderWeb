@@ -118,6 +118,26 @@ function request(url, headers, timeoutMs) {
 // hop broke - "Vidsrc API status 403" alone cannot tell a site change from an
 // IP block.
 const lastChain = {};
+// Relay mirrors whose name no longer resolves (vidsrcme.ru, 2026-11: DNS
+// ENOTFOUND). Vidsrc rotates domains; a dead one used to cost a 10 s timeout
+// per token fetch and another page load per episode in the browser path.
+// Skipped for DEAD_MS, then tried again (a DNS hiccup heals).
+const DEAD_MS = 6 * 3600 * 1000;
+const deadUntil = new Map();
+function hostOf(u) {
+  try {
+    return new URL(u).host;
+  } catch (e) {
+    return '';
+  }
+}
+function isDeadHost(u) {
+  return (deadUntil.get(hostOf(u)) || 0) > Date.now();
+}
+function noteNetError(u, e) {
+  const code = (e && e.code) || '';
+  if (code === 'ENOTFOUND' || /ENOTFOUND/.test((e && e.message) || '')) deadUntil.set(hostOf(u), Date.now() + DEAD_MS);
+}
 const lastLanding = {}; // relay -> the player page vs_src.php sent us to
 // window.CFG / window.CONFIG values, whether written as JSON ("k":"v"), as a
 // JS literal (k: 'v') or with escaped slashes (\/embed\/player).
@@ -139,6 +159,7 @@ async function tokenChain(relay, ref, opts = {}) {
     return '';
   };
   if (!id) return note('no TMDB/IMDB id');
+  if (isDeadHost(relay) && !opts.ignoreDead) return note('skipped: its name did not resolve recently (domain gone)');
   const isTv = ref.type === 'tv';
   const params =
     `type=${isTv ? 'tv' : 'movie'}&id=${encodeURIComponent(id)}` +
@@ -149,6 +170,7 @@ async function tokenChain(relay, ref, opts = {}) {
   try {
     r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, relayMs);
   } catch (e) {
+    noteNetError(relay, e);
     return note(`vs_src.php ${(e && e.message) || e}`);
   }
   if (r.status !== 200) return note(`vs_src.php HTTP ${r.status}`);
@@ -215,7 +237,8 @@ async function acquireApiToken(ref) {
   // Now the FIRST settled chain decides: a success returns immediately (the
   // loser dies on its own hop timeout and is ignored); a failure just means
   // the other chain still has a chance.
-  const attempts = RELAY_HOSTS.map((relay) =>
+  const live = RELAY_HOSTS.filter((h) => !isDeadHost(h));
+  const attempts = (live.length ? live : RELAY_HOSTS).map((relay) =>
     tokenChain(relay, ref).then((tok) => ({ ok: !!tok, tok }), () => ({ ok: false, tok: '' }))
   );
   while (attempts.length) {
@@ -761,6 +784,8 @@ module.exports = {
   isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS,
   chainResult: (relay) => lastChain[relay] || '',
   landingFor: (relay) => lastLanding[relay] || '',
+  isDeadHost,
+  _resetDeadHostsForTests() { deadUntil.clear(); },
   _setBlockedUntilForTests(t) { blockedUntil = t; }
 };
 
