@@ -493,7 +493,10 @@ class Watcher {
       metaOf.set(e, meta);
     }
     const onDiskOf = new Map();
-    organizer.withScanCache(() => {
+    // In batches, yielding between them: one long synchronous scan of network
+    // drives froze the engine's API (the plugin's lookups timed out).
+    await organizer.withScanCacheAsync(async () => {
+      let n = 0;
       for (const e of eps) {
         if (floorActive && e.episode != null && Number(e.episode) <= floor) continue;
         let hit = false;
@@ -508,6 +511,7 @@ class Watcher {
           }
         }
         onDiskOf.set(e, hit);
+        if (++n % 40 === 0) await new Promise((r) => setImmediate(r));
       }
     });
     // 2. English-dub status - only for the episodes NOT already on disk

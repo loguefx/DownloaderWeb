@@ -490,14 +490,24 @@ async function tmdbForAnilist(anilistId, opts = {}) {
     hops += 1;
     cur = prev.node.id;
   }
-  if (!media) return null;
+  if (!media) {
+    tmdbForAnilist.lastReason = 'AniList did not answer (unreachable or rate-limiting the engine) - try again in a minute';
+    return null;
+  }
   const entry = media._entry || media;
   const root = media;
   const names = [...new Set([root.title && root.title.english, root.title && root.title.romaji, ...(root.synonyms || [])]
     .filter(Boolean).map(cleanAnimeTitle).filter((t) => t.length >= 2))];
   const year = Number((root.startDate && root.startDate.year) || root.seasonYear) || 0;
   const apiKey = tmdbKey(opts);
-  if (!apiKey || !names.length) return null;
+  if (!apiKey) {
+    tmdbForAnilist.lastReason = 'the engine has no TMDB key (engine.json "tmdbApiKey")';
+    return null;
+  }
+  if (!names.length) {
+    tmdbForAnilist.lastReason = 'the AniList entry has no usable title';
+    return null;
+  }
   const get = opts.tmdbFetcher || ((u) => httpJson(u, 10000));
   let best = null;
   for (const q of names.slice(0, 4)) {
@@ -546,6 +556,7 @@ async function tmdbForAnilist(anilistId, opts = {}) {
       entryTitle: (entry.title && (entry.title.english || entry.title.romaji)) || '' }
     : null;
   if (value) cacheSet(key, value); // a miss is retried next time
+  else tmdbForAnilist.lastReason = `TMDB has no animated series named "${names[0]}"${year ? ` from ${year}` : ''}`;
   return value;
 }
 

@@ -612,6 +612,28 @@ async function main() {
       check('no neighbor on disk: standard layout (null)', organizer.neighborStylePath(root, { series: 'Nothing Here', season: 1, episode: 5 }, 'x') === null);
       check('restyle keeps zero padding and the (Dub) tag', organizer.restyleName('One Piece - S02E078 - Old Title.mkv', 1, 'New') === 'One Piece - S02E079 - New.mp4');
     }
+    {
+      // The async scan cache is private to its task: a request running at the
+      // same time reads the disk as it is (the watch list's long scan yields
+      // so the API keeps answering).
+      const root = path.join(base, 'AsyncScan');
+      fs.mkdirSync(path.join(root, 'Show A', 'Season 1'), { recursive: true });
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      let insideSaw = null;
+      const scan = organizer.withScanCacheAsync(async () => {
+        organizer.existingEpisodeFile(root, { series: 'Show A', season: 1, episode: 1 }); // lists the folder
+        await gate;
+        insideSaw = !!organizer.existingEpisodeFile(root, { series: 'Show A', season: 1, episode: 1 });
+      });
+      fs.writeFileSync(path.join(root, 'Show A', 'Season 1', 'Show A S01E01.mp4'), 'x'); // another task places a file
+      const outsideSaw = !!organizer.existingEpisodeFile(root, { series: 'Show A', season: 1, episode: 1 });
+      release();
+      await scan;
+      check('async scan cache: a concurrent request sees the new file', outsideSaw === true);
+      check('...while the scan keeps its own listing for its whole run', insideSaw === false);
+      check('...and nothing is cached after it ends', !!organizer.existingEpisodeFile(root, { series: 'Show A', season: 1, episode: 1 }));
+    }
     check('episodeNumberFromName "S12E07" -> 7', organizer.episodeNumberFromName('Show S12E07.mp4') === 7);
     // 4-digit episode numbers (One Piece Wano arc: S14E1000+) - now readable
     // via the unambiguous S#E# / #x# / EP# markers...

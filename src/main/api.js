@@ -381,8 +381,9 @@ async function handle(req, res, u) {
     if (req.method === 'GET' && seg === 'anime' && parts[2] === 'tmdb') {
       const anilist = parseInt(u.searchParams.get('anilist') || '', 10);
       if (!(anilist > 0)) { json(res, 400, { error: 'anilist id is required' }); return; }
+      animelayout.tmdbForAnilist.lastReason = '';
       const r = await animelayout.tmdbForAnilist(anilist);
-      if (!r) { json(res, 404, { error: 'No TMDB series matches this AniList entry (or the engine has no TMDB key).' }); return; }
+      if (!r) { json(res, 404, { error: 'No TMDB series found for this AniList entry: ' + (animelayout.tmdbForAnilist.lastReason || 'no match') + '.' }); return; }
       json(res, 200, r);
       return;
     }

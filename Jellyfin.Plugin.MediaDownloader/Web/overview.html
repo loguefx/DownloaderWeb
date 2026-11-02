@@ -1172,6 +1172,18 @@
                     loadTitle(n);
                 }
 
+                // Why a title has no TMDB id, with what each lookup answered, so
+                // "AniList not answering" or "engine busy" is not shown as
+                // "this title does not exist".
+                function noTmdbMessage(t) {
+                    const why = [];
+                    if (t.lookupNote) why.push('AniList lookup: ' + t.lookupNote);
+                    if (t.searchNote) why.push('title search: ' + t.searchNote);
+                    return 'This title has no TMDB id and a search by name did not return one either. The engine uses TMDB ids to find sources, so it cannot be downloaded until it has one.' +
+                        (why.length ? ' (' + why.join('; ') + ')' : ' Check the title spelling (it must exist on TMDB) and that the engine has a TMDB key (engine.json "tmdbApiKey").') +
+                        ' Going back and opening it again retries.';
+                }
+
                 function loadTitle(t) {
                     const stale = () => S.t !== t;
                     if (!t.tmdb) {
@@ -1204,8 +1216,10 @@
                                     if (t.r) t.r.tmdb = m.tmdb;
                                     loadTitle(t);
                                 })
-                                .catch(() => {
+                                .catch((err) => {
                                     if (stale()) return;
+                                    // Shown with the result if the title search fails too.
+                                    t.lookupNote = (err && err.message) || 'the engine did not answer';
                                     t.noTmdbTried = false; // fall back to the title search below
                                     loadTitle(t);
                                 });
@@ -1230,6 +1244,19 @@
                                     const year = Number(t.year) || 0;
                                     const same = list.filter((x) => x.tmdb && want && norm(x.title) === want);
                                     let hit = same.find((x) => !year || !Number(x.year) || Math.abs(Number(x.year) - year) <= 1) || null;
+                                    // A season card ("Aoashi Season 2", 2026): the series
+                                    // started earlier (2022) - accept the same name from
+                                    // before the card's year and open the season it names.
+                                    const sm = String(t.title || '').match(/\bseason\s*(\d+)\b|\b(\d+)(?:st|nd|rd|th)\s+season\b/i);
+                                    if (!hit && sm) {
+                                        const older = same.filter((x) => !year || !Number(x.year) || Number(x.year) <= year)
+                                            .sort((a, b) => (Number(b.year) || 0) - (Number(a.year) || 0));
+                                        if (older[0]) {
+                                            hit = older[0];
+                                            t.preferSeason = Number(sm[1] || sm[2]) || null;
+                                            t.title = hit.title || t.title;
+                                        }
+                                    }
                                     if (!hit && !t.baseTried) {
                                         // A later season / arc card ("TOUGEN ANKI: Nikko
                                         // Kegon Falls Arc"): TMDB lists the SERIES - search
@@ -1265,10 +1292,15 @@
                                     }
                                     loadTitle(t);
                                 })
-                                .catch(() => { /* the noTmdb message stays visible */ });
+                                .catch((err) => {
+                                    if (stale()) return;
+                                    t.searchNote = (err && err.message) || 'the engine did not answer';
+                                    t.infoError = noTmdbMessage(t);
+                                    renderTitle();
+                                });
                         }
                         t.noTmdb = true;
-                        t.infoError = 'This title has no TMDB id and a search by name did not return one either. The engine uses TMDB ids to find sources, so this one may fail. Check the title spelling (it must exist on TMDB) and that the engine has a TMDB key (engine.json "tmdbApiKey"), then try again.';
+                        t.infoError = noTmdbMessage(t);
                         renderTitle();
                         if (t.kind === 'movie') checkMovie(t);
                         return;

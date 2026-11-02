@@ -6,9 +6,17 @@ const path = require('path');
 // Directory-listing cache for read-only scans (see withScanCache). Every other
 // fs call goes straight through: `fs` here inherits all of node's fs and only
 // the three lookup calls below consult the cache while a scan is active.
-let scanCache = null;
+let syncScanCache = null;
+// The async variant (withScanCacheAsync) keeps its cache in the async context
+// of the task that started it: other requests running meanwhile never see it.
+const { AsyncLocalStorage } = require('async_hooks');
+const scanStore = new AsyncLocalStorage();
+function activeScanCache() {
+  return syncScanCache || scanStore.getStore() || null;
+}
 const fs = Object.create(realFs);
 fs.readdirSync = function (dir, opts) {
+  const scanCache = activeScanCache();
   if (!scanCache) return realFs.readdirSync(dir, opts);
   const key = 'd|' + (opts && opts.withFileTypes ? 't|' : 'n|') + dir;
   if (!scanCache.has(key)) {
@@ -23,12 +31,14 @@ fs.readdirSync = function (dir, opts) {
   return hit.v;
 };
 fs.existsSync = function (p) {
+  const scanCache = activeScanCache();
   if (!scanCache) return realFs.existsSync(p);
   const key = 'x|' + p;
   if (!scanCache.has(key)) scanCache.set(key, { v: realFs.existsSync(p) });
   return scanCache.get(key).v;
 };
 fs.statSync = function (p, opts) {
+  const scanCache = activeScanCache();
   if (!scanCache) return realFs.statSync(p, opts);
   const key = 's|' + p;
   if (!scanCache.has(key)) {
@@ -51,13 +61,22 @@ fs.statSync = function (p, opts) {
 // dropped ("Engine is offline or did not answer in time"). The cache lives
 // only for this call, so later scans always see the disk as it is now.
 function withScanCache(fn) {
-  if (scanCache) return fn(); // already inside a scan
-  scanCache = new Map();
+  if (activeScanCache()) return fn(); // already inside a scan
+  syncScanCache = new Map();
   try {
     return fn();
   } finally {
-    scanCache = null;
+    syncScanCache = null;
   }
+}
+
+// The same for a long scan that yields between batches (await): the event
+// loop - and the engine's API - keeps answering while e.g. 1180 One Piece
+// episodes are checked across three network drives. The cache is visible only
+// to this task (AsyncLocalStorage); concurrent requests read the disk as it is.
+function withScanCacheAsync(fn) {
+  if (activeScanCache()) return fn();
+  return scanStore.run(new Map(), fn);
 }
 
 // Strips characters that are illegal in Windows filenames and trims noise.
@@ -1159,6 +1178,7 @@ function seriesLayoutRiskFor(roots, series, sourceTotal) {
 
 module.exports = {
   withScanCache,
+  withScanCacheAsync,
   sanitize,
   pad,
   parseSeasonFromUrl,

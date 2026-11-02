@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.44",
+                "changelog": "Season cards ('Aoashi Season 2') find their series when TMDB dates it earlier and open on that season. When a title gets no TMDB id the page now says why (AniList not answering, no TMDB key, engine busy) instead of a generic message. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v44/MediaDownloader.12.1.0.44.zip",
+                "checksum": "91bae133084ef8333db137e9f1ee3868",
+                "timestamp": "2026-11-02T02:24:53.000Z"
+            },
+            {
+                "version": "10.11.0.44",
+                "changelog": "Season cards ('Aoashi Season 2') find their series when TMDB dates it earlier and open on that season. When a title gets no TMDB id the page now says why (AniList not answering, no TMDB key, engine busy) instead of a generic message. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v44/MediaDownloader.10.11.0.44.zip",
+                "checksum": "c351deca9c2d32be54a72fb56adc97bd",
+                "timestamp": "2026-11-02T02:24:53.000Z"
+            },
+            {
+                "version": "10.10.0.44",
+                "changelog": "Season cards ('Aoashi Season 2') find their series when TMDB dates it earlier and open on that season. When a title gets no TMDB id the page now says why (AniList not answering, no TMDB key, engine busy) instead of a generic message. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v44/MediaDownloader.10.10.0.44.zip",
+                "checksum": "f0a0473900c4ac8a472a2c0ca4f36f0a",
+                "timestamp": "2026-11-02T02:24:53.000Z"
+            },
+            {
                 "version": "12.1.0.43",
                 "changelog": "Anime-tab cards for a later season or arc that AniList does not link to its first season (TOUGEN ANKI: Nikko Kegon Falls Arc) now find their TMDB series by the series name and open on the season that aired that year, so the library check sees your folder. The title search also runs when the engine finds no match. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

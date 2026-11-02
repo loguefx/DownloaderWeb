@@ -488,6 +488,10 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     check('arc card with no prequel link -> TMDB 253811 by the series name', arc && arc.tmdb === '253811' && arc.matchedBy === 'series name', JSON.stringify(arc));
     check('...opens on Season 2 (aired 2026, the arc\'s year)', arc && arc.season === 2, JSON.stringify(arc));
     check('...searched "TOUGEN ANKI" after the full title found nothing', tq.some((q) => /^tougen anki$/i.test(q)), JSON.stringify(tq));
+    mod._resetCache();
+    mod.tmdbForAnilist.lastReason = '';
+    const down = await mod.tmdbForAnilist(4242, { fetcher: async () => null, tmdbFetcher: tougenTmdb });
+    check('AniList not answering -> null with the reason said', down === null && /AniList did not answer/.test(mod.tmdbForAnilist.lastReason), mod.tmdbForAnilist.lastReason);
     check('baseSeriesTitle: text before the colon', mod.baseSeriesTitle('TOUGEN ANKI: Nikko Kegon Falls Arc') === 'TOUGEN ANKI' && mod.baseSeriesTitle('Solo Leveling') === 'Solo Leveling');
   }
 
