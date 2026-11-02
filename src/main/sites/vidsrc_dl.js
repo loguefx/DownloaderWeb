@@ -118,6 +118,7 @@ function request(url, headers, timeoutMs) {
 // hop broke - "Vidsrc API status 403" alone cannot tell a site change from an
 // IP block.
 const lastChain = {};
+const lastLanding = {}; // relay -> the player page vs_src.php sent us to
 // window.CFG / window.CONFIG values, whether written as JSON ("k":"v"), as a
 // JS literal (k: 'v') or with escaped slashes (\/embed\/player).
 function pageValue(text, key) {
@@ -125,7 +126,13 @@ function pageValue(text, key) {
   const m = String(text || '').match(re);
   return m ? m[1].replace(/\\\//g, '/') : '';
 }
-async function tokenChain(relay, ref) {
+async function tokenChain(relay, ref, opts = {}) {
+  // vs_src.php is the relay itself (fast or dead); the player pages live on a
+  // rotating player host that can take >10 s over a VPN - waiting a bit longer
+  // there costs once per ~3 min (the token is shared), giving up costs the
+  // whole episode.
+  const relayMs = opts.relayMs || 10000;
+  const pageMs = opts.pageMs || 20000;
   const id = ref.imdb ? ref.imdb : ref.tmdb;
   const note = (why) => {
     lastChain[relay] = why;
@@ -140,7 +147,7 @@ async function tokenChain(relay, ref) {
   // ate a third of the whole discovery budget before the next one was tried.
   let r;
   try {
-    r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, 10000);
+    r = await request(`${relay}/vs_src.php?${params}`, { Referer: relay + '/' }, relayMs);
   } catch (e) {
     return note(`vs_src.php ${(e && e.message) || e}`);
   }
@@ -154,23 +161,25 @@ async function tokenChain(relay, ref) {
   if (!j || !j.src) return note('vs_src.php gave no player page' + (j && (j.error || j.message) ? ` (${j.error || j.message})` : ''));
   const base = String(j.src).match(/^https?:\/\/[^/]+/);
   if (!base) return note('vs_src.php player page is not a URL');
+  const host = base[0].replace(/^https?:\/\//, '');
+  lastLanding[relay] = j.src;
   let lr;
   try {
-    lr = await request(j.src, { Referer: relay + '/' }, 10000);
+    lr = await request(j.src, { Referer: relay + '/' }, pageMs);
   } catch (e) {
-    return note(`landing page ${(e && e.message) || e}`);
+    return note(`landing page on ${host}: ${(e && e.message) || e}`);
   }
-  if (lr.status !== 200) return note(`landing page HTTP ${lr.status}`);
+  if (lr.status !== 200) return note(`landing page on ${host}: HTTP ${lr.status}`);
   const playerUrl = pageValue(lr.body.toString('utf8'), 'playerUrl');
   if (!playerUrl) return note('landing page has no playerUrl (the site changed its page)');
   const playerHref = /^https?:/i.test(playerUrl) ? playerUrl : base[0] + (playerUrl.startsWith('/') ? '' : '/') + playerUrl;
   let pr;
   try {
-    pr = await request(playerHref, { Referer: j.src }, 10000);
+    pr = await request(playerHref, { Referer: j.src }, pageMs);
   } catch (e) {
-    return note(`player page ${(e && e.message) || e}`);
+    return note(`player page on ${host}: ${(e && e.message) || e}`);
   }
-  if (pr.status !== 200) return note(`player page HTTP ${pr.status}`);
+  if (pr.status !== 200) return note(`player page on ${host}: HTTP ${pr.status}`);
   const tok = pageValue(pr.body.toString('utf8'), 'apiToken');
   if (!tok) return note('player page has no apiToken (the site changed its page)');
   lastChain[relay] = 'ok';
@@ -751,6 +760,7 @@ module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
   isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS,
   chainResult: (relay) => lastChain[relay] || '',
+  landingFor: (relay) => lastLanding[relay] || '',
   _setBlockedUntilForTests(t) { blockedUntil = t; }
 };
 

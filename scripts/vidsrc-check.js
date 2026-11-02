@@ -37,6 +37,19 @@ async function main() {
     }
     if (tok) anyToken = true;
     console.log(`  ${relay}: ${tok ? `token OK (${tok.length} chars)` : 'NO TOKEN - ' + (vs.chainResult(relay) || 'unknown')} (${secs(t)})`);
+    if (vs.landingFor(relay)) console.log(`    sent to: ${vs.landingFor(relay)}`);
+    // A timeout: is that host slow, or not answering at all? Once more with
+    // a long wait.
+    if (!tok && /timeout/.test(vs.chainResult(relay))) {
+      const t1 = Date.now();
+      try {
+        tok = await vs.tokenChain(relay, ref, { relayMs: 45000, pageMs: 45000 });
+      } catch (e) {
+        tok = '';
+      }
+      if (tok) anyToken = true;
+      console.log(`    with 45 s per step: ${tok ? 'token OK - the host is just SLOW' : 'still ' + (vs.chainResult(relay) || 'no token')} (${secs(t1)})`);
+    }
   }
 
   console.log('\n[2] Data API (stream list)');
