@@ -666,7 +666,7 @@ async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken)
   }
   if (variants[0].height && !meetsFloor(variants[0].width, variants[0].height, min) && !variants.some((v) => !v.height)) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — best quality ${variants[0].width}x${variants[0].height}, below ${min}p.`);
-    return null;
+    return { low: true, host: u.host };
   }
   // Alternate audio / subtitle tracks the master lists (#EXT-X-MEDIA).
   const media = audiolang.parseHlsMedia(master, raw);
@@ -729,11 +729,33 @@ async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken)
 // passes the quality floor but not this check is set aside (opts.rejected
 // collects { host, reason }) and the race goes on; with opts.preferOnly the
 // first set-aside source is still returned when no source passes.
+// Vidsrc hands out its sources on one rotating CDN server per call, and the
+// servers differ: Breaking Bad's 1080p WEB-DL came back as three 720p-only
+// sources on pebblebeachpottery.space, Lioness got 1080p on
+// petalandplume.space minutes earlier. When every source is listed below the
+// floor, ask again (up to LOW_ROUNDS lists) while a new server shows up.
+const LOW_ROUNDS = 3;
+const LOW_RETRY_MS = 2500;
 async function pick1080(ref, onLog, minH = 1080, opts = {}) {
+  const seenHosts = new Set();
+  for (let round = 1; ; round++) {
+    const st = { allLow: false, hosts: [] };
+    const r = await pickRound(ref, onLog, minH, opts, st);
+    if (r || !st.allLow || round >= LOW_ROUNDS) return r;
+    const fresh = st.hosts.filter((h) => !seenHosts.has(h));
+    st.hosts.forEach((h) => seenHosts.add(h));
+    if (round > 1 && !fresh.length) return r; // the same server again: it has no 1080p to offer
+    onLog && onLog(`Vidsrc: every source on ${st.hosts.join(', ')} tops out below ${minH}p; asking Vidsrc again for another server (${round + 1}/${LOW_ROUNDS}).`);
+    await new Promise((rs) => setTimeout(rs, LOW_RETRY_MS));
+  }
+}
+
+async function pickRound(ref, onLog, minH, opts, st) {
   const min = Math.max(0, Number(minH) || 0);
   const accept = typeof opts.accept === 'function' ? opts.accept : null;
   const rejected = Array.isArray(opts.rejected) ? opts.rejected : [];
   let fallback = null;
+  let low = 0;
   const { urls, meta } = await fetchStreamUrls(ref);
   onLog && onLog(`Vidsrc: ${meta.title} — ${urls.length} source(s) available.`);
   // Verify sources in parallel; the FIRST one to pass the floor wins (the
@@ -764,6 +786,11 @@ async function pick1080(ref, onLog, minH = 1080, opts = {}) {
       unreachable += 1;
       continue;
     }
+    if (r && r.low) {
+      low += 1;
+      if (!st.hosts.includes(r.host)) st.hosts.push(r.host);
+      continue;
+    }
     if (!r) continue;
     delete r.order;
     if (accept) {
@@ -781,6 +808,7 @@ async function pick1080(ref, onLog, minH = 1080, opts = {}) {
   // for a while after bursts): that is "try again shortly", not "no copy at
   // this quality".
   if (!fallback && total && unreachable === total) opts.allUnreachable = true;
+  if (!fallback && total && low === total) st.allLow = true;
   return opts.preferOnly ? fallback : null;
 }
 

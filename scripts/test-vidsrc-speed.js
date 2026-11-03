@@ -85,6 +85,7 @@ let dataApiCalls = 0;
 let playerTokenHits = 0;
 let pageChanged = false;
 let relayDnsGone = false;
+let lowFirst = 0; // scenario: the first N stream lists are on a 720p-only server
 let vsrcRelayHits = 0; // scenario: vidsrc.sh's name does not resolve // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
@@ -132,6 +133,10 @@ function routeFor(u) {
       return { status: 403, body: () => Buffer.from(JSON.stringify({ status_code: 403 })) };
     }
     mark('data-api');
+    if (lowFirst > 0) {
+      lowFirst -= 1;
+      return { status: 200, body: () => Buffer.from(JSON.stringify({ status_code: '200', data: { title: 'Test Show', stream_urls: ['https://cdn-low.example/a/master.m3u8', 'https://cdn-low.example/b/master.m3u8'] } })) };
+    }
     return {
       status: 200,
       body: () =>
@@ -147,6 +152,10 @@ function routeFor(u) {
           })
         )
     };
+  }
+  if (u.includes('cdn-low.example/generate.php')) return { status: 200, body: () => Buffer.from('tokL') };
+  if (u.includes('cdn-low.example/')) {
+    return { status: 200, body: () => Buffer.from('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\n720.m3u8\n') };
   }
   if (u.includes('cdn-bad.example/generate.php')) {
     mark('bad-generate-start');
@@ -370,6 +379,19 @@ const at = (name) => {
   check('the browser path does not load the dead mirror', !mirrors.some((m) => m.includes('vidsrc.sh')), JSON.stringify(mirrors));
   vs._resetDeadHostsForTests();
   relayDnsGone = false;
+
+  console.log('\n[11] Every source on a 720p-only server: Vidsrc is asked again for another server');
+  const r11 = { type: 'tv', tmdb: '999999', season: 1, episode: 1 };
+  lowFirst = 1;
+  const logs11 = [];
+  const b11 = await vs.pick1080(r11, (m) => logs11.push(m), 1080);
+  check('the second list (another server) gives the 1080p', !!b11 && b11.host === 'cdn-good2.example', b11 && b11.host);
+  check('...and says why it asked again', logs11.some((m) => /asking Vidsrc again/.test(m)), logs11.join(' | '));
+  lowFirst = 5;
+  logs11.length = 0;
+  const b12 = await vs.pick1080(r11, (m) => logs11.push(m), 1080);
+  check('the same 720p server every time: stops after the second list', b12 === null && logs11.filter((m) => /source\(s\) available/.test(m)).length === 2, logs11.join(' | '));
+  lowFirst = 0;
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';
