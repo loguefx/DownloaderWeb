@@ -508,17 +508,34 @@ async function episodeRelease(ref, session = {}) {
 }
 
 // Parse a master playlist into variants: [{ width, height, bandwidth, url }].
-function parseMaster(masterText, baseOrigin) {
-  const lines = masterText.split('\n').map((s) => s.trim());
+// Variants of a master playlist, best first. A variant line is resolved
+// against the master's own URL (a relative "1080/index.m3u8" lives next to the
+// master, not at the site root). A variant without RESOLUTION is kept with
+// size 0 (unknown) - the first-segment probe measures it. A playlist that is
+// already a single media playlist (#EXTINF, no #EXT-X-STREAM-INF) is its own
+// one variant, size unknown.
+function parseMaster(masterText, baseUrl) {
+  const lines = String(masterText || '').split('\n').map((s) => s.trim());
   const variants = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/RESOLUTION=(\d+)x(\d+)/);
-    const bw = lines[i].match(/BANDWIDTH=(\d+)/);
-    const next = lines[i + 1] || '';
-    if (m && next && !next.startsWith('#')) {
-      const u = next.startsWith('http') ? next : baseOrigin + (next.startsWith('/') ? '' : '/') + next;
-      variants.push({ width: +m[1], height: +m[2], bandwidth: bw ? +bw[1] : 0, url: u });
+  const abs = (ref) => {
+    try {
+      return new URL(ref, baseUrl).href;
+    } catch (e) {
+      return ref;
     }
+  };
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^#EXT-X-STREAM-INF/i.test(lines[i])) continue;
+    const m = lines[i].match(/RESOLUTION=(\d+)x(\d+)/i);
+    const bw = lines[i].match(/[^-]BANDWIDTH=(\d+)/i) || lines[i].match(/BANDWIDTH=(\d+)/i);
+    let j = i + 1;
+    while (j < lines.length && (!lines[j] || lines[j].startsWith('#'))) j += 1;
+    const next = lines[j] || '';
+    if (!next) continue;
+    variants.push({ width: m ? +m[1] : 0, height: m ? +m[2] : 0, bandwidth: bw ? +bw[1] : 0, url: abs(next) });
+  }
+  if (!variants.length && /#EXTINF/i.test(masterText || '') && /^https?:/i.test(String(baseUrl || ''))) {
+    variants.push({ width: 0, height: 0, bandwidth: 0, url: String(baseUrl), single: true });
   }
   return variants;
 }
@@ -529,7 +546,9 @@ function parseMaster(masterText, baseOrigin) {
 // same rule as verify.meetsQualityFloor.
 function meetsFloor(width, height, min) {
   if (!min) return true;
-  if (height >= min) return true;
+  // A 1080p encode is not always exactly 1080 lines: 1920x1072 / 1916x1076
+  // (mod-16 and cropped WEB-DLs) are the same master class.
+  if (height >= Math.floor(min * 0.96)) return true;
   const masterWidth = Math.round((min * 16) / 9);
   if (!width || width < masterWidth) return false;
   return height > 0 && width / height >= 1.85;
@@ -625,25 +644,52 @@ async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken)
     return null;
   }
   let master;
+  let masterStatus = 0;
   try {
-    master = (await request(raw + '?token=' + encodeURIComponent(token), {}, 15000)).body.toString('utf8');
+    const mr = await request(raw + '?token=' + encodeURIComponent(token), {}, 15000); // same URL as masterUrl below
+    masterStatus = mr.status;
+    master = mr.body.toString('utf8');
   } catch (e) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master failed (${e.message}).`);
     return { unreachable: true };
   }
-  const variants = parseMaster(master, u.origin).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+  const masterUrl = raw + '?token=' + encodeURIComponent(token);
+  const variants = parseMaster(master, masterUrl).sort((a, b) => b.height - a.height || b.bandwidth - a.bandwidth);
+  // Every way a source can end without a stream is said (Breaking Bad: "NO
+  // source reached 1080p" with not one line about why).
+  if (!variants.length) {
+    const what = masterStatus !== 200
+      ? `HTTP ${masterStatus}`
+      : `not a playlist: ${master.replace(/\s+/g, ' ').slice(0, 80)}`;
+    onLog && onLog(`Vidsrc: source[${i}] ${u.host} — master lists no qualities (${what}).`);
+    return masterStatus === 429 || masterStatus >= 500 ? { unreachable: true } : null;
+  }
+  if (variants[0].height && !meetsFloor(variants[0].width, variants[0].height, min) && !variants.some((v) => !v.height)) {
+    onLog && onLog(`Vidsrc: source[${i}] ${u.host} — best quality ${variants[0].width}x${variants[0].height}, below ${min}p.`);
+    return null;
+  }
   // Alternate audio / subtitle tracks the master lists (#EXT-X-MEDIA).
   const media = audiolang.parseHlsMedia(master, raw);
   for (const v of variants) {
-    if (!meetsFloor(v.width, v.height, min)) break;
+    // Listed below the floor: so is everything after it (best first) - but
+    // a variant of unknown size is still measured.
+    if (v.height && !meetsFloor(v.width, v.height, min)) continue;
     try {
-      const idx = (await request(v.url, {}, 15000)).body.toString('utf8');
+      const idx = v.single ? master : (await request(v.url, {}, 15000)).body.toString('utf8');
       const segLine = idx
         .split('\n')
         .map((s) => s.trim())
         .find((l) => l && !l.startsWith('#'));
-      if (!segLine) continue;
-      const segUrl = segLine.startsWith('http') ? segLine : u.origin + (segLine.startsWith('/') ? '' : '/') + segLine;
+      if (!segLine) {
+        onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.height ? v.width + 'x' + v.height : '(size not listed)'} — its playlist has no segments.`);
+        continue;
+      }
+      let segUrl;
+      try {
+        segUrl = new URL(segLine, v.url).href;
+      } catch (e) {
+        segUrl = segLine;
+      }
       const segPath = path.join(os.tmpdir(), `vs_verify_${i}_${v.height}_${process.pid}.bin`);
       await new Promise((res, rej) => {
         const rq = (segUrl.startsWith('http:') ? http : https).get(
@@ -664,13 +710,13 @@ async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken)
       const pr = await probeResolution(segPath);
       const streamLangs = await probeAudioLangs(segPath);
       try { fs.unlinkSync(segPath); } catch (e) { /* already gone */ }
-      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} → real ${pr.width || '?'}x${pr.height || '?'}.`);
+      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.height ? v.width + 'x' + v.height : '(size not listed)'} → real ${pr.width || '?'}x${pr.height || '?'}.`);
       if (pr.ok && meetsFloor(pr.width, pr.height, min)) {
         const audio = audiolang.audioVerdict({ streamLangs, media, fileName: meta && meta.fileName });
         return { url: v.url, host: u.host, width: v.width, height: v.height, realWidth: pr.width, realHeight: pr.height, meta, order: i, media, audio };
       }
     } catch (e) {
-      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.width}x${v.height} verify failed (${e.message}).`);
+      onLog && onLog(`Vidsrc: source[${i}] ${u.host} ${v.height ? v.width + 'x' + v.height : '(size not listed)'} verify failed (${e.message}).`);
     }
   }
   return null;
@@ -781,7 +827,7 @@ async function download(ref, outPath, opts = {}) {
 
 module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
-  isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS,
+  isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS, meetsFloor,
   chainResult: (relay) => lastChain[relay] || '',
   landingFor: (relay) => lastLanding[relay] || '',
   isDeadHost,

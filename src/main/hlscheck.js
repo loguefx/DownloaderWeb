@@ -3926,7 +3926,7 @@ async function preferMinHeight(det, minHeight) {
   // so a width that reaches the class's master width with a widescreen aspect
   // also satisfies the floor - same rule as verify.meetsQualityFloor.
   const meets = (w, h) => {
-    if (h >= min) return true;
+    if (h >= Math.floor(min * 0.96)) return true; // 1920x1072 / 1916x1076 are 1080p-class
     const masterWidth = Math.round((min * 16) / 9);
     return !!w && w >= masterWidth && h > 0 && w / h >= 1.85;
   };

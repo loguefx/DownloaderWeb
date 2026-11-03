@@ -177,7 +177,7 @@ function routeFor(u) {
     mark('good-index');
     return { status: 200, body: () => Buffer.from('#EXTM3U\n#EXT-X-TARGETDURATION=6\nseg0.ts\n') };
   }
-  if (u.includes('cdn-good2.example/seg0.ts')) {
+  if (u.includes('cdn-good2.example/seg0.ts') || u.includes('cdn-good2.example/variants/seg0.ts')) {
     mark('good-segment');
     return { status: 200, body: () => Buffer.alloc(4096, 1) };
   }
@@ -370,6 +370,22 @@ const at = (name) => {
   check('the browser path does not load the dead mirror', !mirrors.some((m) => m.includes('vidsrc.sh')), JSON.stringify(mirrors));
   vs._resetDeadHostsForTests();
   relayDnsGone = false;
+
+  console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
+  const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';
+  let v = vs.parseMaster('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n1080/index.m3u8\n', M);
+  check('a relative variant lives next to the master', v[0] && v[0].url === 'https://cdn.example/hls/abc/1080/index.m3u8', v[0] && v[0].url);
+  v = vs.parseMaster('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000\n/v/1.m3u8\n', M);
+  check('a variant without RESOLUTION is kept (size measured later)', v.length === 1 && v[0].height === 0 && v[0].url === 'https://cdn.example/v/1.m3u8', JSON.stringify(v));
+  v = vs.parseMaster('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg0.ts\n', M);
+  check('a single media playlist is its own variant', v.length === 1 && v[0].single && v[0].url === M, JSON.stringify(v));
+  v = vs.parseMaster('#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1920x1080\n\n#comment\nhttps://x.example/a.m3u8\n', M);
+  check('blank/comment lines before the URI are skipped', v[0] && v[0].url === 'https://x.example/a.m3u8', JSON.stringify(v));
+  check('1916x1076 counts as 1080p', vs.meetsFloor(1916, 1076, 1080) && vs.meetsFloor(1920, 1072, 1080));
+  check('1600x900 and 1280x720 do not', !vs.meetsFloor(1600, 900, 1080) && !vs.meetsFloor(1280, 720, 1080));
+  check('wide 1920x800 still counts', vs.meetsFloor(1920, 800, 1080));
+  const verify = require(path.join(REPO, 'src/main/verify.js'));
+  check('the finished-file check agrees (1916x1076 not below 1080)', !verify.belowMinHeight({ width: 1916, height: 1076 }, 1080));
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

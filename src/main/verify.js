@@ -107,7 +107,8 @@ function belowMinHeight(probed, minHeight) {
 // widescreen aspect ratio also satisfies the floor.
 function meetsQualityFloor(width, height, min) {
   if (!min) return true;
-  if (height >= min) return true;
+  // 1920x1072 / 1916x1076 (mod-16, cropped WEB-DLs) are 1080p-class encodes.
+  if (height >= Math.floor(min * 0.96)) return true;
   const masterWidth = Math.round((min * 16) / 9);
   if (!width || width < masterWidth) return false;
   return height > 0 && width / height >= 1.85;
