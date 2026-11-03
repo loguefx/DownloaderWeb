@@ -70,7 +70,7 @@ async function main() {
     const t3 = Date.now();
     try {
       const best = await vs.pick1080(ref, (m) => console.log('  ' + m), 1080, { preferOnly: false });
-      console.log(best ? `  => 1080p found: ${best.realHeight || best.height}p from ${best.host} (${secs(t3)})` : `  => NO source reached 1080p (${secs(t3)})`);
+      console.log(best ? `  => passes the 1080p floor: ${best.realWidth || best.width}x${best.realHeight || best.height}${(best.realHeight || best.height) < 1080 ? ' (widescreen 1080p)' : ''} from ${best.host} (${secs(t3)})` : `  => NO source reached 1080p (${secs(t3)})`);
     } catch (e) {
       console.log(`  => failed: ${e.message}`);
     }
