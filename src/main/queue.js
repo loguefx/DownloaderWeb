@@ -569,6 +569,34 @@ class DownloadManager extends EventEmitter {
     }
   }
 
+  // 1080p first, 720p as the fallback (TV and movies). When every try at the
+  // job's floor has failed for QUALITY reasons (Vidsrc handed out 720p-only
+  // servers, the fallback sites had nothing better), the episode is tried
+  // once more accepting 720p or better - a 720p copy beats none. The watch
+  // list counts any copy as present, so it is not re-fetched in a loop; the
+  // placer replaces it only if the episode is queued again and a better copy
+  // is found. Anime has no floor (the source's own resolution).
+  _fallbackFloor(item, reason) {
+    const FALLBACK = 720;
+    if (!item || item.anime || item._floorFallback || item._exclusive) return false;
+    const floor = this._minHeight(item);
+    if (!(floor > FALLBACK)) return false;
+    const quality = item._noQuality || /no \d+p|not \d+p|\d+p, not \d+p|below \d+p|no 1080p/i.test(String(reason || ''));
+    if (!quality) return false;
+    item._floorFallback = floor;
+    item.minHeight = FALLBACK;
+    item.attempts = 0;
+    item._noQuality = false;
+    item._notFound = false;
+    item._failStreak = 0;
+    item.skipSources = [];
+    item.status = 'queued';
+    item.error = null;
+    this._emit();
+    this._log(`"${item.label}": no ${floor}p copy on any source; trying again for the best copy at ${FALLBACK}p or better.`);
+    return true;
+  }
+
   // Stopped (Stop all) or removed while it was being worked on.
   _interrupted(item) {
     return !!(this._stopRequested || !this.items.includes(item) || (item && item._controller && item._controller.signal && item._controller.signal.aborted));
@@ -1065,6 +1093,7 @@ class DownloadManager extends EventEmitter {
               }
               return { fatal: false };
             }
+            if (this._fallbackFloor(item, reason)) continue;
             item.status = 'failed';
             this._emit();
             if (item._exclusive) {
@@ -1074,8 +1103,8 @@ class DownloadManager extends EventEmitter {
               );
             } else if (item._noQuality) {
               this._log(
-                `"${item.label}" — no 1080p source found (Vidsrc + fallback). ` +
-                  'This show does not have a 1080p encode available right now.'
+                `"${item.label}" — no copy at ${this._minHeight(item)}p or better found (Vidsrc + fallback sites)` +
+                  (item._floorFallback ? `, not even the ${this._minHeight(item)}p fallback.` : '.')
               );
             } else {
               this._log(
@@ -1348,6 +1377,7 @@ class DownloadManager extends EventEmitter {
         const wrongRes = /downloaded \d+p, not \d+p/.test(err.message || '');
         if (wrongRes) {
           const max = Math.max(1, config.download.maxRetries || 6);
+          if (item.attempts >= max && this._fallbackFloor(item, err.message)) continue;
           if (item.attempts >= max) {
             item.status = 'failed';
             this._emit();

@@ -446,6 +446,48 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6d. 1080p first, 720p as the fallback (TV/movies) ------------------
+  console.log('\n[6d] No 1080p anywhere: one more round accepting 720p, then it stops');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    config.download.maxRetries = 6;
+    const floors = [];
+    const bid = manager.add({
+      label: 'Breaking Bad S1E1',
+      series: 'Breaking Bad',
+      season: 1,
+      episode: 1,
+      minHeight: 1080,
+      url: 'https://example.invalid/bb-s1e1',
+      outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: (it) => {
+        floors.push(it.minHeight);
+        return Promise.resolve({ status: 'failed', reason: 'No 1080p stream on any source' });
+      }
+    });
+    const bitem = manager.items.find((x) => x.id === bid);
+    for (let i = 0; i < 200 && !(bitem && bitem.status === 'failed'); i++) await sleep(50);
+    check('tried at 1080p first', floors[0] === 1080, JSON.stringify(floors));
+    check('then at 720p', floors.includes(720) && floors.indexOf(720) > 0, JSON.stringify(floors));
+    check('falls back only once, then stops', bitem && bitem.status === 'failed' && floors.filter((f) => f === 720).length <= 2, JSON.stringify([bitem && bitem.status, floors]));
+    manager.removeByIds([bid]);
+    await sleep(100);
+    // Anime and a 720p floor never fall back.
+    const floorsA = [];
+    const aid = manager.add({
+      label: 'Show S1E1', series: 'Show', season: 1, episode: 1, minHeight: 720,
+      url: 'https://example.invalid/show-s1e1', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: (it) => { floorsA.push(it.minHeight); return Promise.resolve({ status: 'failed', reason: 'No 720p stream on any source' }); }
+    });
+    const aitem = manager.items.find((x) => x.id === aid);
+    for (let i = 0; i < 200 && !(aitem && aitem.status === 'failed'); i++) await sleep(50);
+    check('a 720p floor has nothing lower to fall back to', aitem && aitem.status === 'failed' && floorsA.every((f) => f === 720), JSON.stringify(floorsA));
+    manager.removeByIds([aid]);
+    await sleep(100);
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');
