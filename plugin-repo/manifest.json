@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.49",
+                "changelog": "Full series skips a TV show's Specials (Season 0: extras that no source has); pick them under By season if wanted. Anime unchanged.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v49/MediaDownloader.12.1.0.49.zip",
+                "checksum": "dcd29c5bc02ea55296c5c24219aabf85",
+                "timestamp": "2026-11-04T17:55:14.000Z"
+            },
+            {
+                "version": "10.11.0.49",
+                "changelog": "Full series skips a TV show's Specials (Season 0: extras that no source has); pick them under By season if wanted. Anime unchanged.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v49/MediaDownloader.10.11.0.49.zip",
+                "checksum": "3d272d62e570f60cdeeee531822b8d9e",
+                "timestamp": "2026-11-04T17:55:14.000Z"
+            },
+            {
+                "version": "10.10.0.49",
+                "changelog": "Full series skips a TV show's Specials (Season 0: extras that no source has); pick them under By season if wanted. Anime unchanged.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v49/MediaDownloader.10.10.0.49.zip",
+                "checksum": "b45dce55cbfe4cf72f5f29a9bbc67682",
+                "timestamp": "2026-11-04T17:55:14.000Z"
+            },
+            {
                 "version": "12.1.0.48",
                 "changelog": "Season pages show their episodes and library status right away; the English-dub badges fill in on their own afterwards. Needs the matching engine update (anime sequels TMDB lumps into one season, e.g. Tokyo Revengers, are listed as their own seasons).",
                 "targetAbi": "12.1.0.0",

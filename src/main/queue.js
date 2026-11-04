@@ -1051,6 +1051,14 @@ class DownloadManager extends EventEmitter {
           item._listedDubbed = true;
         }
 
+        // Only anime waits for an English dub. A TV show or film answered "not
+        // released" by some page is just not found there: retried / searched
+        // like any other miss, never parked on the waiting-for-dub list.
+        if (status === 'unavailable' && !item.anime) {
+          outcome = { status: 'failed', reason: 'No video sources found on the page' };
+          status = 'failed';
+        }
+
         if (status === 'unavailable') {
           this._releaseDownloadSlot(item);
           item.status = 'waiting';

@@ -1737,6 +1737,8 @@
                 function titleCounts(t) {
                     const c = { total: 0, aired: 0, have: 0, low: 0, queued: 0, missing: 0 };
                     (t.seasons || []).forEach((s) => {
+                        // A TV show's Specials are not part of the series (not in Full series).
+                        if (s.season === 0 && !t.anime) return;
                         const x = seasonCounts(s);
                         c.total += x.total; c.aired += x.aired; c.have += x.have;
                         c.low += x.low; c.queued += x.queued; c.missing += x.missing;
@@ -1756,7 +1758,12 @@
                     const out = [];
                     t.seasons.forEach((s) => {
                         let eps = [];
-                        if (t.mode === 'full') eps = availableEps(s);
+                        // Full series = the numbered seasons. A TV show's Specials
+                        // (TMDB Season 0: extras, recaps, webisodes) are on no
+                        // download source and only ever failed; pick them under
+                        // "By season" when wanted. Anime keeps its specials.
+                        if (t.mode === 'full' && s.season === 0 && !t.anime) eps = [];
+                        else if (t.mode === 'full') eps = availableEps(s);
                         else if (t.mode === 'season') eps = t.picked[s.season] ? availableEps(s) : [];
                         else {
                             const set = t.sel[s.season] || {};
@@ -1947,7 +1954,7 @@
                         let cls = 'mdl-season';
                         if (t.mode === 'episodes' && t.active === s.season) cls += ' on';
                         if (t.mode === 'season' && t.picked[s.season]) cls += ' picked';
-                        if (t.mode === 'full' && avail) cls += ' picked';
+                        if (t.mode === 'full' && avail && !(s.season === 0 && !t.anime)) cls += ' picked';
                         return '<button type="button" class="' + cls + '" data-season="' + s.season + '"><b>' + seasonLabel(s.season) + (s.year ? ' <em>· ' + esc(s.year) + '</em>' : '') + (t.anime ? dubBadge(s) : '') + '</b><span>' + esc(sub) + '</span></button>';
                     }).join('') + '</div>';
 
@@ -1955,7 +1962,9 @@
                         const c = titleCounts(t);
                         const toDownload = c.missing + c.low;
                         h += '<div class="mdl-callout">' + ICON.check + '<div><b>' + plural(toDownload, 'episode') + '</b> to download (' +
-                             c.missing + ' new' + (c.low ? ', ' + c.low + ' replacing below-floor copies' : '') + ') across ' + seasonsText(t) + '.' +
+                             c.missing + ' new' + (c.low ? ', ' + c.low + ' replacing below-floor copies' : '') + ') across ' +
+                             (t.anime ? seasonsText(t) : plural((t.seasons || []).filter((x) => x.season > 0).length, 'season')) + '.' +
+                             (!t.anime && (t.seasons || []).some((x) => x.season === 0) ? ' Specials are not included (pick them under <b>By season</b> if you want them).' : '') +
                              (c.have ? ' Your ' + c.have + ' full-quality episodes are left alone.' : '') +
                              '<div class="small muted" style="margin-top:.2em;">Episode counts come from TMDB, so no season is cut short.</div></div></div>';
                         return h;

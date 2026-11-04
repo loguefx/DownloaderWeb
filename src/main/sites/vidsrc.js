@@ -242,11 +242,13 @@ module.exports = {
     const mode = ref.mode === 'sub' ? 'sub' : 'dub';
     const strict = !!ref.anime;
     const rejected = [];
-    const pickOpts = {
-      accept: (src) => audiolang.checkMode({ mode, audio: src.audio, media: src.media, strictDub: strict }),
-      rejected,
-      preferOnly: !strict
-    };
+    // TV/movies: no audio check at all - they are already English (a
+    // separate English audio track is still picked below when the stream has
+    // several). Waiting for every source to "prefer" a tagged-English copy only
+    // delayed the download.
+    const pickOpts = strict
+      ? { accept: (src) => audiolang.checkMode({ mode, audio: src.audio, media: src.media, strictDub: true }), rejected, preferOnly: false }
+      : { rejected, preferOnly: false };
     let best;
     try {
       best = await vidsrcDl.pick1080(dlRef, onLog, minH, pickOpts);
@@ -288,9 +290,8 @@ module.exports = {
     const audio = best.audio || audiolang.audioVerdict({ fileName });
     const verdict = audiolang.checkMode({ mode, audio, media: best.media, strictDub: strict });
     onLog(`Audio: ${audio.verdict} (${audio.evidence})${audio.langs && audio.langs.length ? ' - ' + audiolang.langLabel(audio.langs) : ''}.`);
-    if (!verdict.ok) {
-      // Only reachable for TV/movies (preferOnly): no matching copy exists.
-      onLog(`⚠ ${mode.toUpperCase()} requested, but Vidsrc's only copy has ${verdict.reason}. Downloading it anyway (not anime).`);
+    if (!verdict.ok && strict) {
+      onLog(`⚠ ${mode.toUpperCase()} requested, but Vidsrc's copy has ${verdict.reason}.`);
     }
 
     // Separate audio tracks (#EXT-X-MEDIA TYPE=AUDIO with a URI): the video

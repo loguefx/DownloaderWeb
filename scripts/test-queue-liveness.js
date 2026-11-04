@@ -526,6 +526,26 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6f. TV / films never wait for a dub ---------------------------------
+  console.log('\n[6f] A TV episode a page calls "DUB not released" is not parked on the waiting-for-dub list');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    let parked = 0;
+    const id = manager.add({
+      label: 'Drama S1E1', series: 'Drama', season: 1, episode: 1, mode: 'dub', anime: false, minHeight: 1080,
+      url: 'https://example.invalid/drama-s1e1', outputRoot: path.join(DATA_DIR, 'staging'),
+      onUnavailable: () => { parked += 1; },
+      discover: () => Promise.resolve({ status: 'unavailable', reason: 'DUB not released yet' })
+    });
+    const it = manager.items.find((x) => x.id === id);
+    for (let i = 0; i < 200 && !(it && (it.status === 'failed' || it.status === 'waiting')); i++) await sleep(50);
+    check('not on the waiting list (failed like any miss)', it && it.status === 'failed' && parked === 0, JSON.stringify([it && it.status, parked]));
+    manager.removeByIds([id]);
+    await sleep(50);
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

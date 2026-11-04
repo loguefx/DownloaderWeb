@@ -1283,6 +1283,10 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // refuses an anime DUB download without it.
   const resolveDub = async (s, fromRow) => {
     if (!s) return null;
+    // TV shows and films are already in English: any stream is the one we
+    // want (the auto-played one included) - no hunting for a DUB server.
+    // Only anime has a separate English dub to prove.
+    if (!opts.anime) return s;
     const m = urlMode(s.url);
     if (m === 'sub') return null;
     if (m === 'dub') return Object.assign(s, { dubEvidence: 'marked' });
@@ -1310,9 +1314,22 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   } else {
     // Don't trust the autoplay row (unknown) - only accept a marked/verified dub.
     const d = await resolveDub(sniffer.best(id), null);
-    if (d) {
+    if (d && opts.anime) {
       onLog('Auto-played default resolved a DUB stream.');
       return finalize(d, id, false, onLog);
+    }
+    // TV/films: the auto-played stream is taken when it is downloadable and
+    // meets the quality floor; otherwise the servers are tried as before.
+    if (d && !opts.anime) {
+      let ok = false;
+      try { ok = await hlscheck.streamIsDownloadable(d, { signal, onLog }); } catch (e) { ok = false; }
+      if (ok && minHeight) {
+        try { ok = (await hlscheck.preferMinHeight(d, minHeight)).ok; } catch (e) { ok = false; }
+      }
+      if (ok) {
+        onLog(`Using the auto-played stream${d.height ? ` (${d.height}p)` : ''}: ${d.url}`);
+        return finalize(d, id, false, onLog);
+      }
     }
   }
 
@@ -1525,7 +1542,10 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // simply hasn't published the dub. Trying the SUB servers anyway can only
   // produce streams we must reject, and it costs the whole discovery budget per
   // attempt - park it for the watcher instead.
-  if (!wantSub && !primary.length && scan.hasSub) {
+  // Only ANIME has a separate English dub to wait for. A TV show or film is
+  // already in English: whatever its rows are labelled, they are tried, and
+  // it never goes on the waiting-for-dub list.
+  if (!wantSub && !primary.length && scan.hasSub && opts.anime) {
     onLog('The page has no DUB row at all (only SUB servers); adding to the waiting list.');
     return { status: 'unavailable', reason: 'DUB not released yet' };
   }
@@ -2065,7 +2085,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
   // A server that merely timed out (slow player page, blocked embed) is not
   // evidence that the dub is unreleased - that used to send episodes whose dub
   // does exist straight to the waiting list.
-  if (primary.length > 0 && !primaryGotStream && primaryGone >= primary.length) {
+  if (primary.length > 0 && !primaryGotStream && primaryGone >= primary.length && opts.anime) {
     onLog(
       `Every ${MODE} server's stream 404s on the CDN - ${MODE} is listed but not published yet; adding to the waiting list.`
     );
@@ -2089,7 +2109,7 @@ async function selectDubAndResolve(wc, url, onLog = () => {}, mode = 'dub', opts
 
   // A MODE URL existed but 404'd (still encoding), or primary/fallback produced
   // only the other audio -> not out yet.
-  if (dubUnplayable || sawStream) {
+  if ((dubUnplayable || sawStream) && opts.anime) {
     onLog(`No playable ${MODE} stream yet - ${MODE} not out/still encoding; adding to the waiting list.`);
     return { status: 'unavailable', reason: `${MODE} not released yet` };
   }
