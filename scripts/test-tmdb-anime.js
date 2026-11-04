@@ -113,6 +113,13 @@ const TV = {
     genres: [{ id: 16 }], origin_country: ['JP'],
     seasons: [{ season_number: 1, episode_count: 12, air_date: '2020-04-04' }, { season_number: 2, episode_count: 12, air_date: '2021-07-03' }]
   },
+  // 105009: Tokyo Revengers - TMDB lumps four sequels into one 63-episode
+  // season; the sites list the sequels under arc names.
+  105009: {
+    id: 105009, name: 'Tokyo Revengers', first_air_date: '2021-04-11', poster_path: null, overview: 'x',
+    genres: [{ id: 16 }], origin_country: ['JP'],
+    seasons: [{ season_number: 1, episode_count: 63, air_date: '2021-04-11' }]
+  },
   // 300054: one season, not on the anime sites (a Netflix-only show).
   300054: {
     id: 300054, name: 'Single Netflix Anime', first_air_date: '2026-02-26', poster_path: null, overview: 'x',
@@ -228,6 +235,18 @@ animelayout._internals.cacheSet('plan:94904|villainess test', animelayout.buildS
   [{ season: 1, episodes: 12 }],
   [{ entry: { id: 'vx', title: 'Villainess Test X' }, count: 12 }]));
 animelayout._internals.cacheSet('awcat:single netflix anime', null);
+animelayout._internals.cacheSet('aniwave:105009', null);
+animelayout._internals.cacheSet('anilistid:105009', '');
+animelayout._internals.cacheSet('anilist:tokyo revengers|2021', null);
+animelayout._internals.cacheSet('anilist:tokyo revengers', null);
+animelayout._internals.cacheSet('awcat:tokyo revengers', [{ season: 1, episodes: awEps(24), aniwaveId: 'tr1', year: '' }]);
+animelayout._internals.cacheSet('tmdb:105009', [{ season: 1, episodes: 63, year: '2021' }]);
+animelayout._internals.cacheSet('plan:105009|tokyo revengers', animelayout.buildSourcePlan(
+  [{ season: 1, episodes: 63 }],
+  [{ season: 1, episodes: 24 }],
+  [{ entry: { id: '300', title: 'Tokyo Revengers: Tenjiku Arc' }, count: 13 },
+    { entry: { id: '200', title: 'Tokyo Revengers: Christmas Showdown' }, count: 13 },
+    { entry: { id: '400', title: 'Tokyo Revengers: The Three Deities' }, count: 13 }]));
 animelayout._internals.cacheSet('aniwave:127000', null);
 animelayout._internals.cacheSet('anilistid:127000', '');
 animelayout._internals.cacheSet('anilist:agreeing anime|2022', null);
@@ -374,6 +393,20 @@ animelayout._internals.cacheSet('aniwave:603', null);
     check('  its Vidsrc URL is TMDB S2E5', v25 && v25.season === 2 && v25.episode === 5, JSON.stringify(v25));
     const vsrc = await tmdb.animeSourceForAnimeNumbering({ tmdb: '94904', title: 'Villainess Test', season: 2, episode: 5 });
     check('  the anime sources are asked for the "X" entry E5, not "Season 2"', vsrc.entry && vsrc.entry.id === 'vx' && vsrc.episode === 5, JSON.stringify(vsrc));
+
+    // TMDB lumps the sequels into one season; the sites name them as arcs.
+    const tr = await tmdb.tmdbInfo('105009', 'tv', { anime: true, numbering: 'anime' });
+    const tshape = tr && tr.seasons.map((x) => x.season + ':' + x.episodes).join('|');
+    check('Tokyo Revengers in an AniDB library: 4 seasons 24/13/13/13, not one of 63', tshape === '1:24|2:13|3:13|4:13' && tr.numbering === 'anime', tshape);
+    const trS2 = await tmdb.animeSourceForAnimeNumbering({ tmdb: '105009', title: 'Tokyo Revengers', season: 2, episode: 1 });
+    check('  S2E1 is fetched from the "Christmas Showdown" entry E1', trS2.entry && trS2.entry.id === '200' && trS2.episode === 1, JSON.stringify(trS2));
+    const trS1 = await tmdb.animeSourceForAnimeNumbering({ tmdb: '105009', title: 'Tokyo Revengers', season: 1, episode: 5 });
+    check('  S1E5 stays Aniwave S1E5', trS1.season === 1 && trS1.episode === 5 && !trS1.entry, JSON.stringify(trS1));
+    const trMap = await tmdb.animeToTmdbMapper('105009');
+    const tr31 = trMap && trMap(3, 1);
+    check('  its Vidsrc URL for S3E1 is TMDB S1E38', tr31 && tr31.season === 1 && tr31.episode === 38, JSON.stringify(tr31));
+    const trS3 = await tmdb.tmdbSeason('105009', 3, { anime: true, numbering: 'anime' });
+    check('  Season 3 lists 13 episodes', trS3 && trS3.episodes.length === 13, trS3 && trS3.episodes.length);
 
     // One season, unknown to the anime sites: numbering is unambiguous.
     const one = await tmdb.tmdbInfo('300054', 'tv', { anime: true, numbering: 'anime' });

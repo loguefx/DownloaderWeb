@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.48",
+                "changelog": "Season pages show their episodes and library status right away; the English-dub badges fill in on their own afterwards. Needs the matching engine update (anime sequels TMDB lumps into one season, e.g. Tokyo Revengers, are listed as their own seasons).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v48/MediaDownloader.12.1.0.48.zip",
+                "checksum": "488b9ccf64d4f4debdd34c208bf30339",
+                "timestamp": "2026-11-04T06:18:02.000Z"
+            },
+            {
+                "version": "10.11.0.48",
+                "changelog": "Season pages show their episodes and library status right away; the English-dub badges fill in on their own afterwards. Needs the matching engine update (anime sequels TMDB lumps into one season, e.g. Tokyo Revengers, are listed as their own seasons).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v48/MediaDownloader.10.11.0.48.zip",
+                "checksum": "5d25ed19693005ab5355cc7d9e90852b",
+                "timestamp": "2026-11-04T06:18:02.000Z"
+            },
+            {
+                "version": "10.10.0.48",
+                "changelog": "Season pages show their episodes and library status right away; the English-dub badges fill in on their own afterwards. Needs the matching engine update (anime sequels TMDB lumps into one season, e.g. Tokyo Revengers, are listed as their own seasons).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v48/MediaDownloader.10.10.0.48.zip",
+                "checksum": "15103d0cc6f79ded8d6f6d1c41451b29",
+                "timestamp": "2026-11-04T06:18:02.000Z"
+            },
+            {
                 "version": "12.1.0.47",
                 "changelog": "Anime films on the Anime tab open as movies (with their TMDB movie id) instead of series ending in 'no TMDB id'. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

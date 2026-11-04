@@ -929,6 +929,37 @@ function mapEpisode(authoritative, tmdbSeasons, season, episode) {
 //      several, or the airing season Aniwave has only partly listed).
 // Anything else stops that season (its episodes keep their own numbers).
 // -> { [tmdbSeason]: [{ start, count, awSeason?, entry?, open }] }
+// Arc entries that fill `left` episodes, in the order the site added them
+// (its ids grow): an exact run of 2+ entries; else every entry, the newest
+// still airing, when they cover at least half of it. null = no fit.
+function arcRun(entries, left) {
+  // Sequel seasons only: OVAs, recaps and films (1-4 episodes) never fill one.
+  const E = entries.filter((x) => x.count >= 5).sort((a, b) => entryOrder(a) - entryOrder(b)).slice(0, 8);
+  if (E.length < 2) return null;
+  // Contiguous runs first (sequels in a row), then any ordered subset.
+  for (let i = 0; i < E.length; i++) {
+    let sum = 0;
+    for (let j = i; j < E.length; j++) {
+      sum += E[j].count;
+      if (sum === left && j > i) return E.slice(i, j + 1);
+      if (sum > left) break;
+    }
+  }
+  for (let mask = 1; mask < 1 << E.length; mask++) {
+    const pick = E.filter((_, k) => mask & (1 << k));
+    if (pick.length < 2) continue;
+    if (pick.reduce((t, x) => t + x.count, 0) === left) return pick;
+  }
+  const all = E.reduce((t, x) => t + x.count, 0);
+  if (all < left && all * 2 >= left) return Object.assign(E.slice(), { open: true });
+  return null;
+}
+function entryOrder(u) {
+  const id = u && u.entry && u.entry.id;
+  const n = Number(String(id == null ? '' : id).replace(/\D+/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER;
+}
+
 function buildSourcePlan(tmdbSeasons, catalogSeasons, unnumbered) {
   const T = (tmdbSeasons || []).filter((s) => s && s.season > 0 && countOf(s) > 0).sort((a, b) => a.season - b.season);
   const C = (catalogSeasons || []).filter((s) => s && s.season > 0 && countOf(s) > 0).sort((a, b) => a.season - b.season);
@@ -955,6 +986,25 @@ function buildSourcePlan(tmdbSeasons, catalogSeasons, unnumbered) {
         list.push({ start: used, count: left, entry: u.entry, open: false });
         used += left;
         break;
+      }
+      // TMDB lumps several sequels into one season and the sites list them
+      // under arc names, never "Season N" (Tokyo Revengers: TMDB S1 = 63 =
+      // the 24-episode first season + "Christmas Showdown" 13 + "Tenjiku
+      // Arc" 13 + "Three Deities" 13). Once no numbered season is left, a
+      // run of arc entries (in the order the site added them) that adds up
+      // to what is left fills it; each is its own season in an AniDB-
+      // numbered library. The newest may still be airing (shorter).
+      if (!c && used > 0) {
+        const run = arcRun(U.filter((x) => !x.used), left);
+        if (run) {
+          run.forEach((x, k) => {
+            x.used = true;
+            const last = k === run.length - 1;
+            list.push({ start: used, count: x.count, entry: x.entry, open: last && run.open, split: true });
+            used += x.count;
+          });
+          break;
+        }
       }
       if (c && countOf(c) < left) {
         list.push({ start: used, count: countOf(c), awSeason: c.season, open });
@@ -986,6 +1036,9 @@ function sourceEpisodeFromPlan(plan, season, episode) {
   if (last && last.open && last.awSeason != null && ep > last.start + last.count) {
     return { season: last.awSeason, episode: ep - last.start };
   }
+  if (last && last.open && last.entry && ep > last.start + last.count) {
+    return { entry: last.entry, episode: ep - last.start };
+  }
   return null;
 }
 
@@ -1015,22 +1068,44 @@ function tmdbEpisodeFromPlan(plan, awSeason, episode) {
 function animeSeasonsFromPlan(plan, catalogSeasons, tmdbSeasons) {
   const tCount = new Map((tmdbSeasons || []).filter((t) => t && t.season > 0).map((t) => [t.season, countOf(t)]));
   const tYear = new Map((tmdbSeasons || []).filter((t) => t && t.season > 0).map((t) => [t.season, String(t.year || '')]));
-  const out = [];
+  let out = [];
+  // An open (airing) segment keeps counting into TMDB's announced episodes of
+  // its TMDB season - only when nothing follows it in that season.
+  const partOf = (ts, list, k) => {
+    const seg = list[k];
+    const total = tCount.get(Number(ts)) || 0;
+    const isLast = k === list.length - 1;
+    const count = seg.open && isLast ? Math.max(seg.count, total - seg.start) : seg.count;
+    return { tmdbSeason: Number(ts), start: seg.start, count };
+  };
   for (const c of (catalogSeasons || []).filter((x) => x && x.season > 0).sort((a, b) => a.season - b.season)) {
     const parts = [];
     for (const [ts, list] of Object.entries(plan || {})) {
-      for (const seg of list) {
-        if (seg.awSeason !== c.season) continue;
-        const total = tCount.get(Number(ts)) || 0;
-        // The newest catalog season keeps counting into TMDB's announced
-        // episodes of the same TMDB season.
-        const count = seg.open ? Math.max(seg.count, total - seg.start) : seg.count;
-        parts.push({ tmdbSeason: Number(ts), start: seg.start, count });
-      }
+      list.forEach((seg, k) => {
+        if (seg.awSeason === c.season) parts.push(partOf(ts, list, k));
+      });
     }
     parts.sort((a, b) => a.tmdbSeason - b.tmdbSeason || a.start - b.start);
     const episodes = parts.length ? parts.reduce((n, p) => n + p.count, 0) : countOf(c);
     out.push({ season: c.season, episodes, year: parts.length ? tYear.get(parts[0].tmdbSeason) || '' : '', parts });
+  }
+  // Arc entries that split a lumped TMDB season (Tokyo Revengers) are
+  // seasons of their own, in airing order; the seasons are then numbered
+  // in that order.
+  const splits = [];
+  for (const [ts, list] of Object.entries(plan || {})) {
+    list.forEach((seg, k) => {
+      if (!seg.split) return;
+      const part = partOf(ts, list, k);
+      splits.push({ season: 0, episodes: part.count, year: tYear.get(Number(ts)) || '', parts: [part], arc: seg.entry && seg.entry.title });
+    });
+  }
+  if (splits.length) {
+    const placed = out.filter((x) => x.parts.length).concat(splits);
+    const pos = (x) => x.parts[0].tmdbSeason * 1e6 + x.parts[0].start;
+    placed.sort((a, b) => pos(a) - pos(b));
+    out = placed.concat(out.filter((x) => !x.parts.length));
+    out.forEach((x, k) => { x.season = k + 1; });
   }
   // TMDB seasons AFTER the last one the catalog seasons cover are sequels the
   // anime sites list under another name, never "Season N" ("My Next Life as

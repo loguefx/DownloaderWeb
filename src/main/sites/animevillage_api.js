@@ -341,12 +341,21 @@ async function dubMap(title, season = 1, { names = [], only = null } = {}) {
     return sum && sum.hasDub === false ? none() : null;
   }
   const out = new Map();
-  for (const ep of eps) {
-    if (want && !want.includes(ep.number)) continue;
-    const r = await episodeDub(show, ep);
-    if (r.dubbed != null) out.set(ep.number, r.dubbed);
-    if (!r.cached) await pauseMs(300); // gentle on the site's API
-  }
+  // Three episodes at a time (each is a DUB + a SUB stream request): one at
+  // a time made a 39-episode check take minutes ("still checking..." under
+  // the season list). Still gentle: a pause after every uncached lookup, and
+  // the circuit breaker stops the whole run when the site stops answering.
+  const todo = eps.filter((ep) => !want || want.includes(ep.number));
+  const worker = async () => {
+    while (todo.length) {
+      if (isDown()) return;
+      const ep = todo.shift();
+      const r = await episodeDub(show, ep);
+      if (r.dubbed != null) out.set(ep.number, r.dubbed);
+      if (!r.cached) await pauseMs(300); // gentle on the site's API
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
   for (const e of want || []) if (!eps.some((x) => x.number === e)) out.set(e, false);
   return out;
 }

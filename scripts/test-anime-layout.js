@@ -431,6 +431,30 @@ const mk = (season, n) => ({ season, episodes: Array.from({ length: n }, (_, i) 
     const odd = mod.buildSourcePlan(T([12, 12]), T([25]), []);
     check('a catalog season LONGER than TMDB\'s cannot be split: unmapped (TMDB numbers kept)', m(odd, 1, 3) === null && m(odd, 2, 1) === null, odd);
 
+    // Tokyo Revengers: TMDB lumps four sequels into one 63-episode season;
+    // the site lists the sequels under arc names (ids in the order added).
+    const arc = (id, title, count) => ({ entry: { id, slug: 'tr-' + id, title }, count });
+    const trU = [arc('300', 'Tokyo Revengers: Tenjiku Arc', 13), arc('200', 'Tokyo Revengers: Christmas Showdown', 13),
+      arc('400', 'Tokyo Revengers: The Three Deities', 13), arc('250', 'Tokyo Revengers: OVA', 2)];
+    const tr = mod.buildSourcePlan(T([63]), T([24]), trU);
+    check('Tokyo Revengers TMDB S1E24 -> Aniwave S1E24', JSON.stringify(m(tr, 1, 24)) === JSON.stringify({ season: 1, episode: 24 }), m(tr, 1, 24));
+    check('TMDB S1E25 -> "Christmas Showdown" E1 (not Aniwave S1E25)', m(tr, 1, 25) && m(tr, 1, 25).entry.id === '200' && m(tr, 1, 25).episode === 1, m(tr, 1, 25));
+    check('TMDB S1E38 -> "Tenjiku Arc" E1', m(tr, 1, 38) && m(tr, 1, 38).entry.id === '300' && m(tr, 1, 38).episode === 1, m(tr, 1, 38));
+    check('TMDB S1E63 -> "Three Deities" E13', m(tr, 1, 63) && m(tr, 1, 63).entry.id === '400' && m(tr, 1, 63).episode === 13, m(tr, 1, 63));
+    const trA = mod.animeSeasonsFromPlan(tr, T([24]), T([63]));
+    check('AniDB numbering: 4 seasons 24/13/13/13 (not one of 63)', JSON.stringify(trA.map((x) => x.episodes)) === '[24,13,13,13]', JSON.stringify(trA.map((x) => [x.season, x.episodes])));
+    check('...anime S3E1 is TMDB S1E38', JSON.stringify(mod.tmdbPairFromAnimeSeasons(trA, 3, 1)) === JSON.stringify({ season: 1, episode: 38 }));
+    // The newest arc still airing (partly listed): it keeps counting.
+    const trAiring = mod.buildSourcePlan(T([63]), T([24]), [arc('200', 'CS', 13), arc('300', 'TJ', 13), arc('400', 'TD', 6)]);
+    const trAiringA = mod.animeSeasonsFromPlan(trAiring, T([24]), T([63]));
+    check('airing last arc: 4 seasons, the last takes TMDB\'s announced 13', JSON.stringify(trAiringA.map((x) => x.episodes)) === '[24,13,13,13]', JSON.stringify(trAiringA.map((x) => x.episodes)));
+    check('...TMDB S1E60 -> the airing arc E10', m(trAiring, 1, 60) && m(trAiring, 1, 60).entry.id === '400' && m(trAiring, 1, 60).episode === 10, m(trAiring, 1, 60));
+    // Short extras never make up a season.
+    const ovas = mod.buildSourcePlan(T([26]), T([12]), [arc('9', 'OVA 1', 2), arc('10', 'OVA 2', 2), arc('11', 'Recap', 1)]);
+    check('OVAs / recaps never fill a lumped season', !ovas[1].some((x) => x.split), JSON.stringify(ovas));
+    const lcA = mod.animeSeasonsFromPlan(lc, T([11, 12, 12]), T([11, 12, 6, 12]));
+    check('Link Click unchanged: the Bridon Arc (a whole TMDB season) stays un-numbered', JSON.stringify(lcA.map((x) => x.episodes)) === '[11,12,12]', JSON.stringify(lcA.map((x) => x.episodes)));
+
     // Full lookup with mocked TMDB + Aniwave catalog.
     mod._resetCache();
     const api = {

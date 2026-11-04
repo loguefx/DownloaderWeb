@@ -629,8 +629,17 @@ async function handle(req, res, u) {
         // An AniDB-numbered library already uses the anime sites' seasons:
         // nothing to translate.
         const animeNumbering = u.searchParams.get('numbering') === 'anime';
+        // ...except seasons the sites list under another name: sequels after
+        // the last numbered one, and arcs splitting a lumped TMDB season
+        // (Tokyo Revengers S2 = "Christmas Showdown"). Asking Aniwave for a
+        // "Season 2" it does not have sent every episode to Anime Village,
+        // one slow lookup at a time.
+        const tmdbMod = require('./tmdb');
         const srcs = animeNumbering
-          ? episodes.map((ep) => ({ season, episode: ep, mapped: false }))
+          ? await Promise.all(episodes.map((ep) =>
+            tmdbMod.animeSourceForAnimeNumbering({ tmdb, title, season, episode: ep })
+              .then((x) => (x && x.mapped ? x : { season, episode: ep, mapped: false }))
+              .catch(() => ({ season, episode: ep, mapped: false }))))
           : await Promise.all(episodes.map((ep) =>
             animelayout.animeSourceEpisode({ tmdb, title, season, episode: ep }).catch(() => ({ season, episode: ep, mapped: false }))));
         const groups = new Map(); // key -> { season?, entry?, eps: [source episode] }

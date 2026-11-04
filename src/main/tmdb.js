@@ -177,9 +177,14 @@ async function tmdbInfoFetch(tmdbId, type, opts = {}) {
     if (plan && catalog) {
       const anime = animelayout.animeSeasonsFromPlan(plan, catalog, tmdbSeasons);
       if (anime.length) {
-        seasons = anime.map((x) => (x.extra
-          ? { season: x.season, episodes: x.episodes, year: x.year, parts: x.parts, extra: true }
-          : { season: x.season, episodes: x.episodes, year: x.year, parts: x.parts }));
+        seasons = anime.map((x) => {
+          const o = { season: x.season, episodes: x.episodes, year: x.year, parts: x.parts };
+          if (x.extra) o.extra = true;
+          // An arc entry that splits a lumped TMDB season (Tokyo Revengers'
+          // "Christmas Showdown" = TMDB S1E25-37): its source is that entry.
+          if (x.arc) o.arc = x.arc;
+          return o;
+        });
         layout = 'anime';
         numbering = 'anime';
       }
@@ -365,7 +370,7 @@ async function animeSourceForAnimeNumbering({ tmdb: tmdbId, title, season, episo
   let info = null;
   try { info = await tmdbInfo(id, 'tv', { anime: true, numbering: 'anime' }); } catch (e) { info = null; }
   const s = info && info.numbering === 'anime' && (info.seasons || []).find((x) => x.season === Number(season));
-  if (!s || !s.extra) return identity;
+  if (!s || !(s.extra || s.arc)) return identity;
   const pair = animelayout.tmdbPairFromAnimeSeasons(info.seasons, season, episode);
   if (!pair) return identity;
   try {

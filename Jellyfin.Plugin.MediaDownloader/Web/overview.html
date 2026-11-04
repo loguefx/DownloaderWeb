@@ -1395,10 +1395,28 @@
                                 if (S.t === t) renderTitle();
                                 return checkSeason(t, s);
                             })
-                            .then(() => loadDub(t, s))
+                            .then(() => { queueDub(t, s); })
                             .then(worker);
                     };
                     return Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+                }
+
+                // The dub badges fill in on their own, two seasons at a time:
+                // a season's dub check can poll for minutes (Anime Village,
+                // ~1 s per episode) and used to hold up the next seasons'
+                // episodes and library check behind it.
+                function queueDub(t, s) {
+                    if (!t.anime || t.kind !== 'series') return;
+                    t._dubQ = t._dubQ || { list: [], running: 0 };
+                    const q = t._dubQ;
+                    q.list.push(s);
+                    const run = () => {
+                        if (q.running >= 2 || !q.list.length || S.t !== t) return;
+                        const next = q.list.shift();
+                        q.running += 1;
+                        loadDub(t, next).catch(() => {}).then(() => { q.running -= 1; run(); });
+                    };
+                    run();
                 }
 
                 // English-dub status of an anime season, from the engine (the
