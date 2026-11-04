@@ -431,7 +431,10 @@ async function fetchStreamUrls(ref) {
         'Vidsrc API status ' + j.status_code + (said ? ` (${String(said).slice(0, 80)})` : '') +
           (apiToken ? '' : ` - no API token${why ? ': ' + why : ''}`)
       );
-      if (RETRYABLE.has(r.status)) continue;
+      // 404 with a token in hand: Vidsrc does not have this title/episode.
+      // Its player pages call this same API, so they would only say it again.
+      if (String(j.status_code) === '404' && apiToken) lastErr.code = 'VIDSRC_NOT_FOUND';
+      if (lastErr.code !== 'VIDSRC_NOT_FOUND' && RETRYABLE.has(r.status)) continue;
       throw lastErr;
     }
     let urls = j.data && j.data.stream_urls;

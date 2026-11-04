@@ -188,7 +188,12 @@ async function genericFindTitle(cfg, args, hooks, onLog) {
     return true;
   };
   const searchUrls = (cfg && cfg.searchUrls) || [];
+  // The search URLs are mirrors of ONE catalog: two that load and list
+  // nothing are the answer (SolarMovie asked four mirrors, ~7 s each, for a
+  // film no mirror had). A mirror that does not load still moves on.
+  let emptyAnswers = 0;
   for (const tpl of searchUrls) {
+    if (emptyAnswers >= 2) break;
     if (!tpl) continue;
     const q = String(tpl).replace(/\{q\}/g, encodeURIComponent(title));
     let cleared = false;
@@ -207,6 +212,7 @@ async function genericFindTitle(cfg, args, hooks, onLog) {
       pick = { best: '', bestEp: '' };
     }
     if (!pick || (!pick.best && !pick.bestEp)) {
+      emptyAnswers += 1;
       onLog(`No search result for "${title}".`);
       continue;
     }

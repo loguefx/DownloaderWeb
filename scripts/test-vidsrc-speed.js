@@ -85,7 +85,8 @@ let dataApiCalls = 0;
 let playerTokenHits = 0;
 let pageChanged = false;
 let relayDnsGone = false;
-let lowFirst = 0; // scenario: the first N stream lists are on a 720p-only server
+let lowFirst = 0;
+let notFound = false; // scenario: the API says the title is not on Vidsrc // scenario: the first N stream lists are on a 720p-only server
 let vsrcRelayHits = 0; // scenario: vidsrc.sh's name does not resolve // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
@@ -133,6 +134,7 @@ function routeFor(u) {
       return { status: 403, body: () => Buffer.from(JSON.stringify({ status_code: 403 })) };
     }
     mark('data-api');
+    if (notFound) return { status: 404, body: () => Buffer.from(JSON.stringify({ status_code: 404, message: 'Not found' })) };
     if (lowFirst > 0) {
       lowFirst -= 1;
       return { status: 200, body: () => Buffer.from(JSON.stringify({ status_code: '200', data: { title: 'Test Show', stream_urls: ['https://cdn-low.example/a/master.m3u8', 'https://cdn-low.example/b/master.m3u8'] } })) };
@@ -392,6 +394,17 @@ const at = (name) => {
   const b12 = await vs.pick1080(r11, (m) => logs11.push(m), 1080);
   check('the same 720p server every time: stops after the second list', b12 === null && logs11.filter((m) => /source\(s\) available/.test(m)).length === 2, logs11.join(' | '));
   lowFirst = 0;
+
+  console.log('\n[12] API 404 with a valid token = not on Vidsrc: one call, typed error');
+  notFound = true;
+  dataApiCalls = 0;
+  let e12 = null;
+  const t12 = Date.now();
+  try { await vs.fetchStreamUrls({ type: 'movie', tmdb: '1381071' }); } catch (e) { e12 = e; }
+  check('typed VIDSRC_NOT_FOUND', e12 && e12.code === 'VIDSRC_NOT_FOUND', e12 && (e12.code + ' ' + e12.message));
+  check('not retried', dataApiCalls === 1, 'data-api calls: ' + dataApiCalls);
+  check(`answered in ${Date.now() - t12}ms (< 3000ms)`, Date.now() - t12 < 3000);
+  notFound = false;
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';

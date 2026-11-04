@@ -930,8 +930,16 @@ class DownloadManager extends EventEmitter {
                 { onLog: (m) => this._log(m) }
               );
             } catch (e) {
-              this._log('Headless resolve failed (' + ((e && e.message) || e) + '); using browser path.');
               outcome = null;
+              if (e && e.code === 'VIDSRC_NOT_FOUND' && !item.anime) {
+                // Vidsrc answered "not here": its pages (which call the same
+                // API) would only say it again after ~30 s each. Straight to
+                // the other sites.
+                item._skipVidsrcPages = true;
+                this._log(`Vidsrc does not have "${item.label}"; skipping its pages and searching the other sites.`);
+              } else {
+                this._log('Headless resolve failed (' + ((e && e.message) || e) + '); using browser path.');
+              }
             }
           }
         }
@@ -953,7 +961,26 @@ class DownloadManager extends EventEmitter {
         // Still try the browser path (other sites might have it), but cap
         // retries to 2 — the fallback sites are usually Cloudflare-gated,
         // so 6 retries just burns hours on "Still waiting for Cloudflare".
-        if (item._exclusive) {
+        // Not on Vidsrc, and nothing else can have it: a special (Season 0 is
+        // only taken from TMDB-numbered sources = Vidsrc) or a film that is
+        // only in cinemas. Answer now instead of minutes of searching per try.
+        if (!item._exclusive && item._skipVidsrcPages && !item._notOutChecked) {
+          item._notOutChecked = true;
+          const isMovie = /\/embed\/movie\//.test(String(item.url || item.baseUrl || ''));
+          if (!isMovie && item.season != null && item.season !== '' && Number(item.season) === 0) {
+            item._unobtainable = 'Vidsrc has no copy of this special (specials are only taken from Vidsrc)';
+          } else if (isMovie) {
+            let tm = String(item.tmdb || '');
+            if (!/^\d+$/.test(tm)) tm = (String(item.url || item.baseUrl || '').match(/embed\/movie\/(\d{3,9})/) || [])[1] || '';
+            let hint = '';
+            try { hint = await tmdb.movieNotOutHint(tm); } catch (e) { hint = ''; }
+            if (hint) item._unobtainable = `"${item.label}" is ${hint}, so no download site has it`;
+          }
+        }
+        if (item._unobtainable) {
+          this._log(`${item._unobtainable}. Not retrying.`);
+          outcome = { status: 'failed', reason: item._unobtainable };
+        } else if (item._exclusive) {
           this._log(
             `"${item.label}" — ${item._exclusiveHint || 'a licensed exclusive'}. ` +
               'The free catalogs will not have it and no Cloudflare solver is configured, so the gated fallbacks are unusable. Not retrying.'
@@ -971,6 +998,9 @@ class DownloadManager extends EventEmitter {
           // Anime DUB: the Vidsrc page in the browser would replay the same
           // unverifiable file - go to the sites with DUB/SUB rows instead.
           if (item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
+          // TV/movies: the headless path already measured every Vidsrc source;
+          // its pages in the browser would replay the same ones.
+          if (!item.anime) item._skipVidsrcPages = true;
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
@@ -1064,8 +1094,8 @@ class DownloadManager extends EventEmitter {
           // No-1080p episodes: the fallback sites are Cloudflare-gated, so extra
           // retries just burn time on "Still waiting for Cloudflare". Cap at 2.
           // Licensed exclusives: nothing will ever find it; cap at 1.
-          const max = item._noQuality || item._exclusive || item._notFound
-            ? Math.max(1, Math.min(item._exclusive ? 1 : 2, config.download.maxRetries || 6))
+          const max = item._noQuality || item._exclusive || item._notFound || item._unobtainable
+            ? Math.max(1, Math.min(item._exclusive || item._unobtainable ? 1 : 2, config.download.maxRetries || 6))
             : Math.max(1, config.download.maxRetries || 6);
           if (item.attempts >= max) {
             // Endless retries on one dead episode (S2E03 at 190+ tries) held the

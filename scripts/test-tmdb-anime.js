@@ -408,6 +408,17 @@ animelayout._internals.cacheSet('aniwave:603', null);
     const trS3 = await tmdb.tmdbSeason('105009', 3, { anime: true, numbering: 'anime' });
     check('  Season 3 lists 13 episodes', trS3 && trS3.episodes.length === 13, trS3 && trS3.episodes.length);
 
+    // A film only in cinemas is on no download site.
+    {
+      const now = Date.parse('2026-11-04');
+      const rd = (arr) => [{ release_dates: arr.map(([type, d]) => ({ type, release_date: d + 'T00:00:00.000Z' })) }];
+      check('cinema release yesterday, no digital -> not out', /only in cinemas/.test(tmdb.notOutHint(rd([[3, '2026-11-03']]), now)));
+      check('cinema release next month -> not released yet', /not released yet/.test(tmdb.notOutHint(rd([[3, '2026-12-03']]), now)));
+      check('digital release in the past -> out', tmdb.notOutHint(rd([[3, '2026-08-01'], [4, '2026-10-01']]), now) === '');
+      check('old film listing only its cinema date -> assumed out', tmdb.notOutHint(rd([[3, '1999-03-31']]), now) === '');
+      check('no dates at all -> unknown (searched as usual)', tmdb.notOutHint([], now) === '');
+    }
+
     // One season, unknown to the anime sites: numbering is unambiguous.
     const one = await tmdb.tmdbInfo('300054', 'tv', { anime: true, numbering: 'anime' });
     check('single-season show the anime sites lack: AniDB numbering = TMDB S1, no warning',

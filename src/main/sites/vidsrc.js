@@ -40,7 +40,10 @@ const { lookupMediaId, idFromPlayerUrl } = require('./findtitle');
 const audiolang = require('../audiolang');
 const vidsrcDl = require('./vidsrc_dl');
 
-const HOSTS = ['https://vidsrc.sh', 'https://vidsrcme.ru'];
+// Browser mirrors. vidsrcme.ru is gone (its name no longer resolves, 2026-11):
+// loading it cost ~60 s per title in the browser path. The headless token
+// chain still tries it (vidsrc_dl RELAY_HOSTS) and skips it once DNS fails.
+const HOSTS = ['https://vidsrc.sh'];
 
 function mirrorUrls(pageUrl) {
   let path = '/';

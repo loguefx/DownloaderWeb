@@ -852,7 +852,7 @@ class Watcher {
           episode: live.episode,
           tmdb: live.tmdb,
           numbering: live.numbering,
-          skipSourceSite: !!live._wrongAudio
+          skipSourceSite: !!(live._wrongAudio || live._skipVidsrcPages), skipSourceWhy: live._wrongAudio ? 'audio' : 'missing'
         };
       });
       // null = the same episode is already in the queue (e.g. restored after

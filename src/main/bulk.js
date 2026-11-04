@@ -209,8 +209,14 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         // one file per episode); its pages would replay that file. Go straight
         // to the cross-site search below.
         if (extra.skipSourceSite) {
-          log(`${(profile && profile.name) || 'This site'} has no ${String(mode).toUpperCase()} copy; searching sites with a ${String(mode).toUpperCase()} option.`);
-          outcome = { status: 'failed', reason: `no ${mode} copy on the source site` };
+          if (extra.skipSourceWhy === 'missing') {
+            // Vidsrc's own API already answered (not there / no 1080p source).
+            log(`Skipping ${(profile && profile.name) || 'this site'}'s pages (its API already answered); searching the other sites.`);
+            outcome = { status: 'failed', reason: 'not on the source site' };
+          } else {
+            log(`${(profile && profile.name) || 'This site'} has no ${String(mode).toUpperCase()} copy; searching sites with a ${String(mode).toUpperCase()} option.`);
+            outcome = { status: 'failed', reason: `no ${mode} copy on the source site` };
+          }
         }
         for (const pageUrl of extra.skipSourceSite ? [] : pages) {
           let host = '';
@@ -1022,7 +1028,7 @@ async function startBatch(entries, outputRoot, onLog = () => {}, opts = {}) {
       };
       rec.discover = makeDiscover(url, onLog, mode, (it) => {
         const live = it || rec;
-        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!live._wrongAudio };
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!(live._wrongAudio || live._skipVidsrcPages), skipSourceWhy: live._wrongAudio ? 'audio' : 'missing' };
       });
       const added = manager.add(rec);
       if (added) queued += 1;
@@ -1098,7 +1104,7 @@ async function queueOne(entry, onLog = () => {}) {
   };
   rec.discover = makeDiscover(url, onLog, mode, (it) => {
         const live = it || rec;
-        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!live._wrongAudio };
+        return { skipSources: live.skipSources, anime: live.anime, minHeight: live.minHeight, series: live.series, season: live.season, episode: live.episode, tmdb: live.tmdb, numbering: live.numbering, skipSourceSite: !!(live._wrongAudio || live._skipVidsrcPages), skipSourceWhy: live._wrongAudio ? 'audio' : 'missing' };
       });
   const noun = episode != null && episode !== '' ? 'episode' : 'title';
   const added = manager.add(rec);

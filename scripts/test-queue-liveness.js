@@ -488,6 +488,44 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6e. Vidsrc says "not here" (API 404): no replay of its pages ------
+  console.log('\n[6e] Vidsrc API 404: its pages are skipped; specials / cinema-only films stop at once');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    config.download.maxRetries = 6;
+    const sitesReg = M('sites');
+    if (!sitesReg.profiles.length) sitesReg.init(DATA_DIR);
+    const vs = sitesReg.resolve('https://vidsrc.sh/embed/tv/1408-0-1');
+    const origDirect = vs.directResolve;
+    vs.directResolve = async () => { throw Object.assign(new Error('Vidsrc API status 404'), { code: 'VIDSRC_NOT_FOUND' }); };
+    const tmdbMod = M('tmdb');
+    const origNotOut = tmdbMod.movieNotOutHint;
+    tmdbMod.movieNotOutHint = async (id) => (String(id) === '1381071' ? 'only in cinemas so far (since 2026-11-03) - no digital release yet' : '');
+    const run = async (spec) => {
+      const seen = [];
+      const id = manager.add(Object.assign({ outputRoot: path.join(DATA_DIR, 'staging'), minHeight: 1080 }, spec, {
+        discover: (it) => { seen.push({ skip: !!it._skipVidsrcPages }); return Promise.resolve({ status: 'failed', reason: 'No video sources found on the page' }); }
+      }));
+      const it = manager.items.find((x) => x.id === id);
+      for (let i = 0; i < 200 && !(it && it.status === 'failed'); i++) await sleep(50);
+      manager.removeByIds([id]);
+      await sleep(50);
+      return { it, seen };
+    };
+    const sp = await run({ label: 'House S0E1', series: 'House', season: 0, episode: 1, url: 'https://vidsrc.sh/embed/tv/1408-0-1' });
+    check('a special Vidsrc lacks: failed after 1 try, nothing searched', sp.it.status === 'failed' && sp.it.attempts === 1 && sp.seen.length === 0, JSON.stringify([sp.it.status, sp.it.attempts, sp.seen.length]));
+    const mv = await run({ label: 'Godzilla Minus Zero', series: 'Godzilla Minus Zero', url: 'https://vidsrc.sh/embed/movie/1381071' });
+    check('a film only in cinemas: failed after 1 try, nothing searched', mv.it.status === 'failed' && mv.it.attempts === 1 && mv.seen.length === 0 && /cinemas/.test(mv.it.error || ''), JSON.stringify([mv.it.status, mv.it.attempts, mv.seen.length, mv.it.error]));
+    const ep = await run({ label: 'House S1E1', series: 'House', season: 1, episode: 1, url: 'https://vidsrc.sh/embed/tv/1408-1-1' });
+    check('a normal episode Vidsrc lacks: the other sites are searched, Vidsrc pages skipped', ep.seen.length >= 1 && ep.seen.every((x) => x.skip), JSON.stringify(ep.seen));
+    const out = await run({ label: 'Old Film', series: 'Old Film', url: 'https://vidsrc.sh/embed/movie/555' });
+    check('a film that is out: still searched on the other sites', out.seen.length >= 1, JSON.stringify(out.seen));
+    vs.directResolve = origDirect;
+    tmdbMod.movieNotOutHint = origNotOut;
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

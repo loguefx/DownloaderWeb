@@ -323,6 +323,42 @@ async function watchProviders(tmdbId, type) {
   return out;
 }
 
+// Is a movie out for home viewing yet? TMDB's release dates by type:
+// 1 premiere, 2 limited theatrical, 3 theatrical, 4 digital, 5 physical,
+// 6 TV. A film only in cinemas (Godzilla Minus Zero, Nov 2026) is on no
+// download source; searching every site for it took minutes per try.
+// -> '' (out at home, or unknown) | a one-line reason.
+function notOutHint(results, now = Date.now()) {
+  const all = [];
+  for (const r of results || []) for (const d of (r && r.release_dates) || []) {
+    const t = Date.parse(d && d.release_date);
+    if (Number.isFinite(t)) all.push({ type: Number(d.type), t });
+  }
+  if (!all.length) return '';
+  if (all.some((d) => d.type >= 4 && d.t <= now)) return '';
+  const day = (t) => new Date(t).toISOString().slice(0, 10);
+  const home = all.filter((d) => d.type >= 4).sort((a, b) => a.t - b.t)[0];
+  const cinema = all.filter((d) => d.type <= 3).sort((a, b) => a.t - b.t)[0];
+  if (cinema && cinema.t > now) return `not released yet (in cinemas from ${day(cinema.t)})`;
+  // Older than ~4 months with no home date listed: TMDB is just incomplete
+  // (older films often list only the cinema date) - assume it is out.
+  if (!home && cinema && now - cinema.t > 120 * 24 * 3600 * 1000) return '';
+  return `only in cinemas so far${cinema ? ` (since ${day(cinema.t)})` : ''} - no digital release yet${home ? ` (expected ${day(home.t)})` : ''}`;
+}
+async function movieNotOutHint(tmdbId) {
+  const key = getTmdbKey();
+  const id = String(tmdbId || '').trim();
+  if (!key || !/^\d+$/.test(id)) return '';
+  const cacheKey = 'notout|' + id;
+  const cached = tmdbCacheGet(cacheKey);
+  if (cached !== undefined) return cached;
+  const body = await tmdbFetch(`/movie/${id}/release_dates`, key);
+  if (!body || !Array.isArray(body.results)) return '';
+  const hint = notOutHint(body.results);
+  tmdbCacheSet(cacheKey, hint);
+  return hint;
+}
+
 // An actionable, single-clause explanation of a total source failure when TMDB
 // says the title is a licensed exclusive. '' when TMDB knows nothing useful,
 // so the failure message never invents a reason.
@@ -440,6 +476,8 @@ module.exports = {
   animeToTmdbMapper,
   isTmdbKeyedUrl,
   animeSourceForAnimeNumbering,
+  movieNotOutHint,
+  notOutHint,
   getTmdbKey,
   tmdbFetch,
   tmdbInfo,

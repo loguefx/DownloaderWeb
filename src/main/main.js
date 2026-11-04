@@ -499,7 +499,7 @@ app.whenReady().then(() => {
           episode: live.episode,
           tmdb: live.tmdb,
           numbering: live.numbering,
-          skipSourceSite: !!(it && it._wrongAudio)
+          skipSourceSite: !!(it && (it._wrongAudio || it._skipVidsrcPages)), skipSourceWhy: it && it._wrongAudio ? 'audio' : 'missing'
         };
       }),
       skipSources,
