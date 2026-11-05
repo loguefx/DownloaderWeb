@@ -421,7 +421,7 @@ class DownloadManager extends EventEmitter {
       !this._stopRequested &&
       !readOnly &&
       this._active.size === 0 &&
-      this.items.some((i) => i.status === 'queued')
+      this.items.some((i) => i.status === 'queued' && !(i._notBefore && i._notBefore > Date.now()))
     ) {
       this._log('Queue liveness: items are queued but no worker is running - re-kicking.');
       this._kick();
@@ -447,6 +447,7 @@ class DownloadManager extends EventEmitter {
     if (this._stopRequested) return;
     for (const item of this.items) {
       if (item.status !== 'queued' || this._active.has(item)) continue;
+      if (item._notBefore && item._notBefore > Date.now()) continue; // held (Vidsrc paused)
       const lim = this._itemLimits(item);
       if (this._siteActiveCount(lim.siteId) >= lim.maxWorkers) continue;
       this._startWorker(item);
@@ -509,7 +510,7 @@ class DownloadManager extends EventEmitter {
       const src = String(item.url || item.baseUrl || '');
       let tmdbId = String(item.tmdb || '');
       if (!tmdbId) {
-        const m = src.match(/embed\/(?:tv|movie)\/(\d{4,8})/);
+        const m = src.match(/embed\/(?:tv|movie)\/(\d{1,9})(?=[-/?#]|$)/);
         if (m) tmdbId = m[1];
       }
       if (!tmdbId) return '';
@@ -996,7 +997,7 @@ class DownloadManager extends EventEmitter {
             item._unobtainable = 'Vidsrc has no copy of this special (specials are only taken from Vidsrc)';
           } else if (isMovie) {
             let tm = String(item.tmdb || '');
-            if (!/^\d+$/.test(tm)) tm = (String(item.url || item.baseUrl || '').match(/embed\/movie\/(\d{3,9})/) || [])[1] || '';
+            if (!/^\d+$/.test(tm)) tm = (String(item.url || item.baseUrl || '').match(/embed\/movie\/(\d{1,9})(?=[/?#]|$)/) || [])[1] || '';
             let hint = '';
             try { hint = await this._abortable(item, tmdb.movieNotOutHint(tm)); } catch (e) { if (e && e.name === 'AbortError') throw e; hint = ''; }
             if (hint) item._unobtainable = `"${item.label}" is ${hint}, so no download site has it`;
@@ -1034,7 +1035,12 @@ class DownloadManager extends EventEmitter {
           // Same when Vidsrc was busy, unreachable or has no copy of the
           // episode at all (lookup error): anime DUB skips its page.
           if (item._headlessTried && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
+          // TV/movies: Vidsrc is refusing this IP - its pages in the browser
+          // hit the same servers. Ask only the other sites this time.
+          const vsBlocked = !item.anime && outcome && outcome.blocked;
+          if (vsBlocked) item._skipVidsrcPages = true;
           outcome = await this._abortable(item, item.discover(item));
+          if (vsBlocked && !(outcome && outcome.status === 'resolved')) item._heldForVidsrc = true;
         }
         let status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 
@@ -1112,6 +1118,25 @@ class DownloadManager extends EventEmitter {
             this._emit();
             this._log(`Mullvad is down; holding "${item.label}" without counting a retry.`);
             continue;
+          }
+          // Vidsrc refused this IP and no other site had it: not the episode's
+          // fault. Hold it until Vidsrc's pause ends instead of spending its
+          // tries (House S1E9-13 were all given up this way in minutes).
+          if (item._heldForVidsrc) {
+            item._heldForVidsrc = false;
+            item._skipVidsrcPages = false;
+            const until = require('./sites/vidsrc_dl').blockedUntilMs();
+            const wait = Math.max(30000, Math.min(16 * 60000, until - Date.now()));
+            item.status = 'queued';
+            item.error = 'Vidsrc is refusing this IP; waiting for it (switching the Mullvad server clears it sooner)';
+            this._releaseDownloadSlot(item);
+            this._emit();
+            this._log(`Holding "${item.label}" for ${Math.round(wait / 60000)} min: Vidsrc is refusing this IP and no other site had it (not counted as a try). Switching the Mullvad server clears it sooner.`);
+            // Step aside (the worker is freed for anime and everything else);
+            // the queue picks it up again once the pause is over.
+            item._notBefore = Date.now() + wait;
+            setTimeout(() => { try { this._kick(); } catch (e) { /* ignore */ } }, wait + 500).unref?.();
+            return { fatal: false };
           }
           const reason = (outcome && outcome.reason) || 'All dubbed sources failed';
           item.attempts += 1;

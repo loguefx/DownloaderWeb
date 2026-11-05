@@ -259,6 +259,11 @@ module.exports = {
       }
       throw e;
     }
+    if (!best && pickOpts.cdnBlocked) {
+      const why = 'Vidsrc\'s video servers refused this IP (HTTP 403 on every server) - Vidsrc paused for 15 min; switching the Mullvad server usually clears it';
+      onLog(`Vidsrc (headless): ${why}.`);
+      return { status: 'busy', reason: why, blocked: true };
+    }
     if (!best && pickOpts.allUnreachable) {
       // Throttled, not missing: wait for the CDN's rate window, then retry once.
       onLog('Vidsrc (headless): every source is busy (rate-limited); retrying in 10s.');

@@ -139,6 +139,7 @@ function noteNetError(u, e) {
   if (code === 'ENOTFOUND' || /ENOTFOUND/.test((e && e.message) || '')) deadUntil.set(hostOf(u), Date.now() + DEAD_MS);
 }
 const lastLanding = {}; // relay -> the player page vs_src.php sent us to
+const lastPlayerPage = {}; // relay -> { url, text } of a player page with no token
 // window.CFG / window.CONFIG values, whether written as JSON ("k":"v"), as a
 // JS literal (k: 'v') or with escaped slashes (\/embed\/player).
 function pageValue(text, key) {
@@ -203,7 +204,11 @@ async function tokenChain(relay, ref, opts = {}) {
   }
   if (pr.status !== 200) return note(`player page on ${host}: HTTP ${pr.status}`);
   const tok = pageValue(pr.body.toString('utf8'), 'apiToken');
-  if (!tok) return note('player page has no apiToken (the site changed its page)');
+  if (!tok) {
+    // Kept for scripts/vidsrc-check.js: what the page holds instead.
+    lastPlayerPage[relay] = { url: playerHref, text: pr.body.toString('utf8').slice(0, 4000) };
+    return note('player page has no apiToken (the site changed its page)');
+  }
   lastChain[relay] = 'ok';
   return tok;
 }
@@ -600,6 +605,7 @@ function probeResolution(bufPath) {
 // body is never mistaken for a token.
 async function fetchHostToken(origin) {
   let last = '';
+  let lastStatus = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await new Promise((rs) => setTimeout(rs, 1200 * attempt + Math.floor(Math.random() * 400)));
     let res;
@@ -616,9 +622,10 @@ async function fetchHostToken(origin) {
       continue;
     }
     last = 'HTTP ' + res.status;
+    lastStatus = res.status;
     if (res.status !== 429 && res.status < 500) break;
   }
-  throw new Error(last || 'no token');
+  throw Object.assign(new Error(last || 'no token'), { status: lastStatus });
 }
 
 // Return a verified variant playlist URL at or above `minH` (default 1080),
@@ -640,7 +647,7 @@ async function verifySource(raw, i, meta, min, onLog, tokenFor = fetchHostToken)
     token = await tokenFor(u.origin);
   } catch (e) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — generate.php failed (${e.message}).`);
-    return { unreachable: true };
+    return { unreachable: true, refused: e && e.status === 403 };
   }
   if (!token) {
     onLog && onLog(`Vidsrc: source[${i}] ${u.host} — empty token.`);
@@ -781,12 +788,14 @@ async function pickRound(ref, onLog, minH, opts, st) {
     })
   );
   let unreachable = 0;
+  let refused = 0;
   const total = attempts.length;
   while (attempts.length) {
     const { value: r, index } = await firstSettled(attempts);
     attempts.splice(index, 1);
     if (r && r.unreachable) {
       unreachable += 1;
+      if (r.refused) refused += 1;
       continue;
     }
     if (r && r.low) {
@@ -811,6 +820,13 @@ async function pickRound(ref, onLog, minH, opts, st) {
   // for a while after bursts): that is "try again shortly", not "no copy at
   // this quality".
   if (!fallback && total && unreachable === total) opts.allUnreachable = true;
+  // Every CDN server REFUSED the token (403), not timed out: Vidsrc's CDN is
+  // blocking this IP. Retrying only prolongs it (House S1E9-13: four servers,
+  // every episode, ~2 min each). Pause Vidsrc engine-wide like a block page.
+  if (!fallback && total && refused === total) {
+    markBlocked();
+    opts.cdnBlocked = true;
+  }
   if (!fallback && total && low === total) st.allLow = true;
   return opts.preferOnly ? fallback : null;
 }
@@ -858,9 +874,11 @@ async function download(ref, outPath, opts = {}) {
 
 module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
-  isBlocked, isBlockPage, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS, meetsFloor,
+  isBlocked, isBlockPage, blockedUntilMs: () => blockedUntil, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS, meetsFloor,
   chainResult: (relay) => lastChain[relay] || '',
   landingFor: (relay) => lastLanding[relay] || '',
+  playerPageFor: (relay) => lastPlayerPage[relay] || null,
+  request,
   isDeadHost,
   _resetDeadHostsForTests() { deadUntil.clear(); },
   _setBlockedUntilForTests(t) { blockedUntil = t; }

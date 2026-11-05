@@ -345,7 +345,13 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           // as that title's TMDB id so the id-keyed adapters (NontonGo,
           // Vidsrc) can target it directly. 5+ digits: 1-4 digit numbers are
           // plausibly real titles (the show "1899"), modern TMDB ids are not.
-          if (ref && extra && extra.series) {
+          if (ref && ref.embed && extra && extra.series) {
+            // A Vidsrc embed: the title is the job's own, the id is TMDB's/IMDB's.
+            ref.title = extra.series;
+            const isImdb = /^tt\d+$/.test(ref.embed.id);
+            if (!extra.tmdb && !isImdb) extra.tmdb = ref.embed.id;
+            try { rememberMediaId(extra.series, ref.embed.id); } catch (e) { /* never block discovery */ }
+          } else if (ref && extra && extra.series) {
             const slug = String(ref.title || '').trim();
             const mBare = slug.match(/^\d{5,8}$/);
             const mIdSe = slug.match(/^(\d{5,8})[ -](\d{1,3})(?:[ -](\d{1,3}))?$/);
@@ -564,7 +570,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           try {
             let tmdbId = ((lookupMediaId(extra.series) || {}).tmdb) || '';
             if (!tmdbId) {
-              const m = String(url).match(/embed\/(?:tv|movie)\/(\d{4,8})/);
+              const m = String(url).match(/embed\/(?:tv|movie)\/(\d{1,9})(?=[-/?#]|$)/);
               if (m) tmdbId = m[1];
             }
             if (tmdbId) {

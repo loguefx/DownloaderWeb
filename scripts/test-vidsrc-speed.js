@@ -86,10 +86,12 @@ let playerTokenHits = 0;
 let pageChanged = false;
 let relayDnsGone = false;
 let lowFirst = 0;
-let notFound = false; // scenario: the API says the title is not on Vidsrc // scenario: the first N stream lists are on a 720p-only server
+let notFound = false;
+let genRefused = false; // scenario: every CDN server refuses generate.php (403) // scenario: the API says the title is not on Vidsrc // scenario: the first N stream lists are on a 720p-only server
 let vsrcRelayHits = 0; // scenario: vidsrc.sh's name does not resolve // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
+  if (genRefused && /generate\.php/.test(u)) return { status: 403, body: () => Buffer.from('Forbidden') };
   if (u.includes('vidsrc.sh/vs_src.php')) {
     mark('slow-relay-vsrc');
     if (relayDnsGone) {
@@ -405,6 +407,24 @@ const at = (name) => {
   check('not retried', dataApiCalls === 1, 'data-api calls: ' + dataApiCalls);
   check(`answered in ${Date.now() - t12}ms (< 3000ms)`, Date.now() - t12 < 3000);
   notFound = false;
+
+  console.log('\n[13] Every video server refuses its token (403): Vidsrc is paused, not retried per episode');
+  genRefused = true;
+  const o13 = {};
+  const b13 = await vs.pick1080({ type: 'tv', tmdb: '1408', season: 1, episode: 9 }, () => {}, 1080, o13);
+  check('no stream, flagged as a CDN block', b13 === null && o13.cdnBlocked === true, JSON.stringify(o13));
+  check('Vidsrc paused engine-wide', vs.isBlocked() && vs.blockedUntilMs() > Date.now());
+  genRefused = false;
+  vs._setBlockedUntilForTests(0);
+  const { episodeRefFromUrl } = require(path.join(REPO, 'src/main/sites/findtitle.js'));
+  const e1 = episodeRefFromUrl('https://vidsrc.sh/embed/tv/1408-1-9');
+  check('House embed: id 1408, S1E9 (not the title "1408 1 9")', e1.embed && e1.embed.id === '1408' && e1.season === 1 && e1.episode === 9 && e1.title === '', JSON.stringify(e1));
+  const e2 = episodeRefFromUrl('https://vidsrc.sh/embed/movie/1381071');
+  check('movie embed: id, no season', e2.embed && e2.embed.kind === 'movie' && e2.embed.id === '1381071' && e2.season === null, JSON.stringify(e2));
+  const e3 = episodeRefFromUrl('https://vidsrc.sh/embed/tv/1396/2/5');
+  check('slash form 1396/2/5', e3.embed && e3.embed.id === '1396' && e3.season === 2 && e3.episode === 5, JSON.stringify(e3));
+  const e4 = episodeRefFromUrl('https://site.example/watch/show-name-season-2-episode-3');
+  check('other sites unchanged', e4.title === 'show name' && e4.season === 2 && e4.episode === 3 && !e4.embed, JSON.stringify(e4));
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';

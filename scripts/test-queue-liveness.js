@@ -569,6 +569,35 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6g. Vidsrc refusing this IP: TV is held, not given up --------------
+  console.log('\n[6g] Vidsrc refuses this IP and no other site has it: held (worker freed), no try spent');
+  {
+    const sitesReg = M('sites');
+    if (!sitesReg.profiles.length) sitesReg.init(DATA_DIR);
+    const vs = sitesReg.resolve('https://vidsrc.sh/embed/tv/1408-1-9');
+    const origDirect = vs.directResolve;
+    vs.directResolve = async () => ({ status: 'busy', reason: 'refused', blocked: true });
+    const vdl = M('sites/vidsrc_dl');
+    vdl._setBlockedUntilForTests(Date.now() + 60000);
+    const seen = [];
+    const id = manager.add({
+      label: 'House S1E9', series: 'House', season: 1, episode: 9, minHeight: 1080, tmdb: '1408',
+      url: 'https://vidsrc.sh/embed/tv/1408-1-9', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: (it) => { seen.push(!!it._skipVidsrcPages); return Promise.resolve({ status: 'failed', reason: 'No video sources found on the page' }); }
+    });
+    const it = manager.items.find((x) => x.id === id);
+    for (let i = 0; i < 100 && !(it && it._notBefore); i++) await sleep(50);
+    await sleep(100);
+    check('held until the pause ends (queued, not failed)', it && it.status === 'queued' && it._notBefore > Date.now(), JSON.stringify([it && it.status, it && it._notBefore]));
+    check('no try spent', it && it.attempts === 0, String(it && it.attempts));
+    check('the other sites were asked, without Vidsrc\'s pages', seen.length === 1 && seen[0] === true, JSON.stringify(seen));
+    check('its worker was freed', !manager._active.has(it));
+    manager.removeByIds([id]);
+    await sleep(50);
+    vs.directResolve = origDirect;
+    vdl._setBlockedUntilForTests(0);
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

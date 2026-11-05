@@ -63,6 +63,20 @@ function episodeRefFromUrl(pageUrl) {
   } catch (e) {
     out.title = '';
   }
+  // Vidsrc-style embeds: /embed/tv/<id>-<season>-<episode> (or /<s>/<e>),
+  // /embed/movie/<id>. The slug is a bare media id - any length: House is
+  // TMDB 1408, and "1408-1-9" used to be searched as the title "1408 1 9"
+  // (and read as the id 140819, a movie).
+  const emb = s.match(/\/embed\/(tv|movie)\/(tt\d{5,}|\d{1,9})(?:[-/](\d{1,3})(?:[-/](\d{1,4}))?)?(?:[/?#]|$)/i);
+  if (emb) {
+    out.embed = { kind: emb[1].toLowerCase(), id: emb[2] };
+    out.title = '';
+    if (emb[1].toLowerCase() === 'tv' && emb[3]) {
+      out.season = parseInt(emb[3], 10);
+      out.episode = emb[4] ? parseInt(emb[4], 10) : null;
+    }
+    return out;
+  }
   const se = s.match(/season[-_](\d+)[-_]episode[-_](\d+)/i);
   const sxe = s.match(/[sS](\d{1,2})[eE](\d{1,3})/);
   if (se) {
@@ -280,7 +294,7 @@ function rememberMediaId(title, id) {
   const v = String(id || '').trim().toLowerCase();
   if (!key || !v) return;
   const cur = mediaIdCache.get(key) || {};
-  if (/^\d{4,8}$/.test(v) && !cur.tmdb) cur.tmdb = v;
+  if (/^\d{1,9}$/.test(v) && !cur.tmdb) cur.tmdb = v;
   if (/^tt\d{6,}$/.test(v) && !cur.imdb) cur.imdb = v;
   if (cur.tmdb || cur.imdb) mediaIdCache.set(key, cur);
 }

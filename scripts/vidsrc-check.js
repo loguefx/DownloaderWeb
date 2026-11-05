@@ -38,6 +38,14 @@ async function main() {
     if (tok) anyToken = true;
     console.log(`  ${relay}: ${tok ? `token OK (${tok.length} chars)` : 'NO TOKEN - ' + (vs.chainResult(relay) || 'unknown')} (${secs(t)})`);
     if (vs.landingFor(relay)) console.log(`    sent to: ${vs.landingFor(relay)}`);
+    const pp = vs.playerPageFor(relay);
+    if (!tok && pp) {
+      // What the player page holds instead of the token (the site changed it).
+      const keys = [...new Set((pp.text.match(/[A-Za-z_]*(?:token|Token|TOKEN|api|Api)[A-Za-z_]*/g) || []))].slice(0, 20);
+      console.log(`    player page: ${pp.url}`);
+      console.log(`    token-like names on it: ${keys.join(', ') || '(none)'}`);
+      console.log(`    first 600 characters: ${pp.text.replace(/\s+/g, ' ').slice(0, 600)}`);
+    }
     // A timeout: is that host slow, or not answering at all? Once more with
     // a long wait.
     if (!tok && /timeout/.test(vs.chainResult(relay))) {
@@ -66,6 +74,20 @@ async function main() {
   }
 
   if (list) {
+    // The video servers' own token (generate.php): status and body, plain and
+    // with the headers a browser player would send.
+    console.log('\n[2b] Video servers (generate.php)');
+    const origins = [...new Set(list.urls.map((u) => { try { return new URL(u).origin; } catch (e) { return ''; } }).filter(Boolean))];
+    for (const origin of origins) {
+      for (const [label, headers] of [['plain', {}], ['as the player', { Referer: 'https://vidsrc.sh/', Origin: 'https://vidsrc.sh' }]]) {
+        try {
+          const r = await vs.request(origin + '/generate.php', headers, 15000);
+          console.log(`  ${origin} (${label}): HTTP ${r.status} - ${r.body.toString('utf8').replace(/\s+/g, ' ').slice(0, 160)}`);
+        } catch (e) {
+          console.log(`  ${origin} (${label}): ${e.message}`);
+        }
+      }
+    }
     console.log('\n[3] Stream sources (first passing one >= 1080p wins)');
     const t3 = Date.now();
     try {

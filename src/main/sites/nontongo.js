@@ -107,7 +107,11 @@ module.exports = {
   async findTitle(ref, hooks, onLog = () => {}) {
     const season = ref && ref.season ? String(ref.season) : '';
     const episode = ref && ref.episode ? String(ref.episode) : '';
-    let ids = await idsFromPage(hooks, onLog);
+    // The job's own TMDB id first: scraping it from whatever page is open
+    // read House's "1408-1-9" embed as the id 140819.
+    let ids = ref && /^\d+$/.test(String(ref.tmdb || '')) ? { tmdb: String(ref.tmdb), imdb: '' } : { tmdb: '', imdb: '' };
+    if (ids.tmdb) onLog(`NontonGo: using the job's TMDB id ${ids.tmdb}.`);
+    if (!ids.tmdb) ids = await idsFromPage(hooks, onLog);
     if (!ids.tmdb && !ids.imdb) {
       ids = lookupMediaId(ref && ref.title);
       if (ids.tmdb || ids.imdb) {
