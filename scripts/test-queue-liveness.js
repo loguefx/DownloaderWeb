@@ -150,6 +150,29 @@ async function main() {
   await sleep(150);
   check('worker exited after removal', manager._active.size === 0, String(manager._active.size));
 
+  // ---- 1b. A discovery that IGNORES the abort (House S1E1, 7 h) -------------
+  console.log('\n[1b] A hung discovery that never listens to the abort still frees the worker');
+  {
+    const logs1b = [];
+    const realLog1b = manager._log.bind(manager);
+    manager._log = (m) => { logs1b.push(m); realLog1b(m); };
+    let calls = 0;
+    const id1b = manager.add({
+      label: 'Deaf Show S1E1', series: 'Deaf Show', season: 1, episode: 1,
+      url: 'https://example.invalid/deaf', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => { calls += 1; return new Promise(() => {}); } // never settles, never looks at the signal
+    });
+    const it1b = manager.items.find((x) => x.id === id1b);
+    for (let i = 0; i < 80 && !(it1b && it1b.attempts >= 2); i++) await sleep(100);
+    check('killed, counted, and tried again (not stuck)', it1b && it1b.attempts >= 2 && calls >= 2, JSON.stringify([it1b && it1b.attempts, calls]));
+    const kills = logs1b.filter((m) => /Deaf Show S1E1" was stuck/.test(m)).length;
+    check('one kill line per kill (no log every tick)', kills <= it1b.attempts + 1, `${kills} kill lines for ${it1b.attempts} attempts`);
+    manager._log = realLog1b;
+    manager.removeByIds([id1b]);
+    await sleep(150);
+    check('worker exited after removal', manager._active.size === 0, String(manager._active.size));
+  }
+
   // ---- 2. Re-kick: queued items + no worker -> kicked -------------------------
   console.log('\n[2] Re-kick liveness');
   let kicked = 0;

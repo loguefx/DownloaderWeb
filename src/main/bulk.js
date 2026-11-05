@@ -99,14 +99,42 @@ const discoverGate = {
   waiters: []
 };
 
-async function withDiscoverGate(fn) {
+// `signal` = the queue item's abort (Stop, Remove, the watchdog's kill).
+// A discovery that hung used to keep its slot forever: with two slots, two
+// hung pages held every other TV/movie item in "resolving" for hours (the
+// watchdog's abort never reached discovery). Now an abort ends the wait for a
+// slot, and gives the slot back at once even if the page never returns.
+const abortedOutcome = () => ({ status: 'failed', reason: 'Discovery cancelled (stopped, removed or stuck)' });
+async function withDiscoverGate(fn, signal = null) {
   const limit = Math.max(1, config.download.discoverConcurrency || 2);
   while (discoverGate.active >= limit) {
-    await new Promise((r) => discoverGate.waiters.push(r));
+    if (signal && signal.aborted) return abortedOutcome();
+    await new Promise((r) => {
+      discoverGate.waiters.push(r);
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          // Leave the line: a stale entry would swallow the next real wake-up.
+          const i = discoverGate.waiters.indexOf(r);
+          if (i >= 0) discoverGate.waiters.splice(i, 1);
+          r();
+        }, { once: true });
+      }
+    });
   }
+  if (signal && signal.aborted) return abortedOutcome();
   discoverGate.active += 1;
   try {
-    return await fn();
+    if (!signal) return await fn();
+    return await new Promise((resolve, reject) => {
+      const onAbort = () => resolve(abortedOutcome());
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve()
+        .then(fn)
+        .then(
+          (v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
+          (e) => { signal.removeEventListener('abort', onAbort); reject(e); }
+        );
+    });
   } finally {
     discoverGate.active -= 1;
     const w = discoverGate.waiters.shift();
@@ -118,8 +146,9 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
   // The queue calls discover(item) with its LIVE item: manager.add() copies
   // the record into a new object, so flags the queue sets later (e.g.
   // _wrongAudio -> skip the source site) exist only on that copy.
-  return async (liveItem) =>
-    withDiscoverGate(async () => {
+  return async (liveItem) => {
+    const itemSignal = (liveItem && liveItem._controller && liveItem._controller.signal) || null;
+    return withDiscoverGate(async () => {
       // Part 3: no outside request without a confirmed tunnel. Jobs accepted
       // while Mullvad is down stay queued (queue._gate holds them); this is the
       // discovery-side half of the same guarantee.
@@ -137,6 +166,16 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
       };
       if (controller.signal.aborted) followParent();
       else controller.signal.addEventListener('abort', followParent, { once: true });
+      // The item was stopped / removed / killed by the watchdog: stop every
+      // in-page wait and close this discovery's windows.
+      const onItemAbort = () => {
+        try { controller.abort(); } catch (e) { /* ignore */ }
+        try { destroyOwned(ownerId); } catch (e) { /* ignore */ }
+      };
+      if (itemSignal) {
+        if (itemSignal.aborted) onItemAbort();
+        else itemSignal.addEventListener('abort', onItemAbort, { once: true });
+      }
       const freshAttempt = () => {
         attempt = new AbortController();
         if (controller.signal.aborted) followParent();
@@ -577,9 +616,11 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         } catch (e) {
           // ignore
         }
+        if (itemSignal) itemSignal.removeEventListener('abort', onItemAbort);
         if (!holdWindows) destroyOwned(ownerId);
       }
-    });
+    }, itemSignal);
+  };
 }
 
 // Fetches the raw (server-rendered) HTML for a page using the shared session's

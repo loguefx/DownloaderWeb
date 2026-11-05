@@ -373,6 +373,10 @@ class DownloadManager extends EventEmitter {
       const age = now - (item._phaseAt || now);
       if (age <= cap) continue;
       const mins = Math.max(1, Math.round(age / 60000));
+      // Already killed and still not back: the abort is on its way (or the
+      // wait ignores it). Say so again at most every 10 min, not every tick.
+      if (item._watchdogKilled && item._watchdogKilledAt && now - item._watchdogKilledAt < 10 * 60000) continue;
+      item._watchdogKilledAt = now;
       this._log(
         `"${item.label}" was stuck in "${item.status}" for ${mins} min - killing it so the queue can move on (it will retry).`
       );
@@ -597,6 +601,25 @@ class DownloadManager extends EventEmitter {
     return true;
   }
 
+  // A wait inside "resolving" that does not listen to the item's abort (a
+  // hung discovery window, a site API that never answers) used to hold the
+  // worker forever: the watchdog "killed" House S1E1 every 30 s for 7 h and
+  // nothing moved. Every such wait is raced against the item's abort; the
+  // abandoned promise is left to settle on its own.
+  _abortable(item, promise) {
+    const sig = item && item._controller && item._controller.signal;
+    if (!sig) return promise;
+    if (sig.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      sig.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(
+        (v) => { sig.removeEventListener('abort', onAbort); resolve(v); },
+        (e) => { sig.removeEventListener('abort', onAbort); reject(e); }
+      );
+    });
+  }
+
   // Stopped (Stop all) or removed while it was being worked on.
   _interrupted(item) {
     return !!(this._stopRequested || !this.items.includes(item) || (item && item._controller && item._controller.signal && item._controller.signal.aborted));
@@ -748,8 +771,9 @@ class DownloadManager extends EventEmitter {
         if (/^\d+$/.test(String(item.tmdb || '').trim()) && item.episode != null) {
           meta.tmdb = String(item.tmdb).trim();
           try {
-            meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime: !!item.anime, numbering: item.numbering }, item.season, item.episode);
+            meta.alt = await this._abortable(item, tmdb.episodeAlternates(meta.tmdb, { anime: !!item.anime, numbering: item.numbering }, item.season, item.episode));
           } catch (e) {
+            if (e && e.name === 'AbortError') throw e;
             meta.alt = null;
           }
           if (meta.alt) item.presenceAlt = meta.alt;
@@ -912,7 +936,7 @@ class DownloadManager extends EventEmitter {
             // browser can only replay what that resolver already saw.
             item._headlessTried = true;
             try {
-              outcome = await _prof.directResolve(
+              outcome = await this._abortable(item, _prof.directResolve(
                 {
                   title: item.label || item.series,
                   series: item.series,
@@ -928,8 +952,9 @@ class DownloadManager extends EventEmitter {
                   mode: item.mode || 'dub'
                 },
                 { onLog: (m) => this._log(m) }
-              );
+              ));
             } catch (e) {
+              if (e && e.name === 'AbortError') throw e;
               outcome = null;
               if (e && e.code === 'VIDSRC_NOT_FOUND' && !item.anime) {
                 // Vidsrc answered "not here": its pages (which call the same
@@ -951,7 +976,7 @@ class DownloadManager extends EventEmitter {
         // instead of 6 pointless retries. With a solver configured the normal
         // path runs unchanged (the gated sites ARE the user's best chance).
         if (!item._exclusive && !cfsolve.enabled()) {
-          const hint = await this._exclusiveHint(item);
+          const hint = await this._abortable(item, this._exclusiveHint(item));
           if (hint) {
             item._exclusive = true;
             item._exclusiveHint = hint;
@@ -973,7 +998,7 @@ class DownloadManager extends EventEmitter {
             let tm = String(item.tmdb || '');
             if (!/^\d+$/.test(tm)) tm = (String(item.url || item.baseUrl || '').match(/embed\/movie\/(\d{3,9})/) || [])[1] || '';
             let hint = '';
-            try { hint = await tmdb.movieNotOutHint(tm); } catch (e) { hint = ''; }
+            try { hint = await this._abortable(item, tmdb.movieNotOutHint(tm)); } catch (e) { if (e && e.name === 'AbortError') throw e; hint = ''; }
             if (hint) item._unobtainable = `"${item.label}" is ${hint}, so no download site has it`;
           }
         }
@@ -993,7 +1018,7 @@ class DownloadManager extends EventEmitter {
           // episode lands on the waiting-for-dub list.
           item._wrongAudio = true;
           this._log(`"${item.label}": ${outcome.reason || 'wrong audio on Vidsrc'}; trying sites with a ${(item.mode || 'dub').toUpperCase()} option.`);
-          outcome = await item.discover(item);
+          outcome = await this._abortable(item, item.discover(item));
         } else if (outcome && outcome.status === 'no_quality') {
           // Anime DUB: the Vidsrc page in the browser would replay the same
           // unverifiable file - go to the sites with DUB/SUB rows instead.
@@ -1004,12 +1029,12 @@ class DownloadManager extends EventEmitter {
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
-          outcome = await item.discover(item);
+          outcome = await this._abortable(item, item.discover(item));
         } else if (!outcome || outcome.status !== 'resolved') {
           // Same when Vidsrc was busy, unreachable or has no copy of the
           // episode at all (lookup error): anime DUB skips its page.
           if (item._headlessTried && item.anime && (item.mode || 'dub') === 'dub') item._wrongAudio = true;
-          outcome = await item.discover(item);
+          outcome = await this._abortable(item, item.discover(item));
         }
         let status = outcome && outcome.status ? outcome.status : (outcome ? 'resolved' : 'failed');
 
