@@ -1535,7 +1535,7 @@ async function pullRemainingViaPlayer(wc, remaining, jobs, dir, { signal, onProg
   const report = () => {
     const have = jobs.filter((job) => jobFileOk(dir, job)).length;
     if (onProgress) {
-      onProgress({ received: have, total: jobs.length, percent: Math.min(0.99, have / jobs.length) });
+      onProgress({ received: have, total: jobs.length, unit: 'parts', percent: Math.min(0.99, have / jobs.length) });
     }
     return have;
   };
@@ -2956,6 +2956,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
       onProgress({
         received: Math.max(done, mseCount()),
         total: jobs.length,
+        unit: 'parts',
         percent: Math.min(0.99, Math.max(byMse, byHls))
       });
     }
@@ -3068,7 +3069,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     if (done === 1 && onLog) onLog(note || 'Captured first HLS part from the player.');
     else if (onLog && done <= 6) onLog(`Wrote ${job.name}`);
     else if (onLog && done % 40 === 0) onLog(`Captured ${done}/${jobs.length} HLS part(s).`);
-    if (onProgress) onProgress({ received: done, total: jobs.length, percent: done / jobs.length });
+    if (onProgress) onProgress({ received: done, total: jobs.length, unit: 'parts', percent: done / jobs.length });
     return true;
   };
 
@@ -3189,7 +3190,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
         done += 1;
         if (done === 1 && onLog) onLog('Captured first HLS part from the player.');
         else if (onLog && done % 40 === 0) onLog(`Captured ${done}/${jobs.length} HLS part(s).`);
-        if (onProgress) onProgress({ received: done, total: jobs.length, percent: done / jobs.length });
+        if (onProgress) onProgress({ received: done, total: jobs.length, unit: 'parts', percent: done / jobs.length });
       }
     }
     drainCdp();
@@ -3255,6 +3256,7 @@ async function watchPlayerSegments(wc, jobs, dir, { signal, onProgress, onLog, d
     onProgress({
       received: written.size,
       total: jobs.length || mseMedia.video.length,
+      unit: 'parts',
       percent: p
     });
   };
@@ -3669,6 +3671,7 @@ async function localizePlaylist(text, base, dir, headers, { signal, onProgress, 
         onProgress({
           received: already + done,
           total: jobs.length,
+          unit: 'parts',
           percent: Math.min(0.99, (already + done) / jobs.length)
         });
       }

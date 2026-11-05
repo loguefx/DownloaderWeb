@@ -240,6 +240,7 @@ class DownloadManager extends EventEmitter {
       status: it.status,
       progress: it.progress,
       bytes: it.bytes || 0,
+      parts: it.status === 'downloading' ? it.parts || null : null,
       error: it.error,
       attempts: it.attempts,
       finalPath: it.finalPath,
@@ -608,12 +609,15 @@ class DownloadManager extends EventEmitter {
     return true;
   }
 
-  // One season of one show (the 720p-fallback memory).
+  // One show (the 720p-fallback memory). Per show, not per season: the same
+  // sources serve every season the same way (House S1-S8 are all 720p-only on
+  // Vidsrc and on no other site), and each season used to pay the full
+  // 1080p search again. Movies are their own key.
   _seasonKey(item) {
-    return `${String((item && (item.tmdb || item.series)) || '').toLowerCase()}|${item && item.season != null ? item.season : ''}`;
+    return String((item && (item.tmdb || item.series)) || '').toLowerCase() + (item && item.episode == null ? '|movie' : '');
   }
 
-  // An episode of this season fell back to 720p within the last 6 h.
+  // An episode of this show fell back to 720p within the last 6 h.
   _seasonFellBack(item) {
     const at = this._noQualitySeasons.get(this._seasonKey(item)) || 0;
     return Date.now() - at < 6 * 3600 * 1000;
@@ -1172,8 +1176,12 @@ class DownloadManager extends EventEmitter {
           // No-1080p episodes: the fallback sites are Cloudflare-gated, so extra
           // retries just burn time on "Still waiting for Cloudflare". Cap at 2.
           // Licensed exclusives: nothing will ever find it; cap at 1.
+          // TV/movies with no copy at the floor: ONE full search, then the 720p
+          // fallback (a second identical search found the same nothing; Vidsrc
+          // already asks for another server up to 3 times within one try).
+          const oneTry = item._exclusive || item._unobtainable || (item._noQuality && !item.anime && !item._floorFallback);
           const max = item._noQuality || item._exclusive || item._notFound || item._unobtainable
-            ? Math.max(1, Math.min(item._exclusive || item._unobtainable ? 1 : 2, config.download.maxRetries || 6))
+            ? Math.max(1, Math.min(oneTry ? 1 : 2, config.download.maxRetries || 6))
             : Math.max(1, config.download.maxRetries || 6);
           if (item.attempts >= max) {
             // Endless retries on one dead episode (S2E03 at 190+ tries) held the
@@ -1286,7 +1294,8 @@ class DownloadManager extends EventEmitter {
               if (next != null) {
                 item.progress = item.progress == null ? next : Math.max(item.progress, next);
               }
-              item.bytes = (p && p.received) || item.bytes;
+              if (p && p.unit === 'parts') item.parts = `${p.received}/${p.total}`;
+              else item.bytes = (p && p.received) || item.bytes;
               this._emitProgress(item);
             }
           });

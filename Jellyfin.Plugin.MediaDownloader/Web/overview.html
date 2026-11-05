@@ -638,6 +638,14 @@
                     return ApiClient.ajax(opts).catch((err) => readError(err).then((msg) => { throw new Error(msg); }));
                 }
                 const get = (p) => api('GET', p);
+                // Status polling: a request that never answers must not freeze
+                // the page (refresh() waits for all of them, and a new refresh
+                // only starts when the last one ended - one hung call stopped
+                // every progress update). Give up after 15 s; the next poll asks again.
+                const poll = (p) => Promise.race([
+                    get(p),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 15000))
+                ]);
                 const post = (p, b) => api('POST', p, b === undefined ? {} : b);
                 const del = (p) => api('DELETE', p);
 
@@ -777,21 +785,28 @@
                 let refreshing = null;
                 function refresh() {
                     if (refreshing) return refreshing;
-                    refreshing = get('MediaDownloader/Health').then((h) => {
+                    refreshing = poll('MediaDownloader/Health').then((h) => {
                         S.health = h;
                         const online = h && h.engine === 'online';
                         const tasks = [
-                            get('MediaDownloader/Outbox').then((o) => { S.outbox = o; }).catch(() => {})
+                            poll('MediaDownloader/Outbox').then((o) => { S.outbox = o; }).catch(() => {})
                         ];
                         if (online) {
-                            tasks.push(get('MediaDownloader/Queue').then((q) => { S.queue = q; }).catch(() => {}));
-                            tasks.push(get('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
+                            // The queue (progress bars) is drawn as soon as it arrives,
+                            // not after the slower calls below.
+                            tasks.push(poll('MediaDownloader/Queue').then((q) => {
+                                S.queue = q;
+                                if (S.view === 'overview') renderOverview();
+                                if (S.view === 'queue') renderQueue();
+                                renderStatus();
+                            }).catch(() => {}));
+                            tasks.push(poll('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
                             // Watch list: a local JSON file on the engine - one
                             // cheap call, no per-title lookups, so the tab is
                             // instant no matter how many titles are watched.
-                            tasks.push(get('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; S.schedulesDryRun = sc ? !!sc.dryRun : true; }).catch(() => {}));
+                            tasks.push(poll('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; S.schedulesDryRun = sc ? !!sc.dryRun : true; }).catch(() => {}));
                             if (S.view === 'queue') {
-                                tasks.push(get('MediaDownloader/Log?since=' + S.logSince).then((l) => {
+                                tasks.push(poll('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
                                     if (items.length) {
                                         S.log = S.log.concat(items).slice(-300);
@@ -877,7 +892,7 @@
                     if (it.season != null || it.episode != null) bits.push(it.episode == null ? 'Movie' : 'S' + (it.season != null ? it.season : 1) + 'E' + it.episode);
                     else bits.push('Movie');
                     bits.push((it.mode || 'dub').toUpperCase());
-                    if (it.status === 'downloading' && it.progress != null) bits.push(Math.round(it.progress * 100) + '%' + (it.bytes ? ' · ' + fmtBytes(it.bytes) : ''));
+                    if (it.status === 'downloading' && it.progress != null) bits.push(Math.round(it.progress * 100) + '%' + (it.parts ? ' · ' + it.parts + ' parts' : it.bytes ? ' · ' + fmtBytes(it.bytes) : ''));
                     else if (it.bytes && it.status === 'done') bits.push(fmtBytes(it.bytes));
                     if (it.status === 'resolving') bits.push('sources are tried in fallback order');
                     if (it.status === 'verifying') bits.push('checking the file with ffprobe');
@@ -2240,10 +2255,15 @@
                         box.innerHTML = '<div class="mdl-empty">' + (!online ? 'Engine offline.' : S.qtab === 'queue' ? 'The queue is empty.' : S.qtab === 'failed' ? 'Nothing has failed.' : 'Nothing has finished in this session yet.') + '</div>';
                         return;
                     }
-                    // group by batch (one series/season or one movie)
+                    // group by batch (one series/season or one movie). What is
+                    // being worked on right now comes first, so it is never
+                    // buried under 200 queued episodes.
+                    const BUSY = ['resolving', 'downloading', 'verifying', 'placing'];
+                    const rank = (it) => (BUSY.indexOf(it.status) >= 0 ? 0 : 1);
+                    const ordered = list.map((it, i) => ({ it, i })).sort((a, b) => rank(a.it) - rank(b.it) || a.i - b.i).map((x) => x.it);
                     const groups = [];
                     const byKey = {};
-                    list.forEach((it) => {
+                    ordered.forEach((it) => {
                         const k = it.group || it.series || it.label;
                         if (!byKey[k]) { byKey[k] = { items: [], series: it.series, season: it.season, mode: it.mode, movie: it.episode == null }; groups.push(byKey[k]); }
                         byKey[k].items.push(it);
@@ -2253,12 +2273,17 @@
                         const groupAll = all.filter((i) => (i.group || i.series || i.label) === (g.items[0].group || g.items[0].series || g.items[0].label));
                         const left = groupAll.filter((i) => ACTIVE.indexOf(i.status) >= 0).length;
                         const right = S.qtab === 'queue' ? left + ' of ' + groupAll.length + ' left' : plural(g.items.length, 'item');
+                        // Long groups: the busy items plus the next few, then a count.
+                        const SHOW = 6;
+                        const shown = S.qtab === 'queue' ? g.items.filter((it, k) => BUSY.indexOf(it.status) >= 0 || k < SHOW) : g.items;
+                        const hidden = g.items.length - shown.length;
                         return '<div class="mdl-list-h"><span>' + esc(head) + '</span><span>' + esc(right) + '</span></div>' +
-                            g.items.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
+                            shown.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
                                 '<div class="grow" style="min-width:0;"><div class="t mono" style="font-size:.9em;">' + esc(it.label || it.series) + '</div><div class="sub" title="' + esc(it.error || '') + '">' + esc(itemSub(it)) + '</div></div>' +
                                 statusPill(it.status) +
                                 (it.status === 'failed' ? '<button type="button" class="mdl-btn sm" data-retry="' + it.id + '">Retry</button>' : '') +
-                                '<button type="button" class="mdl-btn icon sm" title="Remove from queue" data-remove="' + it.id + '">✕</button></div>' + itemBar(it) + '</div>').join('');
+                                '<button type="button" class="mdl-btn icon sm" title="Remove from queue" data-remove="' + it.id + '">✕</button></div>' + itemBar(it) + '</div>').join('') +
+                            (hidden > 0 ? '<div class="mdl-row small muted">+ ' + hidden + ' more queued in this group</div>' : '');
                     }).join('');
                 }
 

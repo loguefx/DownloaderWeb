@@ -584,6 +584,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
       onProgress({
         received: n,
         total: jobs.length,
+        unit: 'parts', // a part count, not bytes
         percent: Math.min(0.999, n / Math.max(1, jobs.length))
       });
     }

@@ -355,6 +355,41 @@ async function main() {
   srv.close();
   config.download.maxRetries = 6;
 
+  // ---- 6a. Download progress reaches the queue snapshot (the plugin's bars) --
+  console.log('\n[6a] A running download shows its progress in the queue snapshot');
+  {
+    const chunk = Buffer.alloc(64 * 1024, 7);
+    const N = 12;
+    const psrv = http.createServer((req, res) => {
+      res.setHeader('Content-Length', chunk.length * N);
+      res.setHeader('Content-Type', 'video/mp4');
+      let k = 0;
+      const t = setInterval(() => {
+        if (k >= N) { clearInterval(t); res.end(); return; }
+        res.write(chunk);
+        k += 1;
+      }, 120);
+      req.on('close', () => clearInterval(t));
+    });
+    await new Promise((r) => psrv.listen(0, '127.0.0.1', r));
+    const pid = manager.add({
+      label: 'Progress Show S1E1', series: 'Progress Show', season: 1, episode: 1,
+      url: 'https://example.invalid/progress', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'resolved', detection: { url: `http://127.0.0.1:${psrv.address().port}/p.mp4`, type: 'mp4' } })
+    });
+    let seen = null;
+    for (let i = 0; i < 100 && !seen; i++) {
+      const snap = manager.snapshot().find((x) => x.id === pid);
+      if (snap && snap.status === 'downloading' && snap.progress > 0 && snap.progress < 1) seen = snap;
+      await sleep(50);
+    }
+    check('snapshot shows "downloading" with a percentage between 0 and 100', !!seen, JSON.stringify(seen));
+    check('...and the bytes received, not a part count', seen && seen.bytes > 0 && !seen.parts, JSON.stringify(seen && [seen.bytes, seen.parts]));
+    manager.removeByIds([pid]);
+    await sleep(150);
+    psrv.close();
+  }
+
   // ---- 6b. Anime DUB: no dub source answers -> waiting list, not failed ----
   console.log('\n[6b] Anime DUB with no dub source answering goes on the waiting-for-dub list');
   {
@@ -609,11 +644,11 @@ async function main() {
     const origDirect = vs.directResolve;
     const floors = [];
     vs.directResolve = async (ref) => { floors.push(ref.minHeight); return { status: 'no_quality' }; };
-    const runEp = async (ep) => {
+    const runEp = async (ep, season = 2) => {
       const discovers = [];
       const id = manager.add({
-        label: `House S2E${ep}`, series: 'House', season: 2, episode: ep, minHeight: 1080, tmdb: '1408',
-        url: `https://vidsrc.sh/embed/tv/1408-2-${ep}`, outputRoot: path.join(DATA_DIR, 'staging'),
+        label: `House S${season}E${ep}`, series: 'House', season, episode: ep, minHeight: 1080, tmdb: '1408',
+        url: `https://vidsrc.sh/embed/tv/1408-${season}-${ep}`, outputRoot: path.join(DATA_DIR, 'staging'),
         discover: (it) => { discovers.push(it.minHeight); return Promise.resolve({ status: 'failed', reason: 'No 1080p stream on any source' }); }
       });
       const it = manager.items.find((x) => x.id === id);
@@ -628,6 +663,9 @@ async function main() {
     const d2 = await runEp(2);
     check('next episode of the season: no 1080p search on the other sites', !d2.some((h) => h === 1080), JSON.stringify(d2));
     check('...it goes straight to the 720p try on Vidsrc', floors.includes(720), JSON.stringify(floors));
+    const d3 = await runEp(1, 5);
+    check('another season of the same show skips it too (memory is per show)', !d3.some((h) => h === 1080), JSON.stringify(d3));
+    check('the first episode searched the other sites only once before the fallback', d1.filter((h) => h === 1080).length === 1, JSON.stringify(d1));
     vs.directResolve = origDirect;
     config.download.retryBaseDelayMs = savedBase;
   }
