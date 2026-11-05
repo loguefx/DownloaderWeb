@@ -603,25 +603,57 @@ function probeResolution(bufPath) {
 // and segment on that host, so ONE request per host is all a lookup needs.
 // 429 / 5xx / timeouts are retried twice with a short backoff; a non-200
 // body is never mistaken for a token.
-async function fetchHostToken(origin) {
+// The video servers' own token (generate.php). Since 2026-11-05 some servers
+// (yarrowandyarn.space, ...) answer 403 "invalid or mismatched api token"
+// without the player chain's API token; older ones still take a bare call.
+// The ways of handing it over are tried in turn and the one that works is
+// remembered for every later call.
+const GEN_VARIANTS = [
+  { name: 'plain', build: (o) => ({ url: o + '/generate.php', headers: {} }) },
+  { name: 'api_token', build: (o, t) => ({ url: o + '/generate.php?api_token=' + encodeURIComponent(t), headers: {} }) },
+  { name: 'token', build: (o, t) => ({ url: o + '/generate.php?token=' + encodeURIComponent(t), headers: {} }) },
+  { name: 'x-api-token', build: (o, t) => ({ url: o + '/generate.php', headers: { 'X-Api-Token': t } }) },
+  { name: 'bearer', build: (o, t) => ({ url: o + '/generate.php', headers: { Authorization: 'Bearer ' + t } }) }
+];
+let genVariant = 'plain';
+const tokenWanted = (res) => res && res.status === 403 && /api.?token/i.test(res.body.toString('utf8').slice(0, 300));
+async function fetchHostToken(origin, opts = {}) {
   let last = '';
   let lastStatus = 0;
+  const api = opts.apiToken != null ? opts.apiToken : tokenCache.tok || '';
+  // The remembered way first, then the others (only with a token in hand).
+  const order = [GEN_VARIANTS.find((v) => v.name === genVariant)].concat(GEN_VARIANTS.filter((v) => v.name !== genVariant))
+    .filter((v) => v && (v.name === 'plain' || api));
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await new Promise((rs) => setTimeout(rs, 1200 * attempt + Math.floor(Math.random() * 400)));
-    let res;
-    try {
-      res = await request(origin + '/generate.php', {}, 10000);
-    } catch (e) {
-      last = e.message || 'network error';
+    let res = null;
+    let netErr = null;
+    for (const v of order) {
+      const { url, headers } = v.build(origin, api);
+      try {
+        res = await request(url, headers, 10000);
+      } catch (e) {
+        netErr = e;
+        res = null;
+        break; // the host is not answering: no point trying the other forms now
+      }
+      if (res.status === 200) {
+        const token = parseToken(res.body.toString('utf8'));
+        if (token) {
+          if (genVariant !== v.name) genVariant = v.name;
+          return token;
+        }
+        last = 'empty token';
+        break;
+      }
+      if (!tokenWanted(res)) break; // another kind of refusal: the forms will not help
+    }
+    if (netErr) {
+      last = netErr.message || 'network error';
       continue;
     }
-    if (res.status === 200) {
-      const token = parseToken(res.body.toString('utf8'));
-      if (token) return token;
-      last = 'empty token';
-      continue;
-    }
-    last = 'HTTP ' + res.status;
+    if (!res || res.status === 200) continue;
+    last = 'HTTP ' + res.status + (tokenWanted(res) ? ' (wants an api token; none of the known forms was accepted)' : '');
     lastStatus = res.status;
     if (res.status !== 429 && res.status < 500) break;
   }
@@ -876,6 +908,10 @@ module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
   isBlocked, isBlockPage, blockedUntilMs: () => blockedUntil, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS, meetsFloor,
   chainResult: (relay) => lastChain[relay] || '',
+  fetchHostToken,
+  GEN_VARIANTS,
+  genVariant: () => genVariant,
+  _resetGenVariantForTests() { genVariant = 'plain'; },
   landingFor: (relay) => lastLanding[relay] || '',
   playerPageFor: (relay) => lastPlayerPage[relay] || null,
   request,

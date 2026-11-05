@@ -78,13 +78,17 @@ async function main() {
     // with the headers a browser player would send.
     console.log('\n[2b] Video servers (generate.php)');
     const origins = [...new Set(list.urls.map((u) => { try { return new URL(u).origin; } catch (e) { return ''; } }).filter(Boolean))];
+    let api = '';
+    try { api = await vs.getApiToken(ref); } catch (e) { api = ''; }
     for (const origin of origins) {
-      for (const [label, headers] of [['plain', {}], ['as the player', { Referer: 'https://vidsrc.sh/', Origin: 'https://vidsrc.sh' }]]) {
+      for (const v of vs.GEN_VARIANTS) {
+        if (v.name !== 'plain' && !api) continue;
+        const { url, headers } = v.build(origin, api);
         try {
-          const r = await vs.request(origin + '/generate.php', headers, 15000);
-          console.log(`  ${origin} (${label}): HTTP ${r.status} - ${r.body.toString('utf8').replace(/\s+/g, ' ').slice(0, 160)}`);
+          const r = await vs.request(url, headers, 15000);
+          console.log(`  ${origin} [${v.name}]: HTTP ${r.status} - ${r.body.toString('utf8').replace(/\s+/g, ' ').slice(0, 120)}`);
         } catch (e) {
-          console.log(`  ${origin} (${label}): ${e.message}`);
+          console.log(`  ${origin} [${v.name}]: ${e.message}`);
         }
       }
     }

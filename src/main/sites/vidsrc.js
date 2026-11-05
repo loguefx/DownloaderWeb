@@ -260,7 +260,7 @@ module.exports = {
       throw e;
     }
     if (!best && pickOpts.cdnBlocked) {
-      const why = 'Vidsrc\'s video servers refused this IP (HTTP 403 on every server) - Vidsrc paused for 15 min; switching the Mullvad server usually clears it';
+      const why = 'Vidsrc\'s video servers refused every token request (HTTP 403 on every server) - Vidsrc paused for 15 min';
       onLog(`Vidsrc (headless): ${why}.`);
       return { status: 'busy', reason: why, blocked: true };
     }

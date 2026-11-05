@@ -87,11 +87,18 @@ let pageChanged = false;
 let relayDnsGone = false;
 let lowFirst = 0;
 let notFound = false;
-let genRefused = false; // scenario: every CDN server refuses generate.php (403) // scenario: the API says the title is not on Vidsrc // scenario: the first N stream lists are on a 720p-only server
+let genRefused = false;
+let genWants = '';
+const genHits = []; // scenario: generate.php wants the api token in this form ('api_token' | 'bearer') // scenario: every CDN server refuses generate.php (403) // scenario: the API says the title is not on Vidsrc // scenario: the first N stream lists are on a 720p-only server
 let vsrcRelayHits = 0; // scenario: vidsrc.sh's name does not resolve // scenario: the landing page no longer carries playerUrl
 
 function routeFor(u) {
   if (genRefused && /generate\.php/.test(u)) return { status: 403, body: () => Buffer.from('Forbidden') };
+  if (genWants && /generate\.php/.test(u)) {
+    const ok = genWants === 'api_token' ? /[?&]api_token=tokB/.test(u) : routeFor.lastHeaders && routeFor.lastHeaders.Authorization === 'Bearer tokB';
+    genHits.push(u.replace(/^https:\/\/([^/]+).*$/, '$1') + (ok ? ':ok' : ':403'));
+    return ok ? { status: 200, body: () => Buffer.from('tokG') } : { status: 403, body: () => Buffer.from('invalid or mismatched api token') };
+  }
   if (u.includes('vidsrc.sh/vs_src.php')) {
     mark('slow-relay-vsrc');
     if (relayDnsGone) {
@@ -199,6 +206,7 @@ function routeFor(u) {
 
 function fakeGet(url, options, cb) {
   const u = typeof url === 'string' ? url : url.href;
+  routeFor.lastHeaders = (options && options.headers) || {};
   const route = routeFor(u);
   const req = new EventEmitter();
   req.setTimeout = () => req;
@@ -425,6 +433,27 @@ const at = (name) => {
   check('slash form 1396/2/5', e3.embed && e3.embed.id === '1396' && e3.season === 2 && e3.episode === 5, JSON.stringify(e3));
   const e4 = episodeRefFromUrl('https://site.example/watch/show-name-season-2-episode-3');
   check('other sites unchanged', e4.title === 'show name' && e4.season === 2 && e4.episode === 3 && !e4.embed, JSON.stringify(e4));
+
+  console.log('\n[14] A video server that wants the api token gets it, and the working form is remembered');
+  genWants = 'api_token';
+  genHits.length = 0;
+  vs._resetGenVariantForTests();
+  let t14 = null;
+  try { t14 = await vs.fetchHostToken('https://cdn-good2.example', { apiToken: 'tokB' }); } catch (e) { t14 = e.message; }
+  check('token handed over as ?api_token= -> the server token', t14 === 'tokG', String(t14));
+  check('...remembered', vs.genVariant() === 'api_token', vs.genVariant());
+  genHits.length = 0;
+  await vs.fetchHostToken('https://cdn-good2.example', { apiToken: 'tokB' });
+  check('next call asks that way first (one request)', genHits.length === 1 && genHits[0].endsWith(':ok'), JSON.stringify(genHits));
+  genWants = 'bearer';
+  let t14b = null;
+  try { t14b = await vs.fetchHostToken('https://cdn-good2.example', { apiToken: 'tokB' }); } catch (e) { t14b = e.message; }
+  check('a server wanting it as a Bearer header also works', t14b === 'tokG' && vs.genVariant() === 'bearer', `${t14b} ${vs.genVariant()}`);
+  genWants = '';
+  vs._resetGenVariantForTests();
+  let t14c = null;
+  try { t14c = await vs.fetchHostToken('https://cdn-good2.example', { apiToken: '' }); } catch (e) { t14c = e.message; }
+  check('old servers: a bare call still works', t14c === 'tokG', String(t14c));
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';
