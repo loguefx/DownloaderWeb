@@ -598,6 +598,40 @@ async function main() {
     vdl._setBlockedUntilForTests(0);
   }
 
+  // ---- 6h. 720p fallback is remembered per season ----------------------------
+  console.log('\n[6h] After one episode fell back to 720p, the season\'s next episode skips the 1080p search');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    const sitesReg = M('sites');
+    if (!sitesReg.profiles.length) sitesReg.init(DATA_DIR);
+    const vs = sitesReg.resolve('https://vidsrc.sh/embed/tv/1408-2-1');
+    const origDirect = vs.directResolve;
+    const floors = [];
+    vs.directResolve = async (ref) => { floors.push(ref.minHeight); return { status: 'no_quality' }; };
+    const runEp = async (ep) => {
+      const discovers = [];
+      const id = manager.add({
+        label: `House S2E${ep}`, series: 'House', season: 2, episode: ep, minHeight: 1080, tmdb: '1408',
+        url: `https://vidsrc.sh/embed/tv/1408-2-${ep}`, outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: (it) => { discovers.push(it.minHeight); return Promise.resolve({ status: 'failed', reason: 'No 1080p stream on any source' }); }
+      });
+      const it = manager.items.find((x) => x.id === id);
+      for (let i = 0; i < 200 && !(it && it.status === 'failed'); i++) await sleep(50);
+      manager.removeByIds([id]);
+      await sleep(50);
+      return discovers;
+    };
+    const d1 = await runEp(1);
+    check('first episode: the other sites are searched for 1080p before the fallback', d1.some((h) => h === 1080), JSON.stringify(d1));
+    floors.length = 0;
+    const d2 = await runEp(2);
+    check('next episode of the season: no 1080p search on the other sites', !d2.some((h) => h === 1080), JSON.stringify(d2));
+    check('...it goes straight to the 720p try on Vidsrc', floors.includes(720), JSON.stringify(floors));
+    vs.directResolve = origDirect;
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

@@ -60,6 +60,7 @@ class DownloadManager extends EventEmitter {
     this._paused = false;
     this._vpnDown = false;
     this._active = new Set(); // items currently being processed (per-site concurrency + prefetch)
+    this._noQualitySeasons = new Map(); // "<tmdb|series>|<season>" -> when an episode fell back to 720p
     this._pauseWaiters = [];
     this._downloadWaiters = [];
     this._watchdogTimer = null;
@@ -581,7 +582,7 @@ class DownloadManager extends EventEmitter {
   // list counts any copy as present, so it is not re-fetched in a loop; the
   // placer replaces it only if the episode is queued again and a better copy
   // is found. Anime has no floor (the source's own resolution).
-  _fallbackFloor(item, reason) {
+  _fallbackFloor(item, reason, opts = {}) {
     const FALLBACK = 720;
     if (!item || item.anime || item._floorFallback || item._exclusive) return false;
     const floor = this._minHeight(item);
@@ -589,6 +590,9 @@ class DownloadManager extends EventEmitter {
     const quality = item._noQuality || /no \d+p|not \d+p|\d+p, not \d+p|below \d+p|no 1080p/i.test(String(reason || ''));
     if (!quality) return false;
     item._floorFallback = floor;
+    // The rest of this season gets the same answer from the same sources:
+    // remember it so its next episodes skip the minutes-long 1080p search.
+    if (!opts.quiet) this._noQualitySeasons.set(this._seasonKey(item), Date.now());
     item.minHeight = FALLBACK;
     item.attempts = 0;
     item._noQuality = false;
@@ -598,8 +602,21 @@ class DownloadManager extends EventEmitter {
     item.status = 'queued';
     item.error = null;
     this._emit();
-    this._log(`"${item.label}": no ${floor}p copy on any source; trying again for the best copy at ${FALLBACK}p or better.`);
+    this._log(opts.quiet
+      ? `"${item.label}": earlier episodes of this season had no ${floor}p copy anywhere either; taking the best copy at ${FALLBACK}p or better.`
+      : `"${item.label}": no ${floor}p copy on any source; trying again for the best copy at ${FALLBACK}p or better.`);
     return true;
+  }
+
+  // One season of one show (the 720p-fallback memory).
+  _seasonKey(item) {
+    return `${String((item && (item.tmdb || item.series)) || '').toLowerCase()}|${item && item.season != null ? item.season : ''}`;
+  }
+
+  // An episode of this season fell back to 720p within the last 6 h.
+  _seasonFellBack(item) {
+    const at = this._noQualitySeasons.get(this._seasonKey(item)) || 0;
+    return Date.now() - at < 6 * 3600 * 1000;
   }
 
   // A wait inside "resolving" that does not listen to the item's abort (a
@@ -1029,6 +1046,9 @@ class DownloadManager extends EventEmitter {
           if (!item.anime) item._skipVidsrcPages = true;
           noQuality = true;
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
+          // Another episode of this season already went through every site
+          // for 1080p and fell back: straight to the 720p copy.
+          if (this._seasonFellBack(item) && this._fallbackFloor(item, 'no 1080p', { quiet: true })) continue;
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
           outcome = await this._abortable(item, item.discover(item));
         } else if (!outcome || outcome.status !== 'resolved') {
