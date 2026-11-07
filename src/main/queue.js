@@ -205,6 +205,10 @@ class DownloadManager extends EventEmitter {
     it._failStreak = 0;
     it.error = null;
     it.status = 'queued';
+    // A fresh look: what the last run concluded (not on any site, not out
+    // yet, Vidsrc refusing, ...) is asked again, not taken as given.
+    for (const k of ['_notFound', '_noQuality', '_unobtainable', '_notOutChecked', '_skipVidsrcPages', '_heldForVidsrc', '_notBefore', '_exclusive', '_exclusiveHintChecked', '_exclusiveHint', '_wrongAudio', '_headlessTried', '_watchdogKilled', '_watchdogKilledAt']) delete it[k];
+    it.skipSources = [];
     this._stopRequested = null;
     this._emit();
     this._kick();

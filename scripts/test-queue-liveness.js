@@ -345,7 +345,12 @@ async function main() {
   check('log says why', glogs.some((m) => /Gave up on "Broken Show S1E1" after 4 tries in a row with no progress/.test(m)), glogs.slice(-3).join(' | '));
   await sleep(50);
   check('worker freed after giving up', manager._active.size === 0, String(manager._active.size));
+  gitem._unobtainable = 'special not on Vidsrc';
+  gitem._skipVidsrcPages = true;
+  gitem._notBefore = Date.now() + 60000;
+  gitem.skipSources = ['relay'];
   check('retry() puts it back with a fresh budget', manager.retry(gid) === true && gitem.attempts === 0 && gitem._failStreak === 0);
+  check('...and forgets what the last run concluded', !gitem._unobtainable && !gitem._skipVidsrcPages && !gitem._notBefore && gitem.skipSources.length === 0);
   await sleep(30);
   check('retry() refuses an item that is still active', manager.retry(gid) === null);
   check('retry() of an unknown id is false', manager.retry(987654) === false);

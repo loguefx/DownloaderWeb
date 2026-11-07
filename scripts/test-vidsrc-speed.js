@@ -85,6 +85,7 @@ let dataApiCalls = 0;
 let playerTokenHits = 0;
 let pageChanged = false;
 let relayDnsGone = false;
+let relayAggregate = false; // scenario: vidsrc.sh fails to connect on every address
 let lowFirst = 0;
 let notFound = false;
 let genRefused = false;
@@ -101,6 +102,10 @@ function routeFor(u) {
   }
   if (u.includes('vidsrc.sh/vs_src.php')) {
     mark('slow-relay-vsrc');
+    if (relayAggregate) {
+      vsrcRelayHits += 1;
+      return { error: Object.assign(new Error(''), { name: 'AggregateError', errors: [Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })] }) };
+    }
     if (relayDnsGone) {
       vsrcRelayHits += 1;
       return { error: Object.assign(new Error('getaddrinfo ENOTFOUND vidsrc.sh'), { code: 'ENOTFOUND' }) };
@@ -454,6 +459,28 @@ const at = (name) => {
   let t14c = null;
   try { t14c = await vs.fetchHostToken('https://cdn-good2.example', { apiToken: '' }); } catch (e) { t14c = e.message; }
   check('old servers: a bare call still works', t14c === 'tokG', String(t14c));
+
+  console.log('\n[15] A mirror that fails to connect any way (AggregateError) is skipped for a while');
+  vs._resetDeadHostsForTests();
+  relayAggregate = true;
+  mode = 'winner-first';
+  const r15 = { type: 'tv', tmdb: '1408', season: 1, episode: 9 };
+  const tok15 = await vs.getApiToken(r15, { fresh: true });
+  check('the other mirror still gives the token', tok15 === 'tokB', JSON.stringify(tok15));
+  check('the failing mirror is marked', vs.isDeadHost('https://vidsrc.sh'));
+  vsrcRelayHits = 0;
+  await vs.getApiToken(r15, { fresh: true });
+  check('...and not asked on the next token', vsrcRelayHits === 0, String(vsrcRelayHits));
+  relayAggregate = false;
+  vs._resetDeadHostsForTests();
+
+  console.log('\n[16] When the live mirror fails, a skipped one is asked after all');
+  vs._markDeadForTests('vidsrcme.ru');
+  mode = 'loser-first'; // vidsrc.sh answers 500 (no token); vidsrcme.ru works
+  const tok16 = await vs.getApiToken(r15, { fresh: true });
+  check('token from the skipped mirror instead of none', tok16 === 'tokB', JSON.stringify(tok16));
+  mode = 'winner-first';
+  vs._resetDeadHostsForTests();
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';

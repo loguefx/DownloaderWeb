@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.52",
+                "changelog": "Failed tab: Retry all failed, and Retry all per show/season. Needs the matching engine update (a retried item starts from a clean slate).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v52/MediaDownloader.12.1.0.52.zip",
+                "checksum": "c82cd828ed4792015741a048374d4b5c",
+                "timestamp": "2026-11-07T08:49:47.000Z"
+            },
+            {
+                "version": "10.11.0.52",
+                "changelog": "Failed tab: Retry all failed, and Retry all per show/season. Needs the matching engine update (a retried item starts from a clean slate).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v52/MediaDownloader.10.11.0.52.zip",
+                "checksum": "2b22197e6b229582677fb54c726e23e9",
+                "timestamp": "2026-11-07T08:49:47.000Z"
+            },
+            {
+                "version": "10.10.0.52",
+                "changelog": "Failed tab: Retry all failed, and Retry all per show/season. Needs the matching engine update (a retried item starts from a clean slate).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v52/MediaDownloader.10.10.0.52.zip",
+                "checksum": "c6ed5dce9ddfec220afa50153ae75e81",
+                "timestamp": "2026-11-07T08:49:47.000Z"
+            },
+            {
                 "version": "12.1.0.51",
                 "changelog": "Overview > Sources: Vidsrc's own steps checked by the engine every 3 h (names the step that broke, last 1080p download), and each fallback site's record in recent TV/movie searches. Needs the matching engine update.",
                 "targetAbi": "12.1.0.0",

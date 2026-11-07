@@ -134,9 +134,24 @@ function hostOf(u) {
 function isDeadHost(u) {
   return (deadUntil.get(hostOf(u)) || 0) > Date.now();
 }
+// Any failure to CONNECT (not an HTTP answer) marks the mirror dead for a
+// while: its name gone (ENOTFOUND) for DEAD_MS; refused / unreachable /
+// every address failing ("AggregateError", vidsrcme.ru 2026-11) / no answer
+// at all for DOWN_MS. It is tried again after that, so a mirror that comes
+// back is noticed.
+const DOWN_MS = 60 * 60 * 1000;
+const CONNECT_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'ETIMEDOUT', 'EAI_AGAIN', 'EADDRNOTAVAIL']);
 function noteNetError(u, e) {
   const code = (e && e.code) || '';
-  if (code === 'ENOTFOUND' || /ENOTFOUND/.test((e && e.message) || '')) deadUntil.set(hostOf(u), Date.now() + DEAD_MS);
+  const msg = (e && e.message) || '';
+  const inner = e && Array.isArray(e.errors) ? e.errors.map((x) => x && x.code).filter(Boolean) : [];
+  if (code === 'ENOTFOUND' || /ENOTFOUND/.test(msg) || inner.includes('ENOTFOUND')) {
+    deadUntil.set(hostOf(u), Date.now() + DEAD_MS);
+    return;
+  }
+  const connectFail = CONNECT_CODES.has(code) || inner.some((c) => CONNECT_CODES.has(c)) ||
+    (e && e.name === 'AggregateError') || /AggregateError|^timeout$/i.test(msg);
+  if (connectFail) deadUntil.set(hostOf(u), Math.max(deadUntil.get(hostOf(u)) || 0, Date.now() + DOWN_MS));
 }
 const lastLanding = {}; // relay -> the player page vs_src.php sent us to
 const lastPlayerPage = {}; // relay -> { url, text } of a player page with no token
@@ -160,7 +175,7 @@ async function tokenChain(relay, ref, opts = {}) {
     return '';
   };
   if (!id) return note('no TMDB/IMDB id');
-  if (isDeadHost(relay) && !opts.ignoreDead) return note('skipped: its name did not resolve recently (domain gone)');
+  if (isDeadHost(relay) && !opts.ignoreDead) return note('skipped: it could not be reached recently (re-checked later)');
   const isTv = ref.type === 'tv';
   const params =
     `type=${isTv ? 'tv' : 'movie'}&id=${encodeURIComponent(id)}` +
@@ -242,16 +257,25 @@ async function acquireApiToken(ref) {
   // Now the FIRST settled chain decides: a success returns immediately (the
   // loser dies on its own hop timeout and is ignored); a failure just means
   // the other chain still has a chance.
+  const race = async (hosts, opts) => {
+    const attempts = hosts.map((relay) =>
+      tokenChain(relay, ref, opts).then((tok) => ({ ok: !!tok, tok }), () => ({ ok: false, tok: '' }))
+    );
+    while (attempts.length) {
+      const { value: r, index } = await firstSettled(attempts);
+      attempts.splice(index, 1);
+      if (r && r.ok) return r.tok;
+    }
+    return '';
+  };
+  // Mirrors that failed to connect lately are left out; if none of the
+  // others gives a token, they are asked after all (one blip on the main
+  // relay must never cost the token for an hour).
   const live = RELAY_HOSTS.filter((h) => !isDeadHost(h));
-  const attempts = (live.length ? live : RELAY_HOSTS).map((relay) =>
-    tokenChain(relay, ref).then((tok) => ({ ok: !!tok, tok }), () => ({ ok: false, tok: '' }))
-  );
-  while (attempts.length) {
-    const { value: r, index } = await firstSettled(attempts);
-    attempts.splice(index, 1);
-    if (r && r.ok) return r.tok;
-  }
-  return '';
+  const dead = RELAY_HOSTS.filter((h) => isDeadHost(h));
+  const tok = await race(live.length ? live : RELAY_HOSTS);
+  if (tok || !live.length || !dead.length) return tok;
+  return race(dead, { ignoreDead: true });
 }
 
 // Shared API token. Getting one walks the player chain on BOTH relay hosts
@@ -917,6 +941,7 @@ module.exports = {
   request,
   isDeadHost,
   _resetDeadHostsForTests() { deadUntil.clear(); },
+  _markDeadForTests(host, ms = 3600000) { deadUntil.set(host, Date.now() + ms); },
   _setBlockedUntilForTests(t) { blockedUntil = t; }
 };
 

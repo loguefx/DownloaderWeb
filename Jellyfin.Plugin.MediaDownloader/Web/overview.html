@@ -2265,6 +2265,11 @@
                         box.innerHTML = '<div class="mdl-empty">' + (!online ? 'Engine offline.' : S.qtab === 'queue' ? 'The queue is empty.' : S.qtab === 'failed' ? 'Nothing has failed.' : 'Nothing has finished in this session yet.') + '</div>';
                         return;
                     }
+                    // Failed: retry everything at once (each group has its own button too).
+                    if (S.qtab === 'failed') {
+                        bar.innerHTML = '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-retry-ids="' +
+                            list.map((i) => i.id).join(',') + '">Retry all failed (' + list.length + ')</button></div>';
+                    }
                     // group by batch (one series/season or one movie). What is
                     // being worked on right now comes first, so it is never
                     // buried under 200 queued episodes.
@@ -2287,7 +2292,10 @@
                         const SHOW = 6;
                         const shown = S.qtab === 'queue' ? g.items.filter((it, k) => BUSY.indexOf(it.status) >= 0 || k < SHOW) : g.items;
                         const hidden = g.items.length - shown.length;
-                        return '<div class="mdl-list-h"><span>' + esc(head) + '</span><span>' + esc(right) + '</span></div>' +
+                        const retryGroup = S.qtab === 'failed' && g.items.length > 1
+                            ? ' <button type="button" class="mdl-btn sm" style="margin-left:.6em;" data-retry-ids="' + g.items.map((i) => i.id).join(',') + '">Retry all ' + g.items.length + '</button>'
+                            : '';
+                        return '<div class="mdl-list-h"><span>' + esc(head) + '</span><span>' + esc(right) + retryGroup + '</span></div>' +
                             shown.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
                                 '<div class="grow" style="min-width:0;"><div class="t mono" style="font-size:.9em;">' + esc(it.label || it.series) + '</div><div class="sub" title="' + esc(it.error || '') + '">' + esc(itemSub(it)) + '</div></div>' +
                                 statusPill(it.status) +
@@ -2458,6 +2466,24 @@
                         } else {
                             del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => alert(err.message));
                         }
+                        return;
+                    }
+                    if (el.hasAttribute('data-retry-ids')) {
+                        // One show / season (or every failed item) back on the queue.
+                        const ids = el.getAttribute('data-retry-ids').split(',').map(Number).filter((n) => n > 0);
+                        el.disabled = true;
+                        el.textContent = 'Retrying…';
+                        let failedCalls = 0;
+                        // A few at a time: hundreds of parallel calls would swamp the engine.
+                        const next = () => {
+                            const id = ids.shift();
+                            if (id == null) return Promise.resolve();
+                            return post('MediaDownloader/Queue/' + id + '/retry').catch(() => { failedCalls += 1; }).then(next);
+                        };
+                        Promise.all([next(), next(), next(), next()]).then(() => {
+                            if (failedCalls) alert(failedCalls + ' item(s) could not be retried (already running or gone).');
+                            refresh();
+                        });
                         return;
                     }
                     if (el.hasAttribute('data-retry')) {
