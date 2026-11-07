@@ -10,6 +10,8 @@ const findtitle = require('./findtitle');
 module.exports = {
   id: 'anime9',
   name: '9anime',
+  // Anime catalog: never asked for a TV show or film (bulk.js).
+  animeOnly: true,
   match: [/9anime\./i],
   minHeight: 1080,
   mirrorUrls(pageUrl) {

@@ -1389,8 +1389,10 @@ async function sourcesHealth() {
   const httpsMod = require('https');
   const httpMod = require('http');
   const UA = config.download.userAgent;
+  // Vidsrc: its real steps (token, stream list, video server, qualities),
+  // checked every few hours by vidsrchealth - a bare API call without the
+  // token now always answers 403 and read as "IP-blocked".
   const probes = [
-    { id: 'vidsrc', name: 'Vidsrc', kind: 'api', url: 'https://data.vidsrc.sh/api.php?type=tv&tmdb=125988&season=1&episode=1' },
     { id: 'nontongo', name: 'NontonGo', kind: 'page', url: 'https://sv2.nontongo.day/01russia/multisourcesoap.php?id=125988&season=1&episode=1&type=tv' },
     { id: 'fmovies', name: 'FMovies', kind: 'cf', url: 'https://movienow.online/' },
     { id: 'flixtor', name: 'Flixtor', kind: 'cf', url: 'https://flixtor.to/' }
@@ -1433,6 +1435,27 @@ async function sourcesHealth() {
   }
   const sources = await Promise.all(probes.map(probe));
   try {
+    const vh = require('./vidsrchealth').get();
+    const ago = (t) => {
+      if (!t) return '';
+      const m = Math.round((Date.now() - t) / 60000);
+      return m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+    };
+    const extra = vh.last1080At ? ` · last 1080p download ${ago(vh.last1080At)}` : vh.lastLockedAt ? ` · last download ${vh.lastLockedHeight}p ${ago(vh.lastLockedAt)}` : '';
+    sources.unshift({
+      id: 'vidsrc',
+      name: 'Vidsrc',
+      status: vh.status === 'limited' ? 'partial' : vh.status,
+      detail: (vh.summary || '') + extra + (vh.at ? ` (checked ${ago(vh.at)})` : ''),
+      steps: vh.steps,
+      showDetail: true,
+      ms: 0
+    });
+  } catch (e) { /* ignore */ }
+  // How each fallback site has done in real TV/movie searches lately.
+  let siteStats = [];
+  try { siteStats = require('./sourcestats').summary().filter((x) => x.kind !== 'anime'); } catch (e) { siteStats = []; }
+  try {
     const s = await cfsolve.status();
     sources.push({
       id: 'solver',
@@ -1446,7 +1469,7 @@ async function sourcesHealth() {
   // the whole point of this row is "what does the engine's IP see right now".
   let vpnInfo = null;
   try { vpnInfo = vpn.status(); } catch (e) { /* ignore */ }
-  return { checkedAt: new Date().toISOString(), vpn: vpnInfo, sources };
+  return { checkedAt: new Date().toISOString(), vpn: vpnInfo, sources, siteStats };
 }
 
 module.exports = {

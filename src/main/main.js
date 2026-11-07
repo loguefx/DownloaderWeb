@@ -515,6 +515,8 @@ app.whenReady().then(() => {
   // wireEvents() already forwards to the window - passing onLog here showed
   // each watcher line twice.
   watcher.start();
+  // Vidsrc's own steps, checked every few hours (Overview > Sources).
+  try { require('./vidsrchealth').start(); } catch (e) { /* status only */ }
 
   // Engine mode: once the queue + watcher are up, open the HTTP API (Part 1).
   if (engineMode) {

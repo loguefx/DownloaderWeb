@@ -9,6 +9,7 @@ const config = require('./config');
 const organizer = require('./organizer');
 const dubselect = require('./dubselect');
 const cfsolve = require('./cfsolve');
+const sourcestats = require('./sourcestats');
 
 // Cloudflare-gated catalogs whose challenge did not clear without a solver:
 // skipped until this time (site id -> ms), so each episode does not spend
@@ -406,13 +407,31 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
             const allCands = sites.profiles
               .filter((c) => c && c.id !== (profile && profile.id) && typeof c.findTitle === 'function')
               .filter((c) => !ref.anime || c.animeSource)
+              // Anime-only catalogs (9anime) never have a TV show or film.
+              .filter((c) => ref.anime || !c.animeOnly)
               .sort((a, b) => rank(a) - rank(b));
+            // TV/movies: how each site has done lately decides whether it is
+            // asked at all, and in which order (sourcestats). Anime unchanged.
+            const statKind = ref.anime ? '' : (ref.season == null && !ref.episode ? 'movie' : 'tv');
+            const statSkip = (cand) => {
+              if (!statKind) return false;
+              const why = sourcestats.skip(cand.id, statKind);
+              if (why) log(`Skipping ${cand.name || cand.id}: ${why} (re-checked once a day).`);
+              return !!why;
+            };
+            const noteStat = (cand, res) => {
+              if (statKind) sourcestats.record(cand.id, statKind, !!(res && res.status === 'resolved'));
+            };
             // Phase 1: CF-free sites only
             let cands = allCands.filter((c) => !c.cloudflare);
             if (!cands.length) cands = allCands; // no CF-free sites at all
+            if (statKind) cands = sourcestats.order(cands, statKind);
             for (const cand of cands) {
               if (controller.signal.aborted) break;
               if (outcome && (outcome.status === 'resolved' || outcome.status === 'unavailable')) break;
+              if (statSkip(cand)) continue;
+              let candOutcome = null;
+              try {
               // Name this candidate on every line it produces (search, Cloudflare
               // waits) so the log shows WHICH site is blocked, not just that a
               // challenge is waiting.
@@ -454,7 +473,10 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               } catch (e) {
                 // ignore
               }
-              outcome = await runResolve(pageUrl);
+              candOutcome = outcome = await runResolve(pageUrl);
+              } finally {
+                noteStat(cand, candOutcome);
+              }
             }
             // Phase 2: all CF-free sites failed. Try the Cloudflare-gated
             // sites as a last resort. The user only sees the CF checkbox here
@@ -481,7 +503,8 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               } else if (skipCf) {
                 log('All CF-free sources failed; trying the Cloudflare-gated catalogs briefly (no solver, no on-screen check).');
               }
-              const cfCands = allCands.filter((c) => c.cloudflare);
+              let cfCands = allCands.filter((c) => c.cloudflare);
+              if (statKind) cfCands = sourcestats.order(cfCands, statKind);
               if (cfCands.length) {
                 log('No CF-free source had it — trying Cloudflare-gated sites as last resort…');
                 // skipCloudflareSites means "never park a checkbox window on
@@ -515,6 +538,9 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                     log(`Skipping ${cand.name || cand.id}: its Cloudflare check did not clear recently (no solver configured).`);
                     continue;
                   }
+                  if (statSkip(cand)) continue;
+                  let candOutcome = null;
+                  try {
                   let cfFailed = false;
                   const candHooks = Object.assign({}, cfHooks, {
                     cloudflare: async (page) => {
@@ -554,7 +580,10 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
                     }
                     continue;
                   }
-                  outcome = await runResolve(pageUrl);
+                  candOutcome = outcome = await runResolve(pageUrl);
+                  } finally {
+                    noteStat(cand, candOutcome);
+                  }
                 }
               }
             }

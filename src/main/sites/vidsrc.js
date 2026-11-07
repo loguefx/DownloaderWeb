@@ -290,6 +290,7 @@ module.exports = {
       return { status: 'no_quality' };
     }
     onLog(`Vidsrc (headless): locked ${best.realWidth}x${best.realHeight} from ${best.host}.`);
+    try { require('../vidsrchealth').noteLocked(best.realWidth, best.realHeight); } catch (e) { /* status only */ }
     const fileName = (best.meta && best.meta.fileName) || '';
     if (fileName) onLog(`Vidsrc file: ${fileName}`);
     const audio = best.audio || audiolang.audioVerdict({ fileName });

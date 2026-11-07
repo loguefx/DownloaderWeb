@@ -994,15 +994,25 @@
                     }
                     const sh = S.sources;
                     if (!sh) { el.innerHTML = '<div class="small muted">Checking…</div>'; return; }
-                    const cls = { ok: 'green', limited: 'yellow', 'needs-solver': 'yellow', blocked: 'red', down: 'red', off: '' };
-                    const label = { ok: 'Up', limited: 'Rate-limited', 'needs-solver': 'Needs solver', blocked: 'IP-blocked', down: 'Down', off: 'Off' };
+                    const cls = { ok: 'green', partial: 'yellow', limited: 'yellow', 'needs-solver': 'yellow', blocked: 'red', down: 'red', off: '', checking: '' };
+                    const label = { ok: 'Up', partial: 'Up · no 1080p', limited: 'Rate-limited', 'needs-solver': 'Needs solver', blocked: 'Refusing', down: 'Down', off: 'Off', checking: 'Checking…' };
                     const rows = (sh.sources || []).map((s) =>
                         '<div class="mdl-kv" title="' + esc(s.detail || '') + '">' +
                         '<span><i class="mdl-sdot ' + (cls[s.status] || '') + '"></i>' + esc(s.name) +
                         (s.ms ? ' <span class="faint">' + s.ms + ' ms</span>' : '') + '</span>' +
-                        '<span class="mdl-pill ' + (cls[s.status] || '') + '">' + esc(label[s.status] || s.status) + '</span></div>').join('');
+                        '<span class="mdl-pill ' + (cls[s.status] || '') + '">' + esc(label[s.status] || s.status) + '</span></div>' +
+                        // Vidsrc: its own steps, so a change on its side names the step that broke.
+                        (s.showDetail && s.detail ? '<div class="small ' + (s.status === 'ok' ? 'muted' : '') + '" style="margin:-.2em 0 .6em 1.2em;">' + esc(s.detail) + '</div>' : '')).join('');
+                    // How each fallback site did in real TV/movie searches lately.
+                    const SITE = { nontongo: 'NontonGo', solarmovie: 'SolarMovie', fmovies: 'FMovies', flixtor: 'Flixtor', sflix: 'SFlix', tmovies: 'TMovies', filmehd: 'FilmeHD', enma: 'Enma', anime9: '9anime' };
+                    const stats = (sh.siteStats || []).slice().sort((a, b) => (a.kind + a.site).localeCompare(b.kind + b.site));
+                    const statLine = stats.length
+                        ? '<div class="small" style="margin-top:.6em;"><b>Fallback sites in recent searches</b><div class="muted">' +
+                          stats.map((x) => esc((SITE[x.site] || x.site) + ' (' + x.kind + '): ' + x.hits + ' found of ' + (x.hits + x.misses) +
+                              (x.skipped ? ' · skipped, re-checked daily' : x.streak >= 3 ? ' · tried last' : ''))).join('<br>') + '</div></div>'
+                        : '';
                     const vpnTxt = sh.vpn ? (sh.vpn.connected ? 'VPN on' : 'VPN off') : '';
-                    el.innerHTML = rows +
+                    el.innerHTML = rows + statLine +
                         '<div class="hint" style="margin-top:.6em;">Probed ' + whenOf(sh.checkedAt) + (vpnTxt ? ' with ' + vpnTxt : '') +
                         ' from the engine — this is the IP downloads actually use. A red source here will fail downloads through it.</div>';
                 }
