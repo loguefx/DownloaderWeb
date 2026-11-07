@@ -53,6 +53,23 @@ async function main() {
   st._setDirForTests(dir);
   check('read back after a restart', st.summary().some((x) => x.site === 'solarmovie' && x.kind === 'tv' && x.hits === 1));
 
+  console.log('\n[5] A TMDB embed player added as a JSON profile');
+  {
+    const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'embedprof-'));
+    fs.mkdirSync(path.join(ud, 'sites'));
+    fs.writeFileSync(path.join(ud, 'sites', 'embed-ex.json'), JSON.stringify({
+      id: 'embed-ex', name: 'Example', tmdbEmbed: { tv: 'https://player.example/embed/tv/{tmdb}/{season}/{episode}', movie: 'https://player.example/embed/movie/{tmdb}' }
+    }));
+    const sites = require(path.join(__dirname, '..', 'src', 'main', 'sites'));
+    sites.init(ud);
+    const p = sites.profiles.find((x) => x.id === 'embed-ex');
+    check('loaded as a fallback source', p && typeof p.findTitle === 'function' && p.fallbackRank === 3 && p.name === 'Example');
+    check('TV: URL from the job\'s TMDB id (House = 1408)', p && (await p.findTitle({ tmdb: '1408', season: 1, episode: 9 })) === 'https://player.example/embed/tv/1408/1/9');
+    check('movie URL', p && (await p.findTitle({ tmdb: '27205', season: null, episode: null })) === 'https://player.example/embed/movie/27205');
+    check('never for anime', p && (await p.findTitle({ tmdb: '1', season: 1, episode: 1, anime: true })) === null);
+    check('its pages resolve to it', sites.resolve('https://player.example/embed/tv/1408/1/9').id === 'embed-ex');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

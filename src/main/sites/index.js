@@ -50,9 +50,47 @@ function loadUserProfiles(userDataDir) {
   }
 }
 
+// A JSON profile can describe a TMDB-id embed player (the kind Vidsrc is):
+//   { "id": "example", "name": "Example", "tmdbEmbed": {
+//       "tv":    "https://player.example/embed/tv/{tmdb}/{season}/{episode}",
+//       "movie": "https://player.example/embed/movie/{tmdb}" } }
+// It becomes a fallback source for TV/movies (never anime): the URL is built
+// from the job's TMDB id and loaded like any player page. A site that never
+// yields a download is moved last / left out by sourcestats.
+function embedProfile(p) {
+  const e = p.tmdbEmbed || {};
+  const fill = (tpl, ref) => String(tpl)
+    .replace(/\{tmdb\}/g, encodeURIComponent(String(ref.tmdb)))
+    .replace(/\{season\}/g, encodeURIComponent(String(ref.season)))
+    .replace(/\{episode\}/g, encodeURIComponent(String(ref.episode)));
+  const hosts = [e.tv, e.movie].filter(Boolean).map((u) => {
+    try { return new URL(String(u).replace(/\{[a-z]+\}/g, '1')).host; } catch (x) { return ''; }
+  }).filter(Boolean);
+  const esc = (h) => h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return {
+    name: p.name || p.id,
+    match: p.match && p.match.length ? p.match : hosts.map((h) => esc(h)),
+    minHeight: p.minHeight != null ? p.minHeight : 1080,
+    fallbackRank: p.fallbackRank != null ? p.fallbackRank : 3,
+    animeOnly: false,
+    dub: Object.assign({ sourceWaitMs: 30000 }, p.dub || {}),
+    async findTitle(ref, hooks, onLog = () => {}) {
+      if (!ref || ref.anime || !/^\d+$/.test(String(ref.tmdb || ''))) return null;
+      const isTv = ref.season != null && ref.season !== '' && ref.episode != null && ref.episode !== '';
+      const tpl = isTv ? e.tv : e.movie;
+      if (!tpl) return null;
+      const url = fill(tpl, ref);
+      onLog(`trying ${url}`);
+      return url;
+    }
+  };
+}
+
 function normalize(p) {
-  const match = (p.match || []).map((m) => (m instanceof RegExp ? m : new RegExp(m, 'i')));
-  return Object.assign({}, p, { match: match.length ? match : [/.*/] });
+  const base = p && p.tmdbEmbed ? Object.assign({}, embedProfile(p), p) : p;
+  if (p && p.tmdbEmbed) base.findTitle = embedProfile(p).findTitle;
+  const match = (base.match || []).map((m) => (m instanceof RegExp ? m : new RegExp(m, 'i')));
+  return Object.assign({}, base, { match: match.length ? match : [/.*/] });
 }
 
 // Returns the most specific matching profile for a URL (generic last).

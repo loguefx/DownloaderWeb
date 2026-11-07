@@ -1008,7 +1008,7 @@
                     const stats = (sh.siteStats || []).slice().sort((a, b) => (a.kind + a.site).localeCompare(b.kind + b.site));
                     const statLine = stats.length
                         ? '<div class="small" style="margin-top:.6em;"><b>Fallback sites in recent searches</b><div class="muted">' +
-                          stats.map((x) => esc((SITE[x.site] || x.site) + ' (' + x.kind + '): ' + x.hits + ' found of ' + (x.hits + x.misses) +
+                          stats.map((x) => esc((x.name || SITE[x.site] || x.site) + ' (' + x.kind + '): ' + x.hits + ' found of ' + (x.hits + x.misses) +
                               (x.skipped ? ' · skipped, re-checked daily' : x.streak >= 3 ? ' · tried last' : ''))).join('<br>') + '</div></div>'
                         : '';
                     const vpnTxt = sh.vpn ? (sh.vpn.connected ? 'VPN on' : 'VPN off') : '';

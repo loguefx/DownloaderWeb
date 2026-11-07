@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.51",
+                "changelog": "Overview > Sources: Vidsrc's own steps checked by the engine every 3 h (names the step that broke, last 1080p download), and each fallback site's record in recent TV/movie searches. Needs the matching engine update.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v51/MediaDownloader.12.1.0.51.zip",
+                "checksum": "b9d491195d0e546e7560d1c26d1c8316",
+                "timestamp": "2026-11-07T07:57:14.000Z"
+            },
+            {
+                "version": "10.11.0.51",
+                "changelog": "Overview > Sources: Vidsrc's own steps checked by the engine every 3 h (names the step that broke, last 1080p download), and each fallback site's record in recent TV/movie searches. Needs the matching engine update.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v51/MediaDownloader.10.11.0.51.zip",
+                "checksum": "639a58ff331676139cb831addb8aaedd",
+                "timestamp": "2026-11-07T07:57:14.000Z"
+            },
+            {
+                "version": "10.10.0.51",
+                "changelog": "Overview > Sources: Vidsrc's own steps checked by the engine every 3 h (names the step that broke, last 1080p download), and each fallback site's record in recent TV/movie searches. Needs the matching engine update.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v51/MediaDownloader.10.10.0.51.zip",
+                "checksum": "fd51109d96f97c6965f0e9663cdb6c82",
+                "timestamp": "2026-11-07T07:57:14.000Z"
+            },
+            {
                 "version": "12.1.0.50",
                 "changelog": "Queue and Overview keep updating: a status call that never answers no longer freezes the page (15 s cap), the queue is redrawn as soon as it arrives, items being worked on are listed first and long groups are shortened; Vidsrc downloads show parts done instead of a wrong byte count.",
                 "targetAbi": "12.1.0.0",

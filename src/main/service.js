@@ -1454,7 +1454,10 @@ async function sourcesHealth() {
   } catch (e) { /* ignore */ }
   // How each fallback site has done in real TV/movie searches lately.
   let siteStats = [];
-  try { siteStats = require('./sourcestats').summary().filter((x) => x.kind !== 'anime'); } catch (e) { siteStats = []; }
+  try {
+    const names = new Map(require('./sites').profiles.map((p) => [p.id, p.name || p.id]));
+    siteStats = require('./sourcestats').summary().filter((x) => x.kind !== 'anime').map((x) => Object.assign(x, { name: names.get(x.site) || x.site }));
+  } catch (e) { siteStats = []; }
   try {
     const s = await cfsolve.status();
     sources.push({
