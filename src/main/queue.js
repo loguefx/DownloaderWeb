@@ -762,7 +762,11 @@ class DownloadManager extends EventEmitter {
     try {
       const up = require('./upgrades');
       if (item._floorFallback && !(result && result.existing)) up.add(item, item.finalPath);
-      else if (!item._floorFallback) up.remove(item.finalPath);
+      else if (!item._floorFallback) {
+        up.remove(item.finalPath);
+        // The file this upgrade replaced (it may have had another name).
+        if (item.upgradeFrom) up.remove(item.upgradeFrom);
+      }
     } catch (e) { /* bookkeeping only */ }
     this._emit();
     // The library name can differ from the staging one (named like the
@@ -1245,6 +1249,7 @@ class DownloadManager extends EventEmitter {
             // A weekly upgrade that found nothing better after all: the
             // library copy stays as it is - not a failure to retry.
             if (item.upgrade) {
+              try { if (item.upgradeFrom) require('./upgrades').markResult(item.upgradeFrom, 'download found no 1080p after all - checked again next week'); } catch (e) { /* bookkeeping */ }
               item.status = 'skipped';
               item.error = 'no better copy after all - the library copy is kept';
               this._emit();
@@ -1685,6 +1690,7 @@ class DownloadManager extends EventEmitter {
           minHeight: it.minHeight || 0,
           floorFallback: it._floorFallback || 0,
           upgrade: !!it.upgrade,
+          upgradeFrom: it.upgradeFrom || null,
           anime: !!it.anime,
           // Without these a restored item lost its TMDB id (the library
           // presence check by folder id, the anime source mapping) and its
@@ -1758,6 +1764,7 @@ class DownloadManager extends EventEmitter {
             minHeight: rec.minHeight != null ? Number(rec.minHeight) || 0 : null,
             _floorFallback: Number(rec.floorFallback) || 0,
             upgrade: !!rec.upgrade,
+            upgradeFrom: rec.upgradeFrom || null,
             anime: !!rec.anime,
             tmdb: rec.tmdb || null,
             numbering: rec.numbering === 'anime' ? 'anime' : 'tmdb',

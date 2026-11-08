@@ -1182,6 +1182,7 @@ async function queueOne(entry, onLog = () => {}) {
     // A weekly upgrade of a below-floor copy (upgrades.js): never falls back
     // to the lower quality it is meant to replace.
     upgrade: !!(entry && entry.upgrade),
+    upgradeFrom: (entry && entry.upgradeFrom) || null,
     onUnavailable: () => pending.add(spec)
   };
   rec.discover = makeDiscover(url, onLog, mode, (it) => {

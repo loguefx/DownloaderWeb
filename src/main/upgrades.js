@@ -97,6 +97,15 @@ function remove(finalPath) {
   if (delete s[norm(finalPath)]) save();
 }
 
+// The upgrade download itself ended without a better copy (Vidsrc handed out
+// another server): the entry says so instead of "queued" until next week.
+function markResult(entryPath, result) {
+  const e = load()[norm(entryPath)];
+  if (!e) return;
+  e.lastResult = result;
+  save();
+}
+
 // Stop tracking (Upgrade resolution tab "Stop"): also kept out of later
 // library scans.
 function ignore(finalPath) {
@@ -129,10 +138,21 @@ let checkAt = async (e) => {
   const ref = isMovie ? { type: 'movie', tmdb: String(e.tmdb) } : { type: 'tv', tmdb: String(e.tmdb), season: e.season, episode: e.episode };
   try {
     const best = await vs.pick1080(ref, () => {}, e.floor, {});
-    return !!best;
+    if (!best) return false;
+    // Vidsrc's own title for the file must be this show / film: a wrong id
+    // would otherwise replace the file with another title.
+    const got = plain(String((best.meta && best.meta.title) || '').replace(/\s*\(?(19|20)\d{2}\)?\s*$/, ''));
+    if (got && !require('./organizer').fuzzySeriesMatch(got, e.series) && !require('./organizer').fuzzySeriesMatch(e.series, got)) {
+      e.problem = `Vidsrc's copy is "${best.meta.title}", not "${e.series}" - not upgraded (wrong TMDB id?)`;
+      return false;
+    }
+    return true;
   } catch (err) {
     return err && err.code === 'VIDSRC_NOT_FOUND' ? false : null;
   }
+};
+let vidsrcPaused = () => {
+  try { return require('./sites/vidsrc_dl').isBlocked(); } catch (e) { return false; }
 };
 // Injectable for tests: queue it again at the floor.
 let requeue = async (e) => {
@@ -150,7 +170,10 @@ let requeue = async (e) => {
   return bulk.queueOne({
     url: e.url, series: e.series, season: e.season, episode: e.episode, mode: e.mode,
     outputRoot: e.outputRoot, library: e.library, minHeight: e.floor, anime: false,
-    tmdb: e.tmdb, numbering: e.numbering, episodeName: e.episodeName, upgrade: true
+    tmdb: e.tmdb, numbering: e.numbering, episodeName: e.episodeName, upgrade: true,
+    // The tracked file this download replaces: cleared from the list when it
+    // lands (the new file may get another name), marked when it does not.
+    upgradeFrom: e.path
   });
 };
 
@@ -180,7 +203,14 @@ async function runDue({ onLog = () => {}, now = Date.now(), perRun = PER_RUN, fo
       checked += 1;
       let has = null;
       try { has = await checkAt(e); } catch (err) { has = null; }
-      if (has === null) break; // Vidsrc paused / unreachable: the next run tries again
+      if (has === null) {
+        // Vidsrc paused: nothing else will get an answer either - next run.
+        // One title erroring must not stop the others (it used to stall
+        // every check behind it, week after week).
+        if (vidsrcPaused()) break;
+        e.lastResult = 'check failed - tried again next run';
+        continue;
+      }
       e.lastCheck = now;
       e.lastResult = has ? 'found' : 'not yet';
       if (has) {
@@ -252,15 +282,38 @@ let findTmdb = async (kind, name, year) => {
   const t = kind === 'movie' ? 'movie' : 'tv';
   const yq = year ? (t === 'movie' ? `&year=${year}` : `&first_air_date_year=${year}`) : '';
   const body = await tmdb.tmdbFetch(`/search/${t}?query=${encodeURIComponent(name)}${yq}&include_adult=false&language=en-US`, key);
-  const r = body && Array.isArray(body.results) ? body.results[0] : null;
-  return r && r.id ? String(r.id) : '';
+  return pickTmdb(body && body.results, name, year, t);
 };
+
+// Only a result whose name IS the folder's name (and year, when the folder
+// has one) - never "the first hit": an upgrade replaces the file with what
+// this id points to, so a wrong show must never be possible.
+const plain = (x) => String(x || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+function pickTmdb(results, name, year, t = 'tv') {
+  const want = plain(name);
+  const hits = (Array.isArray(results) ? results : []).filter((r) => {
+    if (!r || !r.id) return false;
+    const names = [r.name, r.title, r.original_name, r.original_title].map(plain).filter(Boolean);
+    if (!names.includes(want)) return false;
+    if (year) {
+      const y = Number(String((t === 'movie' ? r.release_date : r.first_air_date) || '').slice(0, 4));
+      if (y && y !== Number(year)) return false;
+    }
+    return true;
+  });
+  // Two different works with the same name and no year to tell them apart:
+  // not certain.
+  if (hits.length !== 1 && !(hits.length > 1 && year)) return '';
+  return String(hits[0].id);
+}
 
 function walkVideos(dir, depth = 0, out = []) {
   let ents = [];
   try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
   for (const e of ents) {
     if (e.name.startsWith('.') || /^\$|^System Volume|trash|backup/i.test(e.name)) continue;
+    // Extras are not part of the show / film (and TV specials are left out).
+    if (e.isDirectory() && /^(extras?|featurettes?|behind the scenes|deleted scenes|interviews|scenes|shorts|trailers|samples?|specials|season 0+)$/i.test(e.name)) continue;
     const full = path.join(dir, e.name);
     if (e.isDirectory()) { if (depth < 3) walkVideos(full, depth + 1, out); }
     else if (VIDEO.test(e.name) && !/sample|trailer/i.test(e.name)) out.push(full);
@@ -296,6 +349,7 @@ async function scanLibraries(libs, { floor = 1080, onLog = () => {} } = {}) {
     }
     scanState.total = work.length;
     scanState.phase = 'measuring';
+    const seenProbes = {};
     const idCache = new Map();
     for (const w of work) {
       scanState.done += 1;
@@ -308,8 +362,8 @@ async function scanLibraries(libs, { floor = 1080, onLog = () => {} } = {}) {
       let dim = m.probes[pk];
       if (dim === undefined) {
         dim = await probe(w.file);
-        m.probes[pk] = dim || null;
       }
+      seenProbes[pk] = dim || null;
       if (!dim || meetsQualityFloor(dim.width, dim.height, floor)) continue;
       // Which episode / film is it? It must be the one the engine would
       // replace (the same match placement uses), never a guess.
@@ -317,7 +371,8 @@ async function scanLibraries(libs, { floor = 1080, onLog = () => {} } = {}) {
       let episode = null;
       if (w.kind === 'tv') {
         const base = path.basename(w.file);
-        const se = base.match(/[Ss](\d{1,2})\s*[Ee](\d{1,3})/) || base.match(/(\d{1,2})x(\d{1,3})/);
+        // "S01E02" or "1x02" - never a resolution ("1280x720").
+        const se = base.match(/[Ss](\d{1,2})\s*[Ee](\d{1,3})/) || base.match(/(?:^|[^\dx])(\d{1,2})x(\d{1,3})(?![\dp])/i);
         if (se) { season = Number(se[1]); episode = Number(se[2]); }
         else {
           const sd = path.basename(path.dirname(w.file));
@@ -326,6 +381,8 @@ async function scanLibraries(libs, { floor = 1080, onLog = () => {} } = {}) {
           if (sn != null && ep) { season = sn; episode = ep; }
         }
       }
+      // A TV special (season 0) is not part of the series: never listed.
+      if (w.kind === 'tv' && season === 0) continue;
       const series = w.title.name;
       const metaE = { series, season, episode };
       let matched = null;
@@ -366,12 +423,23 @@ async function scanLibraries(libs, { floor = 1080, onLog = () => {} } = {}) {
         lastCheck: 0, // checked on the next pass
         lastResult: '',
         // Only an exact match is upgraded; the rest is listed with why not.
-        problem: !ok ? 'file name not matched to an episode/film - rename it like the others to include it' : !tmdb ? 'no TMDB id found for the folder name' : ''
+        problem: !ok ? 'file name not matched to an episode/film - rename it like the others to include it' : !tmdb ? 'no certain TMDB match for the folder name - add [tmdbid-N] to the folder name to include it' : ''
       };
       if (entry.problem) scanState.unmatched += 1;
       else scanState.found += 1;
       load()[k] = entry;
     }
+    // Under the folders this scan covered, only what it saw is kept: files
+    // deleted or changed since drop out (the cache used to grow with every
+    // file ever measured). Other libraries' measurements stay.
+    const roots = [];
+    for (const lib of libs || []) for (const r of lib.locations || []) roots.push(norm(r) + path.sep.toLowerCase());
+    const kept = {};
+    for (const [pk, v] of Object.entries(m.probes)) {
+      const p = pk.split('|')[0];
+      if (!roots.some((r) => p.startsWith(r))) kept[pk] = v;
+    }
+    m.probes = Object.assign(kept, seenProbes);
     save();
     onLog(`Upgrade resolution: library scan done - ${scanState.found} below ${floor}p to upgrade, ${scanState.unmatched} below ${floor}p that cannot be matched automatically (of ${scanState.total} files).`);
   })().catch((e) => {
@@ -400,6 +468,7 @@ function start(onLog) {
 module.exports = {
   add,
   remove,
+  markResult,
   ignore,
   list,
   runDue,
@@ -408,9 +477,11 @@ module.exports = {
   status,
   start,
   RECHECK_MS,
-  _setForTests({ dir, check, queue, probeFn, tmdbFn } = {}) {
+  _pickTmdb: pickTmdb,
+  _setForTests({ dir, check, queue, probeFn, tmdbFn, paused } = {}) {
     dirOverride = dir || null;
     state = null;
+    if (paused) vidsrcPaused = paused;
     if (check) checkAt = check;
     if (queue) requeue = queue;
     if (probeFn) probe = probeFn;

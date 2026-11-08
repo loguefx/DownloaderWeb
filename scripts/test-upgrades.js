@@ -91,6 +91,48 @@ async function main() {
     check('unchanged files are not measured again', probes === before, `${probes - before} new probes`);
   }
 
+  console.log('\n[6] Review fixes');
+  {
+    const R = [{ id: 1, name: 'House of the Dragon', first_air_date: '2022-08-21' }, { id: 1408, name: 'House', first_air_date: '2004-11-16' }];
+    check('TMDB id only for an exact name match (not "the first hit")', up._pickTmdb(R, 'House', 0) === '1408' && up._pickTmdb([{ id: 9, name: 'House of Cards' }], 'House', 0) === '');
+    const twins = [{ id: 1, name: 'Shogun', first_air_date: '1980-09-15' }, { id: 2, name: 'Shōgun', first_air_date: '2024-02-27' }];
+    check('two works of the same name, no year: not certain', up._pickTmdb(twins, 'Shogun', 0) === '');
+    check('...the folder\'s year decides', up._pickTmdb(twins, 'Shogun', 2024) === '2');
+
+    const dir3 = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrades3-'));
+    const tv3 = fs.mkdtempSync(path.join(os.tmpdir(), 'tvlib3-'));
+    const put = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'); return p; };
+    const res = put(path.join(tv3, 'Show', 'Season 1', 'Show 1280x720 web.mkv'));
+    const sp = put(path.join(tv3, 'Show', 'Season 0', 'Show S00E01.mkv'));
+    const ex = put(path.join(tv3, 'Show', 'Extras', 'Show S01E01 interview.mkv'));
+    const e1 = put(path.join(tv3, 'Show', 'Season 1', 'Show S01E01.mkv'));
+    up._setForTests({ dir: dir3, probeFn: async () => ({ width: 1280, height: 720 }), tmdbFn: async () => '777' });
+    up.scanLibraries([{ name: 'TV', kind: 'tv', locations: [tv3] }], { floor: 1080 });
+    for (let i = 0; i < 100 && up.status().running; i++) await new Promise((r) => setTimeout(r, 20));
+    const L = up.list();
+    const by = (f) => L.find((x) => x.path === f);
+    check('"1280x720" in a name is not read as season 80 episode 720', by(res) && by(res).season !== 80 && /not matched/.test(by(res).problem), JSON.stringify(by(res)));
+    check('TV specials (Season 0) are not listed', !by(sp));
+    check('extras folders are not scanned', !by(ex));
+    check('the real episode is', by(e1) && !by(e1).problem);
+
+    // A title whose check errors must not stall the others.
+    const dir4 = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrades4-'));
+    const lib4 = fs.mkdtempSync(path.join(os.tmpdir(), 'lib4-'));
+    const a = put(path.join(lib4, 'A.mp4'));
+    const b = put(path.join(lib4, 'B.mp4'));
+    const q4 = [];
+    up._setForTests({ dir: dir4, check: async (e) => (e.path === a ? null : true), queue: async (e) => { q4.push(e.path); }, paused: () => false });
+    const it4 = (ep) => ({ label: 'X S1E' + ep, series: 'X', season: 1, episode: ep, tmdb: '5', url: 'u', _floorFallback: 1080, minHeight: 720 });
+    up.add(it4(1), a, 0);
+    up.add(it4(2), b, 0);
+    const r4 = await up.runDue({ now: up.RECHECK_MS + 10 });
+    check('one erroring title does not stop the others', q4.includes(b) && r4.checked === 2, JSON.stringify([q4, r4]));
+    check('...and it is tried again next run', up.list().find((x) => x.path === a).lastCheck === 0);
+    up.markResult(b, 'download found no 1080p after all - checked again next week');
+    check('an upgrade download that found nothing is shown so (not "queued")', /no 1080p after all/.test(up.list().find((x) => x.path === b).lastResult));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
