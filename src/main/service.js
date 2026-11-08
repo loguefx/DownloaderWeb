@@ -1385,7 +1385,62 @@ async function verifyDrives(payload) {
 // reflects the engine's own IP (the thing that matters for downloads). Reports
 // ok / limited / blocked / needs-solver / down per source so the user can see
 // at a glance which catalogs are actually alive before queueing a title.
+// The probes contact outside sites from the VPN IP; the Overview asks every
+// minute while it is open. One round per 10 min is plenty (Vidsrc's own
+// steps are cached by vidsrchealth anyway).
+const SOURCES_CACHE_MS = 10 * 60 * 1000;
+let sourcesCache = null;
+let sourcesInflight = null;
 async function sourcesHealth() {
+  const probes = await sourcesProbes();
+  const live = sourcesLive();
+  return Object.assign({}, probes, { sources: live.sources.concat(probes.sources || []), siteStats: live.siteStats });
+}
+async function sourcesProbes() {
+  if (sourcesCache && Date.now() - sourcesCache.at < SOURCES_CACHE_MS) return sourcesCache.value;
+  if (!sourcesInflight) {
+    sourcesInflight = sourcesHealthFresh()
+      .then((value) => {
+        sourcesCache = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => {
+        sourcesInflight = null;
+      });
+  }
+  return sourcesInflight;
+}
+// The parts that are always current: Vidsrc's own check (cached by
+// vidsrchealth) and the fallback sites' record (local).
+function sourcesLive() {
+  const sources = [];
+  try {
+    const vh = require('./vidsrchealth').get();
+    const ago = (t) => {
+      if (!t) return '';
+      const m = Math.round((Date.now() - t) / 60000);
+      return m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+    };
+    const extra = vh.last1080At ? ` · last 1080p download ${ago(vh.last1080At)}` : vh.lastLockedAt ? ` · last download ${vh.lastLockedHeight}p ${ago(vh.lastLockedAt)}` : '';
+    sources.unshift({
+      id: 'vidsrc',
+      name: 'Vidsrc',
+      status: vh.status === 'limited' ? 'partial' : vh.status,
+      detail: (vh.summary || '') + extra + (vh.at ? ` (checked ${ago(vh.at)})` : ''),
+      steps: vh.steps,
+      showDetail: true,
+      ms: 0
+    });
+  } catch (e) { /* ignore */ }
+  // How each fallback site has done in real TV/movie searches lately.
+  let siteStats = [];
+  try {
+    const names = new Map(require('./sites').profiles.map((p) => [p.id, p.name || p.id]));
+    siteStats = require('./sourcestats').summary().filter((x) => x.kind !== 'anime').map((x) => Object.assign(x, { name: names.get(x.site) || x.site }));
+  } catch (e) { siteStats = []; }
+  return { sources, siteStats };
+}
+async function sourcesHealthFresh() {
   const httpsMod = require('https');
   const httpMod = require('http');
   const UA = config.download.userAgent;
@@ -1435,30 +1490,6 @@ async function sourcesHealth() {
   }
   const sources = await Promise.all(probes.map(probe));
   try {
-    const vh = require('./vidsrchealth').get();
-    const ago = (t) => {
-      if (!t) return '';
-      const m = Math.round((Date.now() - t) / 60000);
-      return m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
-    };
-    const extra = vh.last1080At ? ` · last 1080p download ${ago(vh.last1080At)}` : vh.lastLockedAt ? ` · last download ${vh.lastLockedHeight}p ${ago(vh.lastLockedAt)}` : '';
-    sources.unshift({
-      id: 'vidsrc',
-      name: 'Vidsrc',
-      status: vh.status === 'limited' ? 'partial' : vh.status,
-      detail: (vh.summary || '') + extra + (vh.at ? ` (checked ${ago(vh.at)})` : ''),
-      steps: vh.steps,
-      showDetail: true,
-      ms: 0
-    });
-  } catch (e) { /* ignore */ }
-  // How each fallback site has done in real TV/movie searches lately.
-  let siteStats = [];
-  try {
-    const names = new Map(require('./sites').profiles.map((p) => [p.id, p.name || p.id]));
-    siteStats = require('./sourcestats').summary().filter((x) => x.kind !== 'anime').map((x) => Object.assign(x, { name: names.get(x.site) || x.site }));
-  } catch (e) { siteStats = []; }
-  try {
     const s = await cfsolve.status();
     sources.push({
       id: 'solver',
@@ -1472,7 +1503,7 @@ async function sourcesHealth() {
   // the whole point of this row is "what does the engine's IP see right now".
   let vpnInfo = null;
   try { vpnInfo = vpn.status(); } catch (e) { /* ignore */ }
-  return { checkedAt: new Date().toISOString(), vpn: vpnInfo, sources, siteStats };
+  return { checkedAt: new Date().toISOString(), vpn: vpnInfo, sources };
 }
 
 module.exports = {

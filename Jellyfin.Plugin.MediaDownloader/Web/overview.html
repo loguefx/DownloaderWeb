@@ -830,6 +830,9 @@
                         maybeSources();
                         return Promise.all(tasks);
                     }).catch((err) => {
+                        // A busy engine answering slowly is not an offline one:
+                        // keep the last status until a poll really fails.
+                        if (err && err.message === 'timed out' && S.health && S.health.engine === 'online') return;
                         S.health = { engine: 'error', error: err.message };
                     }).then(() => {
                         renderStatus();

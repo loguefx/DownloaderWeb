@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.53",
+                "changelog": "A slow engine answer no longer flips the status to offline (the last status stays until a poll really fails).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v53/MediaDownloader.12.1.0.53.zip",
+                "checksum": "0e5892d24d6e25c9a49bf7fc35f4ebff",
+                "timestamp": "2026-11-08T03:04:51.000Z"
+            },
+            {
+                "version": "10.11.0.53",
+                "changelog": "A slow engine answer no longer flips the status to offline (the last status stays until a poll really fails).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v53/MediaDownloader.10.11.0.53.zip",
+                "checksum": "637cc39f7b5e445c909fabccaaf0eac8",
+                "timestamp": "2026-11-08T03:04:51.000Z"
+            },
+            {
+                "version": "10.10.0.53",
+                "changelog": "A slow engine answer no longer flips the status to offline (the last status stays until a poll really fails).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v53/MediaDownloader.10.10.0.53.zip",
+                "checksum": "c0e8b89829ff8decce8ef6cd9b4cad71",
+                "timestamp": "2026-11-08T03:04:51.000Z"
+            },
+            {
                 "version": "12.1.0.52",
                 "changelog": "Failed tab: Retry all failed, and Retry all per show/season. Needs the matching engine update (a retried item starts from a clean slate).",
                 "targetAbi": "12.1.0.0",

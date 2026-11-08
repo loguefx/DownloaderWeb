@@ -420,7 +420,10 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
               return !!why;
             };
             const noteStat = (cand, res) => {
-              if (statKind) sourcestats.record(cand.id, statKind, !!(res && res.status === 'resolved'));
+              // A search that was cancelled (Stop, Remove, the watchdog) says
+              // nothing about the site: not counted.
+              if (!statKind || controller.signal.aborted) return;
+              sourcestats.record(cand.id, statKind, !!(res && res.status === 'resolved'));
             };
             // Phase 1: CF-free sites only
             let cands = allCands.filter((c) => !c.cloudflare);
