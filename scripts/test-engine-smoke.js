@@ -530,6 +530,26 @@ async function main() {
     check('...keeps the queued download\'s .part and the unplaced video', fs.existsSync(ownedPart) && fs.existsSync(unplaced));
     check('...and reports what it freed', rr.json && rr.json.cleaned && rr.json.cleaned.deleted === 2, JSON.stringify(rr.json && rr.json.cleaned));
     manager.items = manager.items.filter((x) => x.id !== 990001);
+
+    // A FAILED item with saved parts and no finalPath yet (it resumes from
+    // them on retry): its parts are its own, never "leftovers".
+    const resumeDir = path.join(st, 'Retry Show', 'Season 1', 'Retry Show S1E9.mp4.part.hls');
+    put(path.join(resumeDir, 'seg00001.ts'));
+    manager.items.push({ id: 990002, label: 'Retry Show S1E9', series: 'Retry Show', season: 1, episode: 9, status: 'failed', outputRoot: st, finalPath: null });
+    rr = await req('POST', '/api/staging/clean', null, { authorization: `Bearer ${KEY}` });
+    check('clean keeps a failed item\'s saved parts (it resumes from them)', fs.existsSync(resumeDir), rr.body.slice(0, 200));
+    manager.items = manager.items.filter((x) => x.id !== 990002);
+
+    // The automatic daily run: leftovers younger than a day are kept.
+    const fresh = path.join(st, 'Fresh Show', 'Season 1', 'Fresh Show S1E1.mp4.part.hls');
+    put(path.join(fresh, 'seg1.ts'));
+    const svc = M('service');
+    let auto = svc.stagingReport({ apply: true, minAgeMs: 24 * 3600 * 1000 });
+    check('daily auto-clean keeps a leftover younger than a day', fs.existsSync(fresh) && auto.cleaned.deleted === 0, JSON.stringify(auto.cleaned));
+    const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+    fs.utimesSync(fresh, old, old);
+    auto = svc.stagingReport({ apply: true, minAgeMs: 24 * 3600 * 1000 });
+    check('...and removes it once it is older', !fs.existsSync(fresh), JSON.stringify(auto.cleaned));
   }
 
   await api.stop();

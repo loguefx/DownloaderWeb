@@ -524,6 +524,15 @@ app.whenReady().then(() => {
   try { require('./vidsrchealth').start(); } catch (e) { /* status only */ }
   // Copies saved below their quality floor: checked weekly for a better one.
   try { require('./upgrades').start((m) => manager._log(m)); } catch (e) { /* optional */ }
+  // One summary line a day in the activity log.
+  {
+    const t = setInterval(() => { try { manager.logDailySummary(); } catch (e) { /* ignore */ } }, 24 * 3600 * 1000);
+    if (t.unref) t.unref();
+  }
+  // Engine mode: daily staging cleanup (copies already in the library, old leftovers).
+  if (engineMode) {
+    try { require('./service').startStagingAutoClean(); } catch (e) { /* optional */ }
+  }
 
   // Engine mode: once the queue + watcher are up, open the HTTP API (Part 1).
   if (engineMode) {

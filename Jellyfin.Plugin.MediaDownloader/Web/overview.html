@@ -902,7 +902,11 @@
                     if (it.season != null || it.episode != null) bits.push(it.episode == null ? 'Movie' : 'S' + (it.season != null ? it.season : 1) + 'E' + it.episode);
                     else bits.push('Movie');
                     bits.push((it.mode || 'dub').toUpperCase());
-                    if (it.status === 'downloading' && it.progress != null) bits.push(Math.round(it.progress * 100) + '%' + (it.parts ? ' · ' + it.parts + ' parts' : it.bytes ? ' · ' + fmtBytes(it.bytes) : ''));
+                    if (it.status === 'downloading' && it.progress != null) {
+                        bits.push(Math.round(it.progress * 100) + '%' + (it.parts ? ' · ' + it.parts + ' parts' : it.bytes ? ' · ' + fmtBytes(it.bytes) : ''));
+                        if (it.speed > 0) bits.push(fmtBytes(it.speed) + '/s');
+                        if (it.eta > 0) bits.push(it.eta < 90 ? Math.max(1, Math.round(it.eta)) + ' s left' : Math.round(it.eta / 60) + ' min left');
+                    }
                     else if (it.bytes && it.status === 'done') bits.push(fmtBytes(it.bytes));
                     if (it.status === 'resolving') bits.push('sources are tried in fallback order');
                     if (it.status === 'verifying') bits.push('checking the file with ffprobe');
@@ -942,7 +946,10 @@
 
                     const inQueue = counts ? (counts.queued || 0) + (counts.resolving || 0) + (counts.downloading || 0) + (counts.verifying || 0) + (counts.placing || 0) : null;
                     $('[data-st="queue"]').textContent = inQueue == null ? '–' : inQueue;
-                    $('[data-st="queue-sub"]').textContent = counts ? (counts.downloading || 0) + ' downloading now' : 'Engine offline';
+                    const d24 = online && h.health && h.health.last24h;
+                    $('[data-st="queue-sub"]').textContent = counts
+                        ? (counts.downloading || 0) + ' downloading now' + (d24 ? ' · ' + d24.done + ' done, ' + d24.failed + ' failed in 24 h' : '')
+                        : 'Engine offline';
                     $('[data-st="dub"]').textContent = online ? (S.waiting || []).length : '–';
                     $('[data-st="done"]').textContent = counts ? (counts.done || 0) : '–';
                     $('[data-st="outbox"]').textContent = ob.waiting != null ? ob.waiting : '–';
@@ -2310,9 +2317,14 @@
                         const SHOW = 6;
                         const shown = S.qtab === 'queue' ? g.items.filter((it, k) => BUSY.indexOf(it.status) >= 0 || k < SHOW) : g.items;
                         const hidden = g.items.length - shown.length;
-                        const retryGroup = S.qtab === 'failed' && g.items.length > 1
+                        const retryGroup = (S.qtab === 'failed' && g.items.length > 1
                             ? ' <button type="button" class="mdl-btn sm" style="margin-left:.6em;" data-retry-ids="' + g.items.map((i) => i.id).join(',') + '">Retry all ' + g.items.length + '</button>'
-                            : '';
+                            : '') +
+                            // Remove a whole show/season (everything of it in this tab).
+                            (g.items.length > 1
+                                ? ' <button type="button" class="mdl-btn sm" style="margin-left:.4em;" title="Remove every item of this group from the list" data-remove-ids="' +
+                                  (S.qtab === 'queue' ? groupAll.filter((i) => ACTIVE.indexOf(i.status) >= 0) : g.items).map((i) => i.id).join(',') + '">Remove all</button>'
+                                : '');
                         return '<div class="mdl-list-h"><span>' + esc(head) + '</span><span>' + esc(right) + retryGroup + '</span></div>' +
                             shown.map((it) => '<div class="mdl-row" style="display:block;"><div style="display:flex;gap:.8em;align-items:center;">' +
                                 '<div class="grow" style="min-width:0;"><div class="t mono" style="font-size:.9em;">' + esc(it.label || it.series) + '</div><div class="sub" title="' + esc(it.error || '') + '">' + esc(itemSub(it)) + '</div></div>' +
@@ -2484,6 +2496,21 @@
                         } else {
                             del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => alert(err.message));
                         }
+                        return;
+                    }
+                    if (el.hasAttribute('data-remove-ids')) {
+                        const ids = el.getAttribute('data-remove-ids').split(',').map(Number).filter((n) => n > 0);
+                        if (!ids.length || !confirm('Remove ' + plural(ids.length, 'item') + ' from the list? Running downloads in it are stopped; files already in your library are not touched.')) return;
+                        // Optimistic, like a single remove: gone from the list at once.
+                        const gone = new Set(ids);
+                        if (S.queue && S.queue.items) S.queue.items = S.queue.items.filter((i) => !gone.has(i.id));
+                        renderQueue();
+                        const next = () => {
+                            const id = ids.shift();
+                            if (id == null) return Promise.resolve();
+                            return del('MediaDownloader/Queue/' + id).catch(() => {}).then(next);
+                        };
+                        Promise.all([next(), next(), next(), next()]).then(refresh);
                         return;
                     }
                     if (el.hasAttribute('data-retry-ids')) {

@@ -245,6 +245,8 @@ class DownloadManager extends EventEmitter {
       progress: it.progress,
       bytes: it.bytes || 0,
       parts: it.status === 'downloading' ? it.parts || null : null,
+      speed: it.status === 'downloading' && it.speed > 0 ? Math.round(it.speed) : null,
+      eta: it.status === 'downloading' && it.eta > 0 ? Math.round(it.eta) : null,
       error: it.error,
       attempts: it.attempts,
       finalPath: it.finalPath,
@@ -611,6 +613,25 @@ class DownloadManager extends EventEmitter {
       ? `"${item.label}": earlier episodes of this season had no ${floor}p copy anywhere either; taking the best copy at ${FALLBACK}p or better.`
       : `"${item.label}": no ${floor}p copy on any source; trying again for the best copy at ${FALLBACK}p or better.`);
     return true;
+  }
+
+  // Speed and time left, from the last ~20 s of progress: bytes per second
+  // when the bytes are known, and the time left from how fast the progress
+  // itself moves (works for part counts too).
+  _sampleRate(item, p) {
+    const now = Date.now();
+    const bytes = p && p.unit === 'parts' ? Number(p.bytesThisRun) || 0 : Number(p && p.received) || 0;
+    const prog = item.progress != null ? item.progress : 0;
+    const w = (item._rateWin = item._rateWin || []);
+    w.push({ t: now, bytes, prog });
+    while (w.length > 2 && now - w[0].t > 20000) w.shift();
+    const a = w[0];
+    const dt = (now - a.t) / 1000;
+    if (dt < 2) return;
+    const db = bytes - a.bytes;
+    item.speed = db > 0 ? db / dt : 0;
+    const dp = prog - a.prog;
+    item.eta = dp > 0 ? ((1 - prog) / dp) * dt : null;
   }
 
   // One show (the 720p-fallback memory). Per show, not per season: the same
@@ -1292,6 +1313,9 @@ class DownloadManager extends EventEmitter {
         }
 
         item.status = 'downloading';
+        item._rateWin = [];
+        item.speed = 0;
+        item.eta = null;
         item.progress = null;
         this._emit();
 
@@ -1317,6 +1341,7 @@ class DownloadManager extends EventEmitter {
               }
               if (p && p.unit === 'parts') item.parts = `${p.received}/${p.total}`;
               else item.bytes = (p && p.received) || item.bytes;
+              this._sampleRate(item, p);
               this._emitProgress(item);
             }
           });
@@ -1572,8 +1597,48 @@ class DownloadManager extends EventEmitter {
   }
 
   _emit() {
+    this._noteOutcomes();
     this.emit('update', this.snapshot());
     this._persist();
+  }
+
+  // The last 24 h at a glance (daily summary line, Overview): every item
+  // that reached done / failed / waiting is counted once.
+  _noteOutcomes() {
+    const now = Date.now();
+    const ev = (this._outcomes = this._outcomes || []);
+    for (const it of this.items) {
+      if (!['done', 'failed', 'waiting'].includes(it.status) || it._reported === it.status) continue;
+      it._reported = it.status;
+      ev.push({ at: now, kind: it.status, below: it.status === 'done' && !!it._floorFallback, upgrade: it.status === 'done' && !!it.upgrade });
+    }
+    while (ev.length && now - ev[0].at > 24 * 3600 * 1000) ev.shift();
+  }
+
+  last24h() {
+    this._noteOutcomes();
+    const ev = this._outcomes || [];
+    const c = { done: 0, below: 0, upgraded: 0, failed: 0, waiting: 0 };
+    for (const e of ev) {
+      if (e.kind === 'done') {
+        c.done += 1;
+        if (e.below) c.below += 1;
+        if (e.upgrade) c.upgraded += 1;
+      } else if (e.kind === 'failed') c.failed += 1;
+      else if (e.kind === 'waiting') c.waiting += 1;
+    }
+    c.queued = this.items.filter((i) => i.status === 'queued' || i.status === 'ready').length;
+    return c;
+  }
+
+  logDailySummary() {
+    const c = this.last24h();
+    this._log(
+      `Last 24 h: ${c.done} downloaded` + (c.below ? ` (${c.below} below 1080p, checked weekly for a better copy)` : '') +
+        (c.upgraded ? `, ${c.upgraded} upgraded to 1080p` : '') +
+        `, ${c.failed} failed, ${c.waiting} went to the waiting-for-dub list; ${c.queued} still queued.`
+    );
+    return c;
   }
 
   _emitProgress(item) {

@@ -246,6 +246,14 @@ function stagingReport(opts = {}) {
   for (const it of manager.items || []) {
     if (!it || it.status === 'done' || it.status === 'cancelled') continue;
     if (it.finalPath) owned.push({ prefix: String(it.finalPath), label: it.label, status: it.status });
+    // A failed / queued item has no finalPath yet, but its saved parts (the
+    // resume folder next to where the file will be) are still its own.
+    if (it.outputRoot) {
+      try {
+        const exp = organizer.expectedPath(it.outputRoot, { series: it.series, season: it.season, episode: it.episode }, '.mp4');
+        if (exp && exp !== it.finalPath) owned.push({ prefix: exp, label: it.label, status: it.status });
+      } catch (e) { /* no expected path: nothing to protect */ }
+    }
   }
   // Windows paths compare without case ("Season 1" = "season 1"): a queued
   // download's .part must never look unowned over a letter's case.
@@ -302,6 +310,8 @@ function stagingReport(opts = {}) {
     groups: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, { count: v.length, bytes: sum(v), files: v.sort((a, b) => b.bytes - a.bytes) }]))
   };
   report.otherDataOnDriveBytes = Math.max(0, (report.drive.totalBytes - report.drive.freeBytes) - report.stagingBytes);
+  // The automatic daily run only removes leftovers older than a day.
+  const oldEnough = (row) => !(opts.minAgeMs > 0) || (row.modified && Date.now() - Date.parse(row.modified) > opts.minAgeMs);
   if (opts.apply) {
     let deleted = 0;
     let freed = 0;
@@ -310,6 +320,7 @@ function stagingReport(opts = {}) {
       // Re-check ownership right before deleting: a download may have
       // started since the report was built.
       if (ownerOf(row.path)) continue;
+      if (!oldEnough(row)) continue;
       try {
         fs.rmSync(row.path, { recursive: true, force: true });
         deleted += 1;
@@ -341,6 +352,7 @@ function health() {
     version: pkg.version,
     build: require('./build').ENGINE_BUILD,
     upgrades: (() => { try { return require('./upgrades').list().length; } catch (e) { return 0; } })(),
+    last24h: (() => { try { return manager.last24h(); } catch (e) { return null; } })(),
     platform: process.platform,
     engineMode: process.argv.slice(1).includes('--engine'),
     vpn: vpn.status(),
@@ -775,6 +787,27 @@ async function runJob(job) {
 }
 
 // ---- queue controls ----
+
+// Daily: delete only what the manual cleanup would (copies already in the
+// library, leftovers no queue item owns), and only leftovers older than a
+// day. Logged when it freed anything.
+let stagingTimer = null;
+function startStagingAutoClean() {
+  if (stagingTimer) return;
+  const run = () => {
+    try {
+      const r = stagingReport({ apply: true, minAgeMs: 24 * 3600 * 1000 });
+      const c = r && r.cleaned;
+      if (c && c.deleted) onLog(`Staging cleanup: ${c.deleted} leftover(s) removed, ${(c.freedBytes / 1024 ** 3).toFixed(1)} GB freed (only copies already in the library and day-old leftovers).`);
+    } catch (e) {
+      onLog('Staging cleanup skipped: ' + ((e && e.message) || e));
+    }
+  };
+  const first = setTimeout(run, 30 * 60 * 1000);
+  if (first.unref) first.unref();
+  stagingTimer = setInterval(run, 24 * 3600 * 1000);
+  if (stagingTimer.unref) stagingTimer.unref();
+}
 
 function queueSnapshot() {
   return {
@@ -1513,6 +1546,7 @@ module.exports = {
   title,
   submitJob,
   queueSnapshot,
+  startStagingAutoClean,
   queuePause,
   queueResume,
   queueStop,

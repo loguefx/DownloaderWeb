@@ -364,7 +364,7 @@ async function main() {
   console.log('\n[6a] A running download shows its progress in the queue snapshot');
   {
     const chunk = Buffer.alloc(64 * 1024, 7);
-    const N = 12;
+    const N = 40; // ~5 s: long enough for a speed / time-left estimate
     const psrv = http.createServer((req, res) => {
       res.setHeader('Content-Length', chunk.length * N);
       res.setHeader('Content-Type', 'video/mp4');
@@ -390,6 +390,13 @@ async function main() {
     }
     check('snapshot shows "downloading" with a percentage between 0 and 100', !!seen, JSON.stringify(seen));
     check('...and the bytes received, not a part count', seen && seen.bytes > 0 && !seen.parts, JSON.stringify(seen && [seen.bytes, seen.parts]));
+    let rated = null;
+    for (let i = 0; i < 100 && !rated; i++) {
+      const snap = manager.snapshot().find((x) => x.id === pid);
+      if (snap && snap.status === 'downloading' && snap.speed > 0 && snap.eta > 0) rated = snap;
+      await sleep(50);
+    }
+    check('...with a speed and time left', !!rated, JSON.stringify(rated));
     manager.removeByIds([pid]);
     await sleep(150);
     psrv.close();
@@ -504,6 +511,15 @@ async function main() {
     const vitem = manager.items.find((x) => x.id === vid);
     for (let i = 0; i < 100 && !(vitem && vitem.status === 'failed'); i++) await sleep(50);
     check('stops after 2 tries (not 6)', vitem && vitem.status === 'failed' && vitem.attempts === 2, JSON.stringify(vitem && [vitem.status, vitem.attempts]));
+    const sumLogs = [];
+    const realSum = manager._log.bind(manager);
+    manager._log = (m) => { sumLogs.push(m); realSum(m); };
+    const c24 = manager.logDailySummary();
+    manager._log = realSum;
+    check('the daily summary counts it once', c24.failed >= 1 && /^Last 24 h: \d+ downloaded.*\d+ failed/.test(sumLogs[0] || ''), sumLogs[0]);
+    const again = manager.last24h().failed;
+    manager._emit();
+    check('...and not again on the next update', manager.last24h().failed === again);
     manager.removeByIds([vid]);
     await sleep(100);
     config.download.retryBaseDelayMs = savedBase;

@@ -577,6 +577,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
     if (fs.existsSync(p) && fs.statSync(p).size > 0) have += 1;
   }
   let done = 0; // parts fetched THIS run (resumed parts are already in `have`)
+  let bytesThisRun = 0; // for the speed shown next to the progress bar
   let lastLogged = -1; // each count is logged once ("143/143" used to repeat)
   const report = () => {
     const n = Math.min(have + done, jobs.length);
@@ -585,6 +586,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
         received: n,
         total: jobs.length,
         unit: 'parts', // a part count, not bytes
+        bytesThisRun,
         percent: Math.min(0.999, n / Math.max(1, jobs.length))
       });
     }
@@ -669,6 +671,7 @@ async function localizePlainSegments(text, base, dir, ua, { signal, onProgress, 
         fs.writeFileSync(tmp, buf);
         fs.renameSync(tmp, p);
         done += 1;
+        bytesThisRun += buf.length;
         report();
         return;
       } catch (e) {
