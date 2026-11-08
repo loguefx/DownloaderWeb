@@ -589,7 +589,7 @@ class DownloadManager extends EventEmitter {
   // is found. Anime has no floor (the source's own resolution).
   _fallbackFloor(item, reason, opts = {}) {
     const FALLBACK = 720;
-    if (!item || item.anime || item._floorFallback || item._exclusive) return false;
+    if (!item || item.anime || item._floorFallback || item._exclusive || item.upgrade) return false;
     const floor = this._minHeight(item);
     if (!(floor > FALLBACK)) return false;
     const quality = item._noQuality || /no \d+p|not \d+p|\d+p, not \d+p|below \d+p|no 1080p/i.test(String(reason || ''));
@@ -736,6 +736,13 @@ class DownloadManager extends EventEmitter {
     item.status = 'done';
     item.progress = 1;
     this._clearWaiting(item);
+    // Saved below its quality floor (the 720p fallback): checked weekly for a
+    // better copy. A copy at the floor replacing one: no longer checked.
+    try {
+      const up = require('./upgrades');
+      if (item._floorFallback && !(result && result.existing)) up.add(item, item.finalPath);
+      else if (!item._floorFallback) up.remove(item.finalPath);
+    } catch (e) { /* bookkeeping only */ }
     this._emit();
     // The library name can differ from the staging one (named like the
     // episodes next to it): say which file it became.
@@ -1056,7 +1063,7 @@ class DownloadManager extends EventEmitter {
           item._noQuality = true; // persist on the item so the retry cap applies on every attempt
           // Another episode of this season already went through every site
           // for 1080p and fell back: straight to the 720p copy.
-          if (this._seasonFellBack(item) && this._fallbackFloor(item, 'no 1080p', { quiet: true })) continue;
+          if (!item.upgrade && this._seasonFellBack(item) && this._fallbackFloor(item, 'no 1080p', { quiet: true })) continue;
           this._log(`"${item.label}" has no 1080p on Vidsrc; trying browser fallback (limited retries).`);
           outcome = await this._abortable(item, item.discover(item));
         } else if (!outcome || outcome.status !== 'resolved') {
@@ -1214,6 +1221,16 @@ class DownloadManager extends EventEmitter {
               return { fatal: false };
             }
             if (this._fallbackFloor(item, reason)) continue;
+            // A weekly upgrade that found nothing better after all: the
+            // library copy stays as it is - not a failure to retry.
+            if (item.upgrade) {
+              item.status = 'skipped';
+              item.error = 'no better copy after all - the library copy is kept';
+              this._emit();
+              this._log(`Upgrade of "${item.label}": no better copy after all; keeping the one in the library.`);
+              this._pruneGroupIfComplete(item.group);
+              return { fatal: false };
+            }
             item.status = 'failed';
             this._emit();
             if (item._exclusive) {
@@ -1601,7 +1618,15 @@ class DownloadManager extends EventEmitter {
           stopRunOnFail: it.stopRunOnFail,
           library: it.library || null,
           minHeight: it.minHeight || 0,
+          floorFallback: it._floorFallback || 0,
+          upgrade: !!it.upgrade,
           anime: !!it.anime,
+          // Without these a restored item lost its TMDB id (the library
+          // presence check by folder id, the anime source mapping) and its
+          // season numbering (an AniDB-numbered anime filed under TMDB's).
+          tmdb: it.tmdb || null,
+          numbering: it.numbering || 'tmdb',
+          episodeName: it.episodeName || '',
           jobId: it.jobId || null,
           status: it.status,
           attempts: it.attempts || 0,
@@ -1666,7 +1691,12 @@ class DownloadManager extends EventEmitter {
             // the profile's floor after a restart; a stored number (even 0) is
             // an explicit per-job choice.
             minHeight: rec.minHeight != null ? Number(rec.minHeight) || 0 : null,
+            _floorFallback: Number(rec.floorFallback) || 0,
+            upgrade: !!rec.upgrade,
             anime: !!rec.anime,
+            tmdb: rec.tmdb || null,
+            numbering: rec.numbering === 'anime' ? 'anime' : 'tmdb',
+            episodeName: rec.episodeName || '',
             jobId: rec.jobId || null,
             skipSources: Array.isArray(rec.skipSources) ? rec.skipSources.slice() : [],
             expectedDuration: rec.expectedDuration || 0,

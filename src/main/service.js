@@ -339,6 +339,8 @@ function health() {
   return {
     name: 'webvideodownloader-engine',
     version: pkg.version,
+    build: require('./build').ENGINE_BUILD,
+    upgrades: (() => { try { return require('./upgrades').list().length; } catch (e) { return 0; } })(),
     platform: process.platform,
     engineMode: process.argv.slice(1).includes('--engine'),
     vpn: vpn.status(),

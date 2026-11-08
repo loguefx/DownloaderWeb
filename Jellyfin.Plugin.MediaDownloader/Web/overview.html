@@ -575,6 +575,13 @@
 
                 const PLUGIN_ID = 'c86748fd-475a-4cf0-bae0-83b0c8bc9273';
                 const SETTINGS_PAGE = 'Media Downloader';
+                // The engine build this plugin was made for (src/main/build.js).
+                // An older engine still works, but misses the fixes this page expects.
+                const EXPECTED_ENGINE_BUILD = 54;
+                function engineOutdated(h) {
+                    const b = h && h.health ? Number(h.health.build) || 0 : 0;
+                    return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
+                }
                 // Vidsrc is the engine's primary, id-keyed source (TMDB ids);
                 // the engine walks its other sources from there.
                 const VIDSRC = 'https://vidsrc.sh/embed/';
@@ -849,7 +856,7 @@
                     const online = h.engine === 'online';
                     eng.className = 'mdl-status ' + (online ? 'ok' : 'bad');
                     if (online) {
-                        const v = h.health && h.health.version ? ' · v' + h.health.version : '';
+                        const v = (h.health && h.health.version ? ' · v' + h.health.version : '') + (h.health && h.health.build ? ' (build ' + h.health.build + ')' : '') + (engineOutdated(h) ? ' · update it' : '');
                         eng.lastChild.textContent = 'Engine online' + v;
                         eng.title = '';
                     } else {
@@ -925,6 +932,10 @@
                     } else if (h.health && h.health.vpn && !h.health.vpn.connected) {
                         alert.innerHTML = '<div class="mdl-callout red" style="margin-bottom:1.1em;">' + ICON.shield +
                             '<div><b>Mullvad VPN is down.</b> All downloads are paused and resume automatically when it reconnects.</div></div>';
+                    } else if (engineOutdated(h)) {
+                        alert.innerHTML = '<div class="mdl-callout yellow" style="margin-bottom:1.1em;">' + ICON.warn +
+                            '<div><b>The engine is older than this plugin.</b> It is build ' + esc(String((h.health && h.health.build) || 'unknown')) +
+                            '; this plugin expects build ' + EXPECTED_ENGINE_BUILD + ' or newer. Download the latest engine and restart it - fixes this page relies on are missing until then.</div></div>';
                     } else {
                         alert.innerHTML = '';
                     }
@@ -1015,7 +1026,11 @@
                               (x.skipped ? ' · skipped, re-checked daily' : x.streak >= 3 ? ' · tried last' : ''))).join('<br>') + '</div></div>'
                         : '';
                     const vpnTxt = sh.vpn ? (sh.vpn.connected ? 'VPN on' : 'VPN off') : '';
-                    el.innerHTML = rows + statLine +
+                    const hh = (S.health && S.health.health) || {};
+                    const upLine = hh.upgrades > 0
+                        ? '<div class="small muted" style="margin-top:.6em;">' + plural(hh.upgrades, 'episode or film', 'episodes or films') + ' saved below the quality floor (720p) ' + (hh.upgrades === 1 ? 'is' : 'are') + ' checked weekly and replaced when a 1080p copy appears.</div>'
+                        : '';
+                    el.innerHTML = rows + statLine + upLine +
                         '<div class="hint" style="margin-top:.6em;">Probed ' + whenOf(sh.checkedAt) + (vpnTxt ? ' with ' + vpnTxt : '') +
                         ' from the engine — this is the IP downloads actually use. A red source here will fail downloads through it.</div>';
                 }

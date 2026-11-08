@@ -286,6 +286,8 @@ async function main() {
     library: { id: 'lib1', name: 'Anime', locations: ['\\\\nas\\anime'] },
     scope: 'episodes',
     selections: [{ season: 1, episodes: [3] }],
+    tmdb: '424242',
+    numbering: 'anime',
     watch: false
   };
   r = await req('POST', '/api/jobs', job, { authorization: `Bearer ${KEY}` });
@@ -304,6 +306,7 @@ async function main() {
   const mrec = manifest.find((x) => x.series === 'Show' && x.episode === 3);
   check('manifest persists library', mrec && mrec.library && mrec.library.name === 'Anime', JSON.stringify(mrec));
   check('manifest persists minHeight/jobId', mrec && mrec.minHeight === 1080 && mrec.jobId === 'smoke-1');
+  check('manifest persists the TMDB id and the season numbering (restart kept AniDB numbering)', mrec && mrec.tmdb === '424242' && mrec.numbering === 'anime', JSON.stringify(mrec && [mrec.tmdb, mrec.numbering]));
   config.download.persistQueueAcrossRestarts = false; // back to the start-empty default
 
   // accepted-jobs dedupe file
