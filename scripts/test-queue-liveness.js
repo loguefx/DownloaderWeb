@@ -691,6 +691,41 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6i. Engine restart: restored items keep everything ------------------
+  console.log('\n[6i] After a restart, a restored item keeps its TMDB id, season numbering and 720p-fallback state');
+  {
+    const savedPersist = config.download.persistQueueAcrossRestarts;
+    config.download.persistQueueAcrossRestarts = true;
+    manager.pause();
+    const rid = manager.add({
+      label: 'Link Click S3E7', series: 'Link Click', season: 3, episode: 7, mode: 'dub', anime: true,
+      tmdb: '126318', numbering: 'anime', episodeName: 'Fate', minHeight: 0,
+      url: 'https://example.invalid/lc-3-7', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'failed', reason: 'paused test' })
+    });
+    const tid = manager.add({
+      label: 'House S1E3', series: 'House', season: 1, episode: 3, mode: 'dub', tmdb: '1408', minHeight: 720,
+      url: 'https://example.invalid/house-1-3', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => Promise.resolve({ status: 'failed', reason: 'paused test' })
+    });
+    manager.items.find((x) => x.id === tid)._floorFallback = 1080;
+    manager._persist();
+    // "Restart": the in-memory queue is gone; it comes back from the manifest.
+    const kept = manager.items;
+    manager.items = [];
+    const n = manager.restore(() => ({ discover: () => Promise.resolve({ status: 'failed', reason: 'restored' }) }));
+    const lc = manager.items.find((x) => x.label === 'Link Click S3E7');
+    const hs = manager.items.find((x) => x.label === 'House S1E3');
+    check('both restored', n >= 2 && lc && hs, String(n));
+    check('anime: TMDB id and AniDB numbering kept (filed as AniDB S3, not TMDB S4)', lc && lc.tmdb === '126318' && lc.numbering === 'anime' && lc.anime === true, JSON.stringify(lc && [lc.tmdb, lc.numbering, lc.anime]));
+    check('episode name kept', lc && lc.episodeName === 'Fate');
+    check('TV: TMDB id and the 720p-fallback state kept', hs && hs.tmdb === '1408' && hs._floorFallback === 1080 && hs.minHeight === 720, JSON.stringify(hs && [hs.tmdb, hs._floorFallback, hs.minHeight]));
+    manager.items = kept.filter((x) => x.id !== rid && x.id !== tid);
+    manager.resume();
+    config.download.persistQueueAcrossRestarts = savedPersist;
+    await sleep(50);
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

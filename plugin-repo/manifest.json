@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.55",
+                "changelog": "New Queue tab: Upgrade resolution - TV shows and films below 1080p (never anime), from the 720p fallback and from a scan of your TV/movie libraries; checked weekly and replaced when a 1080p copy exists. Needs engine build 55.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v55/MediaDownloader.12.1.0.55.zip",
+                "checksum": "198fc9fd1ee8e84d043a746cd70998e6",
+                "timestamp": "2026-11-08T17:13:14.000Z"
+            },
+            {
+                "version": "10.11.0.55",
+                "changelog": "New Queue tab: Upgrade resolution - TV shows and films below 1080p (never anime), from the 720p fallback and from a scan of your TV/movie libraries; checked weekly and replaced when a 1080p copy exists. Needs engine build 55.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v55/MediaDownloader.10.11.0.55.zip",
+                "checksum": "3cdb024811d319d4942f65873c437a49",
+                "timestamp": "2026-11-08T17:13:14.000Z"
+            },
+            {
+                "version": "10.10.0.55",
+                "changelog": "New Queue tab: Upgrade resolution - TV shows and films below 1080p (never anime), from the 720p fallback and from a scan of your TV/movie libraries; checked weekly and replaced when a 1080p copy exists. Needs engine build 55.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v55/MediaDownloader.10.10.0.55.zip",
+                "checksum": "fad6493a2b9924624cae527392d510da",
+                "timestamp": "2026-11-08T17:13:14.000Z"
+            },
+            {
                 "version": "12.1.0.54",
                 "changelog": "Warns when the engine is older than the plugin; queue rows show speed and time left; Remove all per show/season; Overview shows the last 24 h and how many 720p copies are checked weekly for 1080p. Needs engine build 54.",
                 "targetAbi": "12.1.0.0",

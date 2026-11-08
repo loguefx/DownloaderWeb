@@ -236,6 +236,60 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- upgrade resolution (TV / movie copies below the quality floor) ----
+    //   GET  /api/upgrades            { items, scan }
+    //   POST /api/upgrades/scan       { libraries: [{ name, kind: tv|movie, locations }] }
+    //   POST /api/upgrades/check      { path } one now | {} every one that is due, now
+    //   POST /api/upgrades/remove     { path } stop tracking (kept out of later scans)
+    if (seg === 'upgrades') {
+      const up = require('./upgrades');
+      if (req.method === 'GET' && !parts[2]) {
+        json(res, 200, { items: up.list(), scan: up.status() });
+        return;
+      }
+      if (req.method === 'POST' && parts[2] === 'scan') {
+        const body = (await readBody(req)) || {};
+        const mappings = (require('./engineconfig').get() || {}).pathMappings || [];
+        const placer = require('./placer');
+        // Never anime: the plugin sends only TV / movie libraries; the
+        // engine refuses anything else too.
+        const libs = (Array.isArray(body.libraries) ? body.libraries : [])
+          .filter((l) => l && (l.kind === 'tv' || l.kind === 'movie') && Array.isArray(l.locations))
+          .map((l) => ({
+            name: String(l.name || ''),
+            kind: l.kind,
+            jellyfinLocations: l.locations,
+            locations: l.locations.map((loc) => { try { return placer.toEnginePath(loc, mappings); } catch (e) { return ''; } }).filter(Boolean)
+          }));
+        if (!libs.length) {
+          json(res, 400, { error: 'no TV or movie library to scan' });
+          return;
+        }
+        const floor = Number((require('./engineconfig').get() || {}).minQuality) || 1080;
+        json(res, 200, { scan: await up.scanLibraries(libs, { floor, onLog: (m) => service.onLog(m) }) });
+        return;
+      }
+      if (req.method === 'POST' && parts[2] === 'check') {
+        const body = (await readBody(req)) || {};
+        if (body.path) {
+          json(res, 200, await up.checkNow(String(body.path), { onLog: (m) => service.onLog(m) }));
+        } else {
+          json(res, 200, await up.runDue({ onLog: (m) => service.onLog(m), perRun: 60, force: true }));
+        }
+        return;
+      }
+      if (req.method === 'POST' && parts[2] === 'remove') {
+        const body = (await readBody(req)) || {};
+        if (!body.path) {
+          json(res, 400, { error: 'path is required' });
+          return;
+        }
+        up.ignore(String(body.path));
+        json(res, 200, { removed: true });
+        return;
+      }
+    }
+
     // ---- health ----
     if (req.method === 'GET' && seg === 'health') {
       json(res, 200, service.health());

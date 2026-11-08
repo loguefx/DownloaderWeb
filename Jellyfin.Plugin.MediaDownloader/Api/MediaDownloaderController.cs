@@ -441,6 +441,36 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesRemove(string key) =>
             await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + EscapeKey(key))).ConfigureAwait(false);
 
+        // Upgrade resolution tab: TV / movie copies below the quality floor
+        // (never anime), checked weekly for a better copy.
+        [HttpGet("Upgrades")]
+        public async Task<IActionResult> Upgrades() =>
+            await ProxyAsync(() => _engine.GetRawAsync("api/upgrades")).ConfigureAwait(false);
+
+        [HttpPost("Upgrades/scan")]
+        public async Task<IActionResult> UpgradesScan() =>
+            await ProxyAsync(async () =>
+            {
+                var body = await ReadBodyAsync().ConfigureAwait(false);
+                return await _engine.PostAsync("api/upgrades/scan", body).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+
+        [HttpPost("Upgrades/check")]
+        public async Task<IActionResult> UpgradesCheck() =>
+            await ProxyAsync(async () =>
+            {
+                var body = await ReadBodyAsync().ConfigureAwait(false);
+                return await _engine.PostAsync("api/upgrades/check", body).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+
+        [HttpPost("Upgrades/remove")]
+        public async Task<IActionResult> UpgradesRemove() =>
+            await ProxyAsync(async () =>
+            {
+                var body = await ReadBodyAsync().ConfigureAwait(false);
+                return await _engine.PostAsync("api/upgrades/remove", body).ConfigureAwait(false);
+            }).ConfigureAwait(false);
+
         /// <summary>
         /// Watch/waiting keys contain the source URL. ASP.NET decodes every
         /// escape in a route value EXCEPT %2F, so "/" arrives still escaped;

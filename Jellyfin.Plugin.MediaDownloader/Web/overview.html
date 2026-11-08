@@ -547,6 +547,7 @@
                     <button type="button" data-qtab="failed">Failed<em data-qc="failed">0</em></button>
                     <button type="button" data-qtab="outbox">Outbox<em data-qc="outbox">0</em></button>
                     <button type="button" data-qtab="done">Finished<em data-qc="done">0</em></button>
+                    <button type="button" data-qtab="upgrades">Upgrade resolution<em data-qc="upgrades">0</em></button>
                 </div>
                 <div data-q-toolbar></div>
                 <div data-q-list></div>
@@ -577,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 54;
+                const EXPECTED_ENGINE_BUILD = 55;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
@@ -808,6 +809,7 @@
                                 renderStatus();
                             }).catch(() => {}));
                             tasks.push(poll('MediaDownloader/Waiting').then((w) => { S.waiting = (w && w.items) || []; }).catch(() => {}));
+                            tasks.push(poll('MediaDownloader/Upgrades').then((u) => { S.upgrades = u || { items: [], scan: {} }; }).catch(() => {}));
                             // Watch list: a local JSON file on the engine - one
                             // cheap call, no per-title lookups, so the tab is
                             // instant no matter how many titles are watched.
@@ -2212,11 +2214,13 @@
                     $('[data-qc="failed"]').textContent = lists.failed.length;
                     $('[data-qc="outbox"]').textContent = ob.filter((o) => o.state !== 'sent').length;
                     $('[data-qc="done"]').textContent = lists.done.length;
+                    $('[data-qc="upgrades"]').textContent = ((S.upgrades && S.upgrades.items) || []).filter((x) => !x.problem).length;
                     $$('[data-qtab]').forEach((b) => b.classList.toggle('on', b.getAttribute('data-qtab') === S.qtab));
 
                     const bar = $('[data-q-toolbar]');
                     const box = $('[data-q-list]');
                     bar.innerHTML = '';
+                    if (S.qtab === 'upgrades') { renderUpgrades(bar, box, online); return; }
                     if (S.qtab === 'outbox') {
                         bar.innerHTML = '<p class="small muted" style="margin-bottom:.8em;">Jobs are saved here first and delivered to the engine; while it is offline they wait and are retried every 30 s.</p>' +
                             '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-purge="sent">Clear delivered</button><button type="button" class="mdl-btn sm" data-purge="rejected">Clear rejected</button></div>';
@@ -2332,6 +2336,61 @@
                                 (it.status === 'failed' ? '<button type="button" class="mdl-btn sm" data-retry="' + it.id + '">Retry</button>' : '') +
                                 '<button type="button" class="mdl-btn icon sm" title="Remove from queue" data-remove="' + it.id + '">✕</button></div>' + itemBar(it) + '</div>').join('') +
                             (hidden > 0 ? '<div class="mdl-row small muted">+ ' + hidden + ' more queued in this group</div>' : '');
+                    }).join('');
+                }
+
+                // Upgrade resolution: TV shows and films whose copy is below the
+                // quality floor (never anime - anime is taken at the source's
+                // resolution). Each one is checked weekly on Vidsrc and queued
+                // again at the floor once a better copy exists.
+                function upgradeLibraries() {
+                    const c = S.config || {};
+                    return (S.libraries || [])
+                        .filter((l) => (l.collectionType === 'tvshows' || l.collectionType === 'movies') && l.name !== c.AnimeLibrary && l.numbering !== 'anime')
+                        .map((l) => ({ name: l.name, kind: l.collectionType === 'movies' ? 'movie' : 'tv', locations: l.locations || [] }));
+                }
+                function renderUpgrades(bar, box, online) {
+                    const u = S.upgrades || { items: [], scan: {} };
+                    const sc = u.scan || {};
+                    const libs = upgradeLibraries();
+                    const scanTxt = sc.running
+                        ? '<span class="mdl-spin"></span> Scanning: ' + (sc.phase === 'listing' ? 'listing files…' : 'measuring ' + sc.done + ' of ' + sc.total + ' files…')
+                        : sc.at ? 'Last scan ' + whenOf(new Date(sc.at).toISOString()) + ': ' + (sc.found || 0) + ' to upgrade, ' + (sc.unmatched || 0) + ' not matched (of ' + (sc.total || 0) + ' files).' + (sc.error ? ' Error: ' + esc(sc.error) : '')
+                            : 'Not scanned yet.';
+                    bar.innerHTML = '<p class="small muted" style="margin-bottom:.8em;">TV shows and films whose copy is below 1080p (anime is never included). Each one is checked once a week on Vidsrc; when a 1080p copy exists it is queued and replaces the old file (which goes to the trash folder). ' +
+                        'Copies saved at 720p because nothing better existed are added automatically; <b>Scan</b> adds the ones already in your libraries.</p>' +
+                        '<div class="mdl-actions" style="margin-bottom:.6em;">' +
+                        '<button type="button" class="mdl-btn sm" data-up-scan' + (sc.running || !libs.length || !online ? ' disabled' : '') + '>Scan ' + esc(libs.map((l) => l.name).join(' + ') || 'TV / movie libraries') + '</button>' +
+                        '<button type="button" class="mdl-btn sm" data-up-checkall' + (!online || !(u.items || []).length ? ' disabled' : '') + '>Check all now</button></div>' +
+                        '<div class="small muted" style="margin-bottom:.9em;">' + scanTxt + '</div>';
+                    const items = u.items || [];
+                    if (!items.length) {
+                        box.innerHTML = '<div class="mdl-empty">' + (online ? 'Nothing below 1080p is tracked. Run a scan to look through your TV and movie libraries.' : 'Engine offline.') + '</div>';
+                        return;
+                    }
+                    const groups = [];
+                    const byKey = {};
+                    items.forEach((x) => {
+                        const k = (x.kind === 'movie' ? 'Movies' : x.series) || 'Other';
+                        if (!byKey[k]) { byKey[k] = []; groups.push([k, byKey[k]]); }
+                        byKey[k].push(x);
+                    });
+                    const SHOW = 8;
+                    box.innerHTML = groups.map(([k, list]) => {
+                        const ok = list.filter((x) => !x.problem).length;
+                        const rows = list.slice(0, SHOW).map((x) => {
+                            const res = (x.placedWidth ? x.placedWidth + 'x' : '') + (x.placedHeight ? x.placedHeight + 'p' : '?');
+                            const sub = [res + ' → wants ' + x.floor + 'p', x.source === 'library' ? 'from the library scan' : 'saved at 720p (nothing better then)',
+                                x.lastCheck ? 'checked ' + whenOf(new Date(x.lastCheck).toISOString()) + (x.lastResult ? ': ' + (x.lastResult === 'found' ? '1080p found, queued' : x.lastResult === 'not yet' ? 'no 1080p yet' : x.lastResult) : '') : 'not checked yet'];
+                            return '<div class="mdl-row"><div class="grow" style="min-width:0;"><div class="t mono" style="font-size:.9em;">' + esc(x.label) + '</div>' +
+                                '<div class="sub" title="' + esc(x.path) + '">' + esc(sub.join(' · ')) + '</div>' +
+                                (x.problem ? '<div class="small" style="color:var(--md-red, #c33);">' + esc(x.problem) + '</div>' : '') + '</div>' +
+                                (x.problem ? '<span class="mdl-pill">Not matched</span>' : x.lastResult === 'found' ? '<span class="mdl-pill green">Queued</span>' : '<span class="mdl-pill yellow">Waiting for 1080p</span>') +
+                                (!x.problem ? '<button type="button" class="mdl-btn sm" data-up-check="' + esc(x.path) + '">Check now</button>' : '') +
+                                '<button type="button" class="mdl-btn icon sm" title="Stop tracking (kept out of later scans)" data-up-remove="' + esc(x.path) + '">✕</button></div>';
+                        }).join('');
+                        return '<div class="mdl-list-h"><span>' + esc(k) + '</span><span>' + ok + ' of ' + list.length + ' upgradable</span></div>' + rows +
+                            (list.length > SHOW ? '<div class="mdl-row small muted">+ ' + (list.length - SHOW) + ' more</div>' : '');
                     }).join('');
                 }
 
@@ -2496,6 +2555,31 @@
                         } else {
                             del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => alert(err.message));
                         }
+                        return;
+                    }
+                    if (el.hasAttribute('data-up-scan')) {
+                        const libs = upgradeLibraries();
+                        if (!libs.length) return;
+                        if (!confirm('Scan ' + libs.map((l) => l.name).join(' + ') + ' for TV episodes and films below 1080p?\n\nThe ones found are checked weekly and replaced when a 1080p copy exists (the old file goes to the trash folder). Anime libraries are not scanned.')) return;
+                        post('MediaDownloader/Upgrades/scan', { libraries: libs }).then(refresh).catch((err) => alert(err.message));
+                        return;
+                    }
+                    if (el.hasAttribute('data-up-checkall')) {
+                        el.disabled = true;
+                        el.textContent = 'Checking…';
+                        post('MediaDownloader/Upgrades/check', {}).then((r) => {
+                            alert('Checked ' + ((r && r.checked) || 0) + '; ' + ((r && r.queued) || 0) + ' queued for a 1080p copy.');
+                        }).catch((err) => alert(err.message)).then(refresh);
+                        return;
+                    }
+                    if (el.hasAttribute('data-up-check')) {
+                        el.disabled = true;
+                        el.textContent = 'Checking…';
+                        post('MediaDownloader/Upgrades/check', { path: el.getAttribute('data-up-check') }).catch((err) => alert(err.message)).then(refresh);
+                        return;
+                    }
+                    if (el.hasAttribute('data-up-remove')) {
+                        post('MediaDownloader/Upgrades/remove', { path: el.getAttribute('data-up-remove') }).catch((err) => alert(err.message)).then(refresh);
                         return;
                     }
                     if (el.hasAttribute('data-remove-ids')) {
