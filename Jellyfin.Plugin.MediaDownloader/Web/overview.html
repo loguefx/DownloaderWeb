@@ -2233,11 +2233,49 @@
                         return;
                     }
                     if (S.qtab === 'waiting') {
+                        // One row per series with its count; click it to see the
+                        // episodes. Which series are open survives the refreshes.
                         const w = S.waiting || [];
-                        box.innerHTML = w.length ? w.map((x) => '<div class="mdl-row"><div class="grow"><div class="t">' + esc(x.label || x.series) + '</div><div class="sub">' +
-                            esc(['S' + (x.season != null ? x.season : 1) + 'E' + x.episode, (x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
-                            '<span class="mdl-pill yellow">Waiting for dub</span><button type="button" class="mdl-btn icon sm" title="Stop waiting" data-wait-del="' + esc(x.key) + '">✕</button></div>').join('')
-                            : '<div class="mdl-empty">' + (online ? 'Nothing is waiting for a dub.' : 'Engine offline.') + '</div>';
+                        if (!w.length) {
+                            box.innerHTML = '<div class="mdl-empty">' + (online ? 'Nothing is waiting for a dub.' : 'Engine offline.') + '</div>';
+                            return;
+                        }
+                        S.waitOpen = S.waitOpen || {};
+                        const groups = [];
+                        const byKey = {};
+                        w.forEach((x) => {
+                            const k = String(x.series || x.label || '?');
+                            if (!byKey[k]) { byKey[k] = []; groups.push(k); }
+                            byKey[k].push(x);
+                        });
+                        groups.sort((a, b) => a.localeCompare(b));
+                        const epOf = (x) => 'S' + (x.season != null ? x.season : 1) + 'E' + x.episode;
+                        box.innerHTML = groups.map((k) => {
+                            const list = byKey[k].slice().sort((a, b) => (Number(a.season) || 0) - (Number(b.season) || 0) || (Number(a.episode) || 0) - (Number(b.episode) || 0));
+                            const open = !!S.waitOpen[k];
+                            // "S2E5-E7, S3E1" - a short summary for the closed row.
+                            const bySeason = {};
+                            list.forEach((x) => { const sn = x.season != null ? x.season : 1; (bySeason[sn] = bySeason[sn] || []).push(Number(x.episode)); });
+                            const summary = Object.keys(bySeason).map((sn) => {
+                                // Consecutive runs only: "E1–E3, E7, E9" (never hides a gap).
+                                const eps = bySeason[sn];
+                                const runs = [];
+                                eps.forEach((e) => {
+                                    const r = runs[runs.length - 1];
+                                    if (r && e === r[1] + 1) r[1] = e; else runs.push([e, e]);
+                                });
+                                return 'S' + sn + ' ' + runs.map((r) => (r[0] === r[1] ? 'E' + r[0] : 'E' + r[0] + '–E' + r[1])).join(', ');
+                            }).join(' · ');
+                            const head = '<div class="mdl-row" style="cursor:pointer;" data-wait-toggle="' + esc(k) + '">' +
+                                '<span style="width:1.2em;display:inline-block;color:var(--md-muted);">' + (open ? '▾' : '▸') + '</span>' +
+                                '<div class="grow" style="min-width:0;"><div class="t">' + esc(k) + '</div><div class="sub">' + esc(summary) + '</div></div>' +
+                                '<span class="mdl-pill yellow">' + plural(list.length, 'episode') + ' waiting</span>' +
+                                '<button type="button" class="mdl-btn sm" title="Stop waiting for every episode of this series" data-wait-del-all="' + esc(list.map((x) => x.key).join('\n')) + '">Stop all</button></div>';
+                            const rows = open ? list.map((x) => '<div class="mdl-row" style="padding-left:2.4em;"><div class="grow"><div class="t mono" style="font-size:.9em;">' + esc(epOf(x)) + '</div><div class="sub">' +
+                                esc([(x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+                                '<button type="button" class="mdl-btn icon sm" title="Stop waiting" data-wait-del="' + esc(x.key) + '">✕</button></div>').join('') : '';
+                            return head + rows;
+                        }).join('');
                         return;
                     }
                     if (S.qtab === 'watching') {
@@ -2458,6 +2496,15 @@
                     const browseCard = ev.target.closest('[data-browse-open], [data-browse-anilist]');
                     if (browseCard && root.contains(browseCard)) {
                         openBrowseCard(browseCard);
+                        return;
+                    }
+                    // Waiting for dub: open / close a series (not when its button was clicked).
+                    const waitRow = ev.target.closest('[data-wait-toggle]');
+                    if (waitRow && root.contains(waitRow) && !ev.target.closest('button')) {
+                        const k = waitRow.getAttribute('data-wait-toggle');
+                        S.waitOpen = S.waitOpen || {};
+                        S.waitOpen[k] = !S.waitOpen[k];
+                        renderQueue();
                         return;
                     }
                     const el = ev.target.closest('button, a');
@@ -2684,6 +2731,20 @@
                         } else {
                             del('MediaDownloader/Schedules/' + encodeURIComponent(key)).then(refresh).catch((err) => alert(err.message));
                         }
+                        return;
+                    }
+                    if (el.hasAttribute('data-wait-del-all')) {
+                        const keys = el.getAttribute('data-wait-del-all').split('\n').filter(Boolean);
+                        if (!keys.length || !confirm('Stop waiting for ' + plural(keys.length, 'episode') + ' of this series? They are no longer checked for a dub.')) return;
+                        const gone = new Set(keys);
+                        S.waiting = (S.waiting || []).filter((x) => !gone.has(x.key));
+                        renderQueue();
+                        const next = () => {
+                            const key = keys.shift();
+                            if (key == null) return Promise.resolve();
+                            return del('MediaDownloader/Waiting/' + encodeURIComponent(key)).catch(() => {}).then(next);
+                        };
+                        Promise.all([next(), next(), next()]).then(refresh);
                         return;
                     }
                     if (el.hasAttribute('data-wait-del')) {

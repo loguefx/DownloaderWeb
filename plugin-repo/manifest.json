@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.56",
+                "changelog": "Waiting for dub: one row per series with how many episodes are waiting (e.g. S2 E1–E3, E7); click a series to see its episodes; Stop all per series.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v56/MediaDownloader.12.1.0.56.zip",
+                "checksum": "af4776148e2ac7f9fa26d8b541ec5120",
+                "timestamp": "2026-11-14T06:27:14.000Z"
+            },
+            {
+                "version": "10.11.0.56",
+                "changelog": "Waiting for dub: one row per series with how many episodes are waiting (e.g. S2 E1–E3, E7); click a series to see its episodes; Stop all per series.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v56/MediaDownloader.10.11.0.56.zip",
+                "checksum": "384b3aead47447bf79642a8de2b22615",
+                "timestamp": "2026-11-14T06:27:14.000Z"
+            },
+            {
+                "version": "10.10.0.56",
+                "changelog": "Waiting for dub: one row per series with how many episodes are waiting (e.g. S2 E1–E3, E7); click a series to see its episodes; Stop all per series.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v56/MediaDownloader.10.10.0.56.zip",
+                "checksum": "07d4fbadaf2bda0f756e5aa8857f006a",
+                "timestamp": "2026-11-14T06:27:14.000Z"
+            },
+            {
                 "version": "12.1.0.55",
                 "changelog": "New Queue tab: Upgrade resolution - TV shows and films below 1080p (never anime), from the 720p fallback and from a scan of your TV/movie libraries; checked weekly and replaced when a 1080p copy exists. Needs engine build 55.",
                 "targetAbi": "12.1.0.0",
