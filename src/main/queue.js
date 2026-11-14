@@ -207,7 +207,7 @@ class DownloadManager extends EventEmitter {
     it.status = 'queued';
     // A fresh look: what the last run concluded (not on any site, not out
     // yet, Vidsrc refusing, ...) is asked again, not taken as given.
-    for (const k of ['_notFound', '_noQuality', '_unobtainable', '_notOutChecked', '_skipVidsrcPages', '_heldForVidsrc', '_notBefore', '_exclusive', '_exclusiveHintChecked', '_exclusiveHint', '_wrongAudio', '_headlessTried', '_watchdogKilled', '_watchdogKilledAt']) delete it[k];
+    for (const k of ['_notFound', '_noQuality', '_unobtainable', '_notOutChecked', '_skipVidsrcPages', '_vidsrcMissing', '_vidsrcDownNoted', '_heldForVidsrc', '_notBefore', '_exclusive', '_exclusiveHintChecked', '_exclusiveHint', '_wrongAudio', '_headlessTried', '_watchdogKilled', '_watchdogKilledAt']) delete it[k];
     it.skipSources = [];
     this._stopRequested = null;
     this._emit();
@@ -989,7 +989,16 @@ class DownloadManager extends EventEmitter {
           const _prof = sites.resolve(item.url || item.baseUrl || '');
           // After Vidsrc showed it has no copy in the requested audio, later
           // attempts go straight to the dub/sub-aware sites.
-          if (_prof && typeof _prof.directResolve === 'function' && !item._wrongAudio) {
+          // TV/movies: Vidsrc is down per its health check - straight to the
+          // other sources (its token and pages would only fail again).
+          let vidsrcDown = false;
+          try { vidsrcDown = !item.anime && _prof && _prof.id === 'vidsrc' && require('./vidsrchealth').isDown(); } catch (e) { vidsrcDown = false; }
+          if (vidsrcDown && !item._vidsrcDownNoted) {
+            item._vidsrcDownNoted = true;
+            this._log(`"${item.label}": Vidsrc is down (Overview > Sources); using the other sources.`);
+          }
+          if (vidsrcDown) item._skipVidsrcPages = true;
+          if (_prof && typeof _prof.directResolve === 'function' && !item._wrongAudio && !vidsrcDown) {
             // The source has a headless resolver (Vidsrc): its page in a
             // browser can only replay what that resolver already saw.
             item._headlessTried = true;
@@ -1019,6 +1028,7 @@ class DownloadManager extends EventEmitter {
                 // API) would only say it again after ~30 s each. Straight to
                 // the other sites.
                 item._skipVidsrcPages = true;
+                item._vidsrcMissing = true; // Vidsrc ANSWERED "not here" (not down, not 720p-only)
                 this._log(`Vidsrc does not have "${item.label}"; skipping its pages and searching the other sites.`);
               } else {
                 this._log('Headless resolve failed (' + ((e && e.message) || e) + '); using browser path.');
@@ -1047,7 +1057,7 @@ class DownloadManager extends EventEmitter {
         // Not on Vidsrc, and nothing else can have it: a special (Season 0 is
         // only taken from TMDB-numbered sources = Vidsrc) or a film that is
         // only in cinemas. Answer now instead of minutes of searching per try.
-        if (!item._exclusive && item._skipVidsrcPages && !item._notOutChecked) {
+        if (!item._exclusive && item._vidsrcMissing && !item._notOutChecked) {
           item._notOutChecked = true;
           const isMovie = /\/embed\/movie\//.test(String(item.url || item.baseUrl || ''));
           if (!isMovie && item.season != null && item.season !== '' && Number(item.season) === 0) {

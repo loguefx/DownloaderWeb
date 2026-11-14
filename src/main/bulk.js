@@ -292,6 +292,7 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
           (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
           altGuard < 3 &&
           !extra.skipSourceSite &&
+          !extra.onlyThisPage &&
           profile &&
           typeof profile.openAlternate === 'function'
         ) {
@@ -334,6 +335,8 @@ function makeDiscover(url, onLog = () => {}, mode = 'dub', getOpts = () => ({}))
         }
         if (
           !isSpecial &&
+          // A source test (sourcefinder) asks THIS page only, never the others.
+          !extra.onlyThisPage &&
           (!outcome || (outcome.status !== 'resolved' && outcome.status !== 'unavailable')) &&
           !controller.signal.aborted
         ) {

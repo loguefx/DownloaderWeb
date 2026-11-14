@@ -236,6 +236,21 @@ async function handle(req, res, u) {
       return;
     }
 
+    // ---- find more sources (TV / movie embed players tested by the engine) ----
+    //   GET  /api/sources/find   status + results of the last run
+    //   POST /api/sources/find   start a run (background)
+    if (seg === 'sources' && parts[2] === 'find') {
+      const finder = require('./sourcefinder');
+      if (req.method === 'GET') {
+        json(res, 200, finder.status());
+        return;
+      }
+      if (req.method === 'POST') {
+        json(res, 200, await finder.run({ onLog: (m) => service.onLog(m) }));
+        return;
+      }
+    }
+
     // ---- upgrade resolution (TV / movie copies below the quality floor) ----
     //   GET  /api/upgrades            { items, scan }
     //   POST /api/upgrades/scan       { libraries: [{ name, kind: tv|movie, locations }] }

@@ -441,6 +441,15 @@ namespace Jellyfin.Plugin.MediaDownloader.Api
         public async Task<IActionResult> SchedulesRemove(string key) =>
             await ProxyAsync(() => _engine.DeleteAsync("api/schedules/" + EscapeKey(key))).ConfigureAwait(false);
 
+        // Find more sources: the engine tests TV / movie embed players itself.
+        [HttpGet("SourcesFind")]
+        public async Task<IActionResult> SourcesFind() =>
+            await ProxyAsync(() => _engine.GetRawAsync("api/sources/find")).ConfigureAwait(false);
+
+        [HttpPost("SourcesFind")]
+        public async Task<IActionResult> SourcesFindStart() =>
+            await ProxyAsync(() => _engine.PostAsync("api/sources/find")).ConfigureAwait(false);
+
         // Upgrade resolution tab: TV / movie copies below the quality floor
         // (never anime), checked weekly for a better copy.
         [HttpGet("Upgrades")]

@@ -12,6 +12,9 @@
 const PROBE = { type: 'tv', tmdb: '1396', season: 1, episode: 1, title: 'Breaking Bad' };
 const EVERY_MS = 3 * 3600 * 1000;
 const FIRST_MS = 60 * 1000;
+const DOWN_RECHECK_MS = 30 * 60 * 1000;
+const DOWN_TRUST_MS = 45 * 60 * 1000;
+let retryTimer = null;
 
 let last = null; // { at, ok, status, steps: [{ name, ok, detail }], summary }
 let running = null;
@@ -93,11 +96,23 @@ async function run() {
       steps,
       summary: bad ? `${bad.name}: ${bad.detail}` : steps.map((s) => `${s.name} ${s.name === 'Qualities' ? s.detail : 'OK'}`).join(' · ')
     };
+    // Down: look again in 30 min (not 3 h), so its return is noticed soon.
+    if (status === 'down' || status === 'blocked') {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => run().catch(() => {}), DOWN_RECHECK_MS);
+      if (retryTimer.unref) retryTimer.unref();
+    }
     return last;
   })().finally(() => {
     running = null;
   });
   return running;
+}
+
+// Vidsrc is known to be down right now (a recent check said so): downloads
+// skip it instead of spending its token / page time on every episode.
+function isDown(now = Date.now()) {
+  return !!(last && (last.status === 'down' || last.status === 'blocked') && now - last.at < DOWN_TRUST_MS);
 }
 
 // The latest result; starts a check when there is none or it is stale.
@@ -130,6 +145,7 @@ function start() {
 
 module.exports = {
   run,
+  isDown,
   get,
   start,
   noteLocked,

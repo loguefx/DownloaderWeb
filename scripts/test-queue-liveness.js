@@ -726,6 +726,43 @@ async function main() {
     await sleep(50);
   }
 
+  // ---- 6j. Vidsrc down per its health check: TV goes straight elsewhere -----
+  console.log('\n[6j] Vidsrc down: TV skips it; a special is not given up as "not on Vidsrc"');
+  {
+    const savedBase = config.download.retryBaseDelayMs;
+    config.download.retryBaseDelayMs = 20;
+    const sitesReg = M('sites');
+    if (!sitesReg.profiles.length) sitesReg.init(DATA_DIR);
+    const vs = sitesReg.resolve('https://vidsrc.sh/embed/tv/1408-1-9');
+    const origDirect = vs.directResolve;
+    let direct = 0;
+    vs.directResolve = async () => { direct += 1; return { status: 'resolved' }; };
+    const vh = M('vidsrchealth');
+    const origDown = vh.isDown;
+    vh.isDown = () => true;
+    const seen = [];
+    const run = async (season, ep) => {
+      const id = manager.add({
+        label: `House S${season}E${ep}`, series: 'House', season, episode: ep, minHeight: 1080, tmdb: '1408',
+        url: `https://vidsrc.sh/embed/tv/1408-${season}-${ep}`, outputRoot: path.join(DATA_DIR, 'staging'),
+        discover: (it) => { seen.push(!!it._skipVidsrcPages); return Promise.resolve({ status: 'failed', reason: 'No video sources found on the page' }); }
+      });
+      const it = manager.items.find((x) => x.id === id);
+      for (let i = 0; i < 200 && !(it && it.status === 'failed'); i++) await sleep(50);
+      manager.removeByIds([id]);
+      await sleep(50);
+      return it;
+    };
+    await run(1, 9);
+    check('Vidsrc not asked at all', direct === 0, String(direct));
+    check('the other sites were, without Vidsrc\'s pages', seen.length >= 1 && seen.every(Boolean), JSON.stringify(seen));
+    const sp = await run(0, 1);
+    check('a special is not marked "not on Vidsrc" while Vidsrc is merely down', !sp._unobtainable, String(sp._unobtainable));
+    vs.directResolve = origDirect;
+    vh.isDown = origDown;
+    config.download.retryBaseDelayMs = savedBase;
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

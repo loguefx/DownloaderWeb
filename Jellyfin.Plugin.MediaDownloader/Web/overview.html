@@ -578,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 55;
+                const EXPECTED_ENGINE_BUILD = 57;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
@@ -1039,7 +1039,19 @@
                     const upLine = hh.upgrades > 0
                         ? '<div class="small muted" style="margin-top:.6em;">' + plural(hh.upgrades, 'episode or film', 'episodes or films') + ' saved below the quality floor (720p) ' + (hh.upgrades === 1 ? 'is' : 'are') + ' checked weekly and replaced when a 1080p copy appears.</div>'
                         : '';
-                    el.innerHTML = rows + statLine + upLine +
+                    // Find more sources: the engine tests TV/movie players itself.
+                    const f = S.finder || {};
+                    const fRes = (f.results || []);
+                    const finderLine = '<div style="margin-top:.8em;">' +
+                        '<button type="button" class="mdl-btn sm" data-find-sources' + (f.running ? ' disabled' : '') + '>' +
+                        (f.running ? '<span class="mdl-spin"></span> Testing ' + esc(f.current || '…') + ' (' + fRes.length + ' of ' + (f.total || '?') + ')' : 'Find more TV / movie sources') + '</button>' +
+                        '<div class="small muted" style="margin-top:.4em;">Tries other TV/movie players from this engine\'s VPN (one episode and one film each, a few minutes in all) and adds the ones that deliver a stream. Anime sources are not touched.</div>' +
+                        (fRes.length ? '<div class="small" style="margin-top:.4em;">' + fRes.map((r) =>
+                            '<div>' + (r.best === 'none' ? '<span class="muted">' : '<b>') + esc(r.name) + ': TV ' + esc(r.tv) + ', film ' + esc(r.movie) +
+                            (r.installed ? ' · in use' : '') + (r.best === 'none' ? '</span>' : '</b>') + '</div>').join('') + '</div>' : '') +
+                        ((f.installed || []).length ? '<div class="small muted" style="margin-top:.3em;">Added sources: ' + esc(f.installed.join(', ')) + '</div>' : '') +
+                        '</div>';
+                    el.innerHTML = rows + statLine + upLine + finderLine +
                         '<div class="hint" style="margin-top:.6em;">Probed ' + whenOf(sh.checkedAt) + (vpnTxt ? ' with ' + vpnTxt : '') +
                         ' from the engine — this is the IP downloads actually use. A red source here will fail downloads through it.</div>';
                 }
@@ -1064,6 +1076,7 @@
                 let srcChecking = null;
                 function checkSources() {
                     if (srcChecking) return srcChecking;
+                    get('MediaDownloader/SourcesFind').then((fs) => { S.finder = fs; }).catch(() => {});
                     srcChecking = get('MediaDownloader/SourcesHealth')
                         .then((sh) => { S.sources = sh; S.sourcesError = null; })
                         .catch((e) => { S.sources = null; S.sourcesError = (e && e.message) || 'failed to check'; })
@@ -2602,6 +2615,19 @@
                         } else {
                             del('MediaDownloader/Queue/' + id).then(refresh).catch((err) => alert(err.message));
                         }
+                        return;
+                    }
+                    if (el.hasAttribute('data-find-sources')) {
+                        if (!confirm('Test other TV/movie players from the engine now?\n\nIt opens each one in the engine\'s hidden browser for one episode and one film (a few minutes in all) and adds the ones that deliver a stream.')) return;
+                        post('MediaDownloader/SourcesFind').then((r) => { S.finder = r; renderSources(true); }).catch((err) => alert(err.message));
+                        // Follow it while it runs.
+                        const follow = setInterval(() => {
+                            get('MediaDownloader/SourcesFind').then((r) => {
+                                S.finder = r;
+                                if (S.view === 'overview') renderSources(true);
+                                if (!r || !r.running) { clearInterval(follow); checkSources(); }
+                            }).catch(() => clearInterval(follow));
+                        }, 5000);
                         return;
                     }
                     if (el.hasAttribute('data-up-scan')) {
