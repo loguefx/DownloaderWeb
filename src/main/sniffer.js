@@ -284,6 +284,14 @@ class Sniffer extends EventEmitter {
 
   // Linux gives each SFlix episode its own Chromium partition so five Vidfast
   // players do not spend one-shot /s/ tokens on each other.
+  // See every request URL the engine's browser windows make; returns the
+  // function that removes the tap.
+  addUrlTap(fn) {
+    if (!this._urlTaps) this._urlTaps = new Set();
+    this._urlTaps.add(fn);
+    return () => this._urlTaps.delete(fn);
+  }
+
   attachSession(sess) {
     if (!sess || sess._wvdSniffAttached) return;
     sess._wvdSniffAttached = true;
@@ -292,6 +300,13 @@ class Sniffer extends EventEmitter {
     // and they spam the console. Cancel them, but remember the initiator so
     // discovery can log whether it was the player iframe or a third-party script.
     sess.webRequest.onBeforeRequest((details, cb) => {
+      // URL taps (addUrlTap): code that needs to see what a player requests,
+      // e.g. the Vidsrc API token the player sends. Never blocks anything.
+      if (this._urlTaps && this._urlTaps.size) {
+        for (const tap of this._urlTaps) {
+          try { tap(details.url || '', details); } catch (e) { /* a tap never breaks loading */ }
+        }
+      }
       // disable-devtool pauses the renderer when the player fetch hook is
       // attached, which leaves Vidapi stuck on its top-level 404 shell.
       if (/disable-devtool/i.test(details.url || '')) return cb({ cancel: true });

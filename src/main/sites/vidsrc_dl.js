@@ -218,7 +218,12 @@ async function tokenChain(relay, ref, opts = {}) {
     return note(`player page on ${host}: ${(e && e.message) || e}`);
   }
   if (pr.status !== 200) return note(`player page on ${host}: HTTP ${pr.status}`);
-  const tok = pageValue(pr.body.toString('utf8'), 'apiToken');
+  const playerText = pr.body.toString('utf8');
+  // The labelled value first; else any API-token-shaped JWT on the page or
+  // the landing page (Vidsrc renamed / moved it: "player page has no
+  // apiToken"). The JWT is recognised by its payload (expiry / IP), not by
+  // the name next to it.
+  const tok = pageValue(playerText, 'apiToken') || findApiJwt(playerText) || findApiJwt(lr.body.toString('utf8'));
   if (!tok) {
     // Kept for scripts/vidsrc-check.js: what the page holds instead.
     lastPlayerPage[relay] = { url: playerHref, text: pr.body.toString('utf8').slice(0, 4000) };
@@ -232,6 +237,29 @@ function tokenFailure() {
   const bad = Object.entries(lastChain).filter(([, v]) => v && v !== 'ok');
   if (!bad.length || Object.values(lastChain).includes('ok')) return '';
   return bad.map(([relay, why]) => `${relay.replace(/^https?:\/\//, '')}: ${why}`).join('; ');
+}
+
+// A JWT that looks like Vidsrc's API token: three base64url parts, and a
+// payload with an expiry or an IP (the token is IP-bound and short-lived).
+function findApiJwt(text) {
+  const all = String(text || '').match(/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g) || [];
+  for (const t of all) {
+    try {
+      const p = JSON.parse(Buffer.from(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      if (p && (p.exp || p.ip)) return t;
+    } catch (e) {
+      /* not a JWT */
+    }
+  }
+  return '';
+}
+
+// Last resort when no relay page gives the token: a real browser (main.js
+// registers vidsrcbrowser.js; the plain-Node scripts have none).
+let browserTokenProvider = null;
+let lastTokenVia = ''; // 'relay' | 'browser': where the last token came from
+function setBrowserTokenProvider(fn) {
+  browserTokenProvider = typeof fn === 'function' ? fn : null;
 }
 
 // Race a set of promises and resolve with { value, index } of the FIRST one
@@ -273,9 +301,19 @@ async function acquireApiToken(ref) {
   // relay must never cost the token for an hour).
   const live = RELAY_HOSTS.filter((h) => !isDeadHost(h));
   const dead = RELAY_HOSTS.filter((h) => isDeadHost(h));
-  const tok = await race(live.length ? live : RELAY_HOSTS);
-  if (tok || !live.length || !dead.length) return tok;
-  return race(dead, { ignoreDead: true });
+  let tok = await race(live.length ? live : RELAY_HOSTS);
+  if (!tok && live.length && dead.length) tok = await race(dead, { ignoreDead: true });
+  if (tok) lastTokenVia = 'relay';
+  if (tok || !browserTokenProvider) return tok;
+  // No relay page gives it any more: let the player in a browser get it.
+  try {
+    tok = await browserTokenProvider(ref, {});
+  } catch (e) {
+    tok = '';
+  }
+  lastChain.browser = tok ? 'ok' : 'the player in the browser did not show a token either';
+  if (tok) lastTokenVia = 'browser';
+  return tok || '';
 }
 
 // Shared API token. Getting one walks the player chain on BOTH relay hosts
@@ -932,6 +970,9 @@ module.exports = {
   pick1080, download, fetchStreamUrls, acquireApiToken, getApiToken, episodeRelease, UA, parseMaster, probeAudioLangs,
   isBlocked, isBlockPage, blockedUntilMs: () => blockedUntil, tokenChain, tokenFailure, pageValue, API_BASE, RELAY_HOSTS, meetsFloor,
   chainResult: (relay) => lastChain[relay] || '',
+  setBrowserTokenProvider,
+  findApiJwt,
+  tokenVia: () => lastTokenVia,
   fetchHostToken,
   GEN_VARIANTS,
   genVariant: () => genVariant,

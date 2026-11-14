@@ -41,7 +41,8 @@ async function run() {
       } else {
         let token = '';
         try { token = await v.getApiToken(PROBE, { fresh: true }); } catch (e) { token = ''; }
-        if (!step('API token', !!token, token ? 'OK' : (v.tokenFailure() || 'no token from any relay host'))) {
+        const viaBrowser = !!token && typeof v.tokenVia === 'function' && v.tokenVia() === 'browser';
+        if (!step('API token', !!token, token ? (viaBrowser ? 'OK (taken from the player in the browser - Vidsrc no longer shows it on its pages)' : 'OK') : (v.tokenFailure() || 'no token from any relay host'))) {
           status = 'down';
         } else {
           let list = null;

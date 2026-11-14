@@ -521,6 +521,8 @@ app.whenReady().then(() => {
   // each watcher line twice.
   watcher.start();
   // Vidsrc's own steps, checked every few hours (Overview > Sources).
+  // Vidsrc's API token through a real browser when its pages stop showing it.
+  try { require('./vidsrcbrowser').register(); } catch (e) { /* optional */ }
   try { require('./vidsrchealth').start(); } catch (e) { /* status only */ }
   // Copies saved below their quality floor: checked weekly for a better one.
   try { require('./upgrades').start((m) => manager._log(m)); } catch (e) { /* optional */ }

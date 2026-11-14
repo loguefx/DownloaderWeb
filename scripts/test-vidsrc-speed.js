@@ -84,6 +84,7 @@ let staleTokenOnce = false; // scenario: first data-API call 403s (stale token)
 let dataApiCalls = 0;
 let playerTokenHits = 0;
 let pageChanged = false;
+let tokenRenamed = ''; // scenario: the player page carries the JWT under another name
 let relayDnsGone = false;
 let relayAggregate = false; // scenario: vidsrc.sh fails to connect on every address
 let lowFirst = 0;
@@ -130,6 +131,7 @@ function routeFor(u) {
   if (u.includes('cdn-good.example/embed/player/9')) {
     mark('player-token');
     playerTokenHits += 1;
+    if (tokenRenamed) return { status: 200, body: () => Buffer.from('<script>window.__p = {"k":"' + tokenRenamed + '"};</script>') };
     return { status: 200, body: () => Buffer.from('window.CONFIG = {"apiToken":"tokB"};') };
   }
   if (u.includes('data.vidsrc.sh/api.php')) {
@@ -481,6 +483,31 @@ const at = (name) => {
   check('token from the skipped mirror instead of none', tok16 === 'tokB', JSON.stringify(tok16));
   mode = 'winner-first';
   vs._resetDeadHostsForTests();
+
+  console.log('\n[17] Vidsrc renamed the token on its page: found by its shape (a JWT with an expiry)');
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const jwt = b64({ typ: 'JWT', alg: 'HS256' }) + '.' + b64({ exp: 9999999999, ip: '1.2.3.4' }) + '.' + 'c2lnbmF0dXJlLXBhcnQ';
+  tokenRenamed = jwt;
+  vs._resetDeadHostsForTests();
+  mode = 'winner-first';
+  const t17 = await vs.getApiToken({ type: 'tv', tmdb: '1408', season: 1, episode: 9 }, { fresh: true });
+  check('token found although it is no longer called apiToken', t17 === jwt, String(t17).slice(0, 30));
+  check('a JWT without expiry/IP is not mistaken for it', vs.findApiJwt('x eyJhbGciOiJub25lIn0.' + b64({ sub: 'x' }) + '.abcdefghijk y') === '');
+  tokenRenamed = '';
+
+  console.log('\n[18] No page shows a token: the player in a browser is asked');
+  pageChanged = true;
+  let asked = 0;
+  vs.setBrowserTokenProvider(async () => { asked += 1; return 'tokFromBrowser'; });
+  const t18 = await vs.getApiToken({ type: 'tv', tmdb: '1408', season: 1, episode: 9 }, { fresh: true });
+  check('token from the browser', t18 === 'tokFromBrowser' && asked === 1, `${t18} ${asked}`);
+  check('...and it says so', vs.tokenVia() === 'browser');
+  vs.setBrowserTokenProvider(async () => '');
+  const t18b = await vs.getApiToken({ type: 'tv', tmdb: '1408', season: 1, episode: 9 }, { fresh: true });
+  check('browser has none either: no token, the reason names it', t18b === '' && /browser/.test(vs.tokenFailure()), vs.tokenFailure());
+  vs.setBrowserTokenProvider(null);
+  pageChanged = false;
+  await vs.getApiToken({ type: 'tv', tmdb: '1408', season: 1, episode: 9 }, { fresh: true });
 
   console.log('\n[10] Master playlists the parser used to drop silently (Breaking Bad: "NO source reached 1080p")');
   const M = 'https://cdn.example/hls/abc/master.m3u8?token=t';
