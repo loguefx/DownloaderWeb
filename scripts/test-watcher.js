@@ -708,6 +708,40 @@ async function main() {
     watcher.onLog = origLog;
   }
 
+  console.log('\n[G] Missed-episode audit (Devils\' Crest: E4 on disk, E3 not)');
+  {
+    const dubstatus = M('dubstatus');
+    dubstatus._resetForTests();
+    for (const x of schedule.list()) schedule.remove(x.key);
+    const realInfo = tmdb.tmdbInfo;
+    const realSeason = tmdb.tmdbSeason;
+    tmdb.tmdbInfo = async () => ({ tmdb: '8801', title: 'Gap Crest', seasons: [{ season: 1, episodes: 5 }] });
+    tmdb.tmdbSeason = async () => ({ tmdb: '8801', season: 1, episodes: eps([[1, past(40)], [2, past(33)], [3, past(26)], [4, past(19)], [5, future(3)]]) });
+    for (const e of [1, 2, 4]) mkEp(`Gap Crest/Season 1/Gap Crest S01E0${e}.mp4`);
+    schedule.add({ series: 'Gap Crest', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('8801', 1, 1)).template, baseUrl: vid('8801', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '8801' });
+    schedule.add({ series: 'Whole Show', season: 1, mode: 'dub', baseUrl: vid('8802', 1, 1), outputRoot: staging, library, anime: true, tmdb: '8802' });
+    dubstatus._setAniwaveForTests(async () => ({ show: { id: 'g' }, episodes: [1, 2, 3, 4].map((e) => ({ episode: e, dub: true })) }));
+    // E3 tried and failed in the queue.
+    manager.items.push({ id: 99901, label: 'Gap Crest S1E3', series: 'Gap Crest', season: 1, episode: 3, mode: 'dub', status: 'failed', error: 'All dubbed sources failed' });
+    const before = queueCalls.length;
+    const r = await watcher.gaps();
+    const g = r.series.find((x) => x.series === 'Gap Crest');
+    const e3 = g && g.missing.find((m) => m.episode === 3);
+    check('E3 is reported missing, as a HOLE, with the queue\'s error', e3 && e3.hole && /FAILED in the queue: All dubbed sources failed/.test(e3.state) && e3.dubbedOnAniwave === true, JSON.stringify(g));
+    check('an episode not aired yet is not reported', g && !g.missing.some((m) => m.episode === 5) && g.aired === 4 && g.onDisk === 3);
+    check('report only: nothing queued', queueCalls.length === before);
+    manager.items = manager.items.filter((it) => it.id !== 99901);
+    const r2 = await watcher.gaps({ queue: true, series: 'gap crest' });
+    const g2 = r2.series[0];
+    check('a missed dubbed episode is MISSED, and --queue queues it (only it)', r2.audited === 1 && /^MISSED/.test(g2.missing[0].state) && queueCalls.length === before + 1 && queueCalls[queueCalls.length - 1].episode === 3, JSON.stringify([g2, queueCalls.slice(before)]));
+    dubstatus._setAniwaveForTests(async () => ({ show: { id: 'g' }, episodes: [1, 2, 3, 4].map((e) => ({ episode: e, dub: e !== 3 })) }));
+    const r3 = await watcher.gaps({ queue: true, series: 'gap crest' });
+    check('not dubbed yet: said so, and never queued', /not dubbed/.test(r3.series[0].missing[0].state) && queueCalls.length === before + 1, JSON.stringify(r3.series[0]));
+    tmdb.tmdbInfo = realInfo;
+    tmdb.tmdbSeason = realSeason;
+    dubstatus._setAniwaveForTests(async () => null);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

@@ -804,6 +804,13 @@ async function handle(req, res, u) {
     }
 
     // ---- schedules ----
+    if (seg === 'schedules' && parts[2] === 'gaps' && req.method === 'POST') {
+      // Missed-episode audit of every watched anime (queue: true queues
+      // the dubbed ones that nothing is fetching).
+      const body = (await readBody(req)) || {};
+      json(res, 200, await require('./watcher').gaps({ queue: !!body.queue, series: body.series || null }));
+      return;
+    }
     if (seg === 'schedules' && parts[2] === 'explain' && req.method === 'POST') {
       // What the daily check sees for one watched title (nothing queued).
       const body = (await readBody(req)) || {};

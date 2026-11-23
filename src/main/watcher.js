@@ -674,6 +674,18 @@ class Watcher {
       );
       queued += r.queued || 0;
     }
+    // A hole: missing while a later episode is on disk (Devils' Crest had E4
+    // and not E3 with nothing saying so). Said every pass until it is filled.
+    {
+      const have = eps.filter((e) => onDiskOf.get(e) === true || (floorActive && Number(e.episode) <= floor)).map((e) => Number(e.episode));
+      const top = have.length ? Math.max(...have) : 0;
+      const holes = eps.filter((e) => onDiskOf.get(e) === false && Number(e.episode) < top).map((e) => Number(e.episode));
+      if (holes.length) {
+        this.onLog(`"${s.series}" season ${season}: E${holes.join(', E')} missing while E${top} is on disk - ` +
+          (dryRun ? 'report-only mode: not queued.' : 'queued if dubbed, else waiting for its dub.') +
+          ' (node scripts/missed-episodes.js shows where each one stands)');
+      }
+    }
     if (dubGate && notDubbed) {
       this.onLog(
         `"${s.series}" season ${season}: ${notDubbed} aired episode(s) not dubbed yet - ` +
@@ -752,6 +764,96 @@ class Watcher {
       }
     }
     return 0;
+  }
+
+  // Missed-episode audit: every watched anime's current season, aired
+  // episode by episode, against the disk. A missing episode is reported with
+  // where it really stands - in the queue (and its last error), on the
+  // waiting-for-dub list, not dubbed yet, or MISSED (dubbed, yet nothing is
+  // fetching it). A "hole" is a missing episode below one that is on disk
+  // (Devils' Crest: E4 there, E3 not). queue: true also queues the missed and
+  // failed ones that are dubbed (the daily check's own queueing).
+  async gaps({ queue = false, series = null } = {}) {
+    const want = series ? String(series).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() : '';
+    const entries = schedule.list().filter((s) => (s.anime || s.animeLike) && (!want || String(s.series || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').includes(want)));
+    const today = new Date().toISOString().slice(0, 10);
+    const dubstatus = require('./dubstatus');
+    const out = [];
+    for (const s of entries) {
+      const row = { series: s.series, season: s.season, tmdb: s.tmdb || null, frozen: this.isFrozen(s), aired: 0, onDisk: 0, missing: [], note: '' };
+      out.push(row);
+      if (!s.tmdb) { row.note = 'no TMDB id - not audited'; continue; }
+      try {
+        const anime = !!s.anime;
+        const numbering = s.numbering === 'anime' ? 'anime' : 'tmdb';
+        const info = await tmdb.tmdbInfo(s.tmdb, 'tv', { anime, numbering });
+        const seasonNums = ((info && info.seasons) || []).filter((x) => x && x.season > 0).map((x) => x.season);
+        let season = Number(s.season) || null;
+        if (!season || !seasonNums.includes(season)) season = seasonNums[seasonNums.length - 1] || season;
+        row.season = season;
+        const data = season ? await tmdb.tmdbSeason(s.tmdb, season, { anime, numbering }) : null;
+        const aired = airedEpisodes((data && data.episodes) || [], today);
+        row.aired = aired.length;
+        if (!aired.length) { row.note = 'no aired episodes on TMDB'; continue; }
+        const roots = this.rootsFor(s);
+        const present = new Set();
+        const absent = [];
+        await organizer.withScanCacheAsync(async () => {
+          for (const e of aired) {
+            const meta = { series: s.series, season, episode: e.episode, tmdb: String(s.tmdb) };
+            try { meta.alt = await tmdb.episodeAlternates(meta.tmdb, { anime, numbering }, season, e.episode); } catch (err) { meta.alt = null; }
+            let hit = false;
+            for (const root of roots) {
+              try { if (root && organizer.existingEpisodeFile(root, meta, null, e.name || '')) { hit = true; break; } } catch (err) { /* unreadable */ }
+            }
+            if (hit) present.add(Number(e.episode)); else absent.push(Number(e.episode));
+          }
+        });
+        row.onDisk = present.size;
+        if (!absent.length) continue;
+        const top = present.size ? Math.max(...present) : 0;
+        let aw = null;
+        try { aw = await this._capped(dubstatus.aniwaveDubMap(s.series, season), 60000); } catch (err) { aw = null; }
+        if (aw === CAPPED) aw = null;
+        const waitIds = new Set(pending.list().map((w) => pending.constructor.identity(w)));
+        for (const ep of absent) {
+          const id = pending.constructor.identity({ series: s.series, season, episode: ep, mode: s.mode || 'dub' });
+          const inQ = manager.items.filter((it) => pending.constructor.identity(it) === id).pop();
+          const dub = aw ? (aw.get(ep) === true ? true : aw.has(ep) ? false : null) : null;
+          let state;
+          if (inQ && !['failed', 'cancelled', 'done', 'waiting'].includes(inQ.status)) state = `in the queue (${inQ.status})`;
+          else if (inQ && inQ.status === 'failed') state = `FAILED in the queue: ${inQ.error || 'no reason given'}`;
+          else if (waitIds.has(id) || (inQ && inQ.status === 'waiting')) state = 'on the waiting-for-dub list';
+          else if (dub === false) state = 'not dubbed on Aniwave yet';
+          else state = 'MISSED - nothing is fetching it';
+          row.missing.push({ episode: ep, hole: ep < top, dubbedOnAniwave: dub, state });
+        }
+        if (aw == null) row.note = 'Aniwave gave no dub list for this title (not found, or not answering)';
+        // Missed / failed ones, and waiting ones Aniwave now shows dubbed. The
+        // daily check's own queueing decides each (an undubbed one is parked,
+        // never downloaded).
+        const fixable = row.missing.filter((m) => /^(MISSED|FAILED)/.test(m.state) || (/waiting-for-dub/.test(m.state) && m.dubbedOnAniwave === true));
+        if (queue && fixable.length && !row.frozen) {
+          const template = s.template || (s.baseUrl ? urltemplate.toTemplate(s.baseUrl).template : null);
+          let urlMap = null;
+          if (numbering === 'anime' && info.numbering === 'anime' && tmdb.isTmdbKeyedUrl(template || s.baseUrl)) {
+            urlMap = (sn, ep) => animelayout.tmdbPairFromAnimeSeasons(info.seasons, sn, ep);
+          }
+          const sourceTotal = info.seasons.reduce((a, x) => a + ((x && x.season > 0 && x.episodes) || 0), 0);
+          const risk = organizer.seriesLayoutRiskFor(roots, s.series, sourceTotal);
+          if (risk.mode === 'hold') {
+            row.note = `not queued: library layout is unsafe to auto-download (${risk.reason})`;
+          } else {
+            const eps = aired.filter((e) => fixable.some((m) => m.episode === Number(e.episode)));
+            const r = await this.queueMissingEps(s, season, eps, urlMap, template, roots, false, sourceTotal);
+            row.queued = r.queued;
+          }
+        }
+      } catch (e) {
+        row.note = 'audit failed: ' + ((e && e.message) || e);
+      }
+    }
+    return { audited: out.length, series: out };
   }
 
   // Why is a watched title (not) picking up new episodes? Runs its check in
