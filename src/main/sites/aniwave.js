@@ -18,7 +18,7 @@ const catalog = require('./aniwave_api');
 //   /watch/{slug}/episode/{n}?source=dub  (and servers are tagged data-type=dub).
 module.exports = {
   id: 'aniwave',
-  name: 'Aniwave (aniwaves.ru)',
+  name: 'Aniwave',
   // Plus whatever address Aniwave uses now (engine setting / followed redirect).
   match: [/aniwaves?\.ru/i, /\baniwave\b/i, new (class CurrentAniwaveHost extends RegExp {
     test(u) {
