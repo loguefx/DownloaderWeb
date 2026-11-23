@@ -15,6 +15,20 @@
 const https = require('https');
 
 const BASE = 'https://aniwaves.ru';
+// The address in use: the one set in the engine settings (aniwaveBase), else
+// the one the site last redirected to, else BASE. Aniwave moves address now
+// and then; a redirect to the new one is followed and remembered.
+function base() {
+  try {
+    const c = require('../engineconfig').get() || {};
+    if (c.aniwaveBase && /^https?:\/\/[^/]+$/.test(String(c.aniwaveBase).replace(/\/$/, ''))) return String(c.aniwaveBase).replace(/\/$/, '');
+  } catch (e) {
+    /* plain Node / no config */
+  }
+  return BASE;
+}
+// What the site answered last (for dub-check / the Sources row).
+let lastResponse = null;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 const CACHE_MS = 6 * 3600 * 1000;
 const cache = new Map(); // key -> { at, value }
@@ -49,13 +63,46 @@ let get = (pathAndQuery, { ajax = false } = {}) =>
     const headers = { 'User-Agent': UA, Accept: ajax ? 'application/json, text/javascript, */*' : 'text/html' };
     if (ajax) {
       headers['X-Requested-With'] = 'XMLHttpRequest';
-      headers.Referer = BASE + '/';
+      headers.Referer = base() + '/';
     }
-    req = https.get(BASE + pathAndQuery, { headers, timeout: 15000 }, (res) => {
-      if (res.statusCode !== 200) {
+    const fetchUrl = (url, hops) => {
+    const lib = url.startsWith('http:') ? require('http') : https;
+    req = lib.get(url, { headers, timeout: 15000 }, (res) => {
+      const loc = res.headers && res.headers.location;
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc && hops < 3) {
         res.resume();
-        return resolve(null);
+        let next = '';
+        try { next = new URL(loc, url).href; } catch (e) { next = ''; }
+        if (!next) return resolve(null);
+        // Moved to another address for the same page: use that address from
+        // now on (kept in the engine settings).
+        try {
+          const from = new URL(url);
+          const to = new URL(next);
+          if (to.host !== from.host && to.pathname === from.pathname) {
+            const origin = to.origin;
+            require('../engineconfig').set({ aniwaveBase: origin });
+            console.log(`[aniwave] the site moved to ${origin} - using it from now on`);
+          }
+        } catch (e) { /* keep the old address */ }
+        return fetchUrl(next, hops + 1);
       }
+      if (res.statusCode !== 200) {
+        let peek = '';
+        res.setEncoding('utf8');
+        res.on('data', (d) => { if (peek.length < 300) peek += d; });
+        res.on('end', () => {
+          lastResponse = {
+            at: Date.now(), url, status: res.statusCode, server: String(res.headers.server || ''),
+            cloudflare: /cloudflare/i.test(String(res.headers.server || '')) || !!res.headers['cf-ray'] || /just a moment|cf-chl/i.test(peek),
+            body: peek.replace(/\s+/g, ' ').slice(0, 160)
+          };
+          resolve(null);
+        });
+        res.on('error', () => resolve(null));
+        return undefined;
+      }
+      lastResponse = { at: Date.now(), url, status: 200 };
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (d) => {
@@ -66,7 +113,12 @@ let get = (pathAndQuery, { ajax = false } = {}) =>
       res.on('close', () => resolve(null)); // closed without 'end': no answer
     });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(null));
+    req.on('error', (e) => {
+      lastResponse = { at: Date.now(), url, status: 0, error: (e && (e.code || e.message)) || 'network error' };
+      resolve(null);
+    });
+    };
+    fetchUrl(base() + pathAndQuery, 0);
   });
 
 // Injectable for tests: (title, season) -> [other names of the work]
@@ -239,11 +291,13 @@ async function unnumberedEntries(title, excludeIds = []) {
 }
 
 function episodeUrl(show, episode) {
-  return `${BASE}/watch/${show.slug}/ep-${Number(episode)}`;
+  return `${base()}/watch/${show.slug}/ep-${Number(episode)}`;
 }
 
 module.exports = {
-  BASE,
+  get BASE() { return base(); },
+  base,
+  lastResponse: () => lastResponse,
   search,
   episodes,
   pickShow,

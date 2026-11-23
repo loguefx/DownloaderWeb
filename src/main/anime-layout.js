@@ -29,10 +29,23 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) webvideodownloader';
 
 // Mirrors, best-effort. The official build's API shape is tried first, then
 // the older mirror's ajax shape. A parked/dead mirror fails fast (non-JSON).
-const ANIWAVE_MIRRORS = [
+const ANIWAVE_MIRRORS_BUILTIN = [
   'https://aniwaves.ru',
   'https://aniwave.com'
 ];
+// The address set in the engine settings (or the one the site moved to)
+// comes first.
+const ANIWAVE_MIRRORS = new Proxy(ANIWAVE_MIRRORS_BUILTIN, {
+  get(target, prop) {
+    let list = target;
+    try {
+      const b = require('./sites/aniwave_api').base();
+      if (b && !target.includes(b)) list = [b].concat(target);
+    } catch (e) { /* builtin list */ }
+    const v = list[prop];
+    return typeof v === 'function' ? v.bind(list) : v;
+  }
+});
 
 const cache = new Map(); // key -> { at, value }
 

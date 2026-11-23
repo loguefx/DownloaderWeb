@@ -19,7 +19,17 @@ const catalog = require('./aniwave_api');
 module.exports = {
   id: 'aniwave',
   name: 'Aniwave (aniwaves.ru)',
-  match: [/aniwaves?\.ru/i, /\baniwave\b/i],
+  // Plus whatever address Aniwave uses now (engine setting / followed redirect).
+  match: [/aniwaves?\.ru/i, /\baniwave\b/i, new (class CurrentAniwaveHost extends RegExp {
+    test(u) {
+      try {
+        const b = require('./aniwave_api').base();
+        return !!b && new URL(String(u)).host === new URL(b).host;
+      } catch (e) {
+        return false;
+      }
+    }
+  })('(?!)')],
   dub: {
     dubLabelText: ['dub', 'dubbed', 'english dub'],
     subLabelText: ['sub', 'subbed', 'softsub'],

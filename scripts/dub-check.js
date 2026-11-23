@@ -68,7 +68,12 @@ async function main() {
     let res = null;
     try { res = await aw.search(q); } catch (e) { res = null; }
     console.log(`  search "${q}": ${res == null ? 'NO ANSWER' : res.length + ' result(s)'}${res && res.length ? ' - ' + res.slice(0, 6).map((r) => `"${r.title}"`).join(', ') : ''} (${secs(st)})`);
+    const lr = aw.lastResponse && aw.lastResponse();
+    if (res == null && lr) {
+      console.log(`    the site answered: ${lr.error ? 'network error ' + lr.error : 'HTTP ' + lr.status}${lr.server ? ' (server: ' + lr.server + ')' : ''}${lr.cloudflare ? ' - a Cloudflare check' : ''}${lr.body ? ' - "' + lr.body + '"' : ''}`);
+    }
   }
+  console.log('  (Aniwave elsewhere? Set its address: node scripts/set-aniwave.js https://THE-ADDRESS)');
   let s = t0();
   try {
     const info = await aw.seasonInfo(title, season);

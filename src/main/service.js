@@ -1110,6 +1110,12 @@ function settingsPut(patch) {
     if (!ok) throw badSetting('pathMappings must be a list of { jellyfin, engine } folder pairs');
     allowed.pathMappings = list.map((m) => ({ jellyfin: m.jellyfin.trim(), engine: m.engine.trim() }));
   }
+  // Aniwave's address (it moves now and then): "https://host" or "" for the default.
+  if (patch && patch.aniwaveBase !== undefined) {
+    const b = String(patch.aniwaveBase || '').trim().replace(/\/+$/, '');
+    if (b && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(b)) throw badSetting('aniwaveBase must be an address like https://aniwave.example (no path)');
+    allowed.aniwaveBase = b;
+  }
   if (patch && patch.minQuality != null) {
     const q = Number(patch.minQuality);
     allowed.minQuality = Number.isFinite(q) && q >= 0 ? q : 1080;
@@ -1547,7 +1553,11 @@ async function animeSourcesHealth() {
     const info = await Promise.race([aw.seasonInfo('Solo Leveling', 1), new Promise((r) => setTimeout(() => r(undefined), 45000))]);
     out.push(info
       ? { id: 'aniwave', name: 'Aniwave (anime)', status: 'ok', detail: `answering - "${info.show.title}" ${info.episodes.length} episode(s) listed`, ms: Date.now() - t0, showDetail: false }
-      : { id: 'aniwave', name: 'Aniwave (anime)', status: 'down', detail: info === undefined ? 'no answer in 45 s' : 'search / episode list gave no answer - anime dub status turns "unknown" and new dubbed episodes are not found', ms: Date.now() - t0, showDetail: true });
+      : (() => {
+        const lr = aw.lastResponse && aw.lastResponse();
+        const why = !lr ? '' : lr.error ? ` (network error ${lr.error})` : ` (HTTP ${lr.status}${lr.cloudflare ? ', a Cloudflare check' : ''})`;
+        return { id: 'aniwave', name: 'Aniwave (anime)', status: 'down', detail: (info === undefined ? 'no answer in 45 s' : `${aw.base()} is not answering${why}`) + ' - new dubbed anime episodes are not found. Switch the Mullvad server, or if Aniwave moved: node scripts/set-aniwave.js https://NEW-ADDRESS', ms: Date.now() - t0, showDetail: true };
+      })());
   } catch (e) {
     out.push({ id: 'aniwave', name: 'Aniwave (anime)', status: 'down', detail: (e && e.message) || String(e), ms: Date.now() - t0, showDetail: true });
   }
