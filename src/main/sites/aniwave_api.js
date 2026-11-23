@@ -20,12 +20,10 @@ const BASE = 'https://aniwaves.ru';
 // and then; a redirect to the new one is followed and remembered.
 function base() {
   try {
-    const c = require('../engineconfig').get() || {};
-    if (c.aniwaveBase && /^https?:\/\/[^/]+$/.test(String(c.aniwaveBase).replace(/\/$/, ''))) return String(c.aniwaveBase).replace(/\/$/, '');
+    return require('../siteaddress').current('aniwave') || BASE;
   } catch (e) {
-    /* plain Node / no config */
+    return BASE;
   }
-  return BASE;
 }
 // What the site answered last (for dub-check / the Sources row).
 let lastResponse = null;
@@ -80,9 +78,7 @@ let get = (pathAndQuery, { ajax = false } = {}) =>
           const from = new URL(url);
           const to = new URL(next);
           if (to.host !== from.host && to.pathname === from.pathname) {
-            const origin = to.origin;
-            require('../engineconfig').set({ aniwaveBase: origin });
-            console.log(`[aniwave] the site moved to ${origin} - using it from now on`);
+            require('../siteaddress').adopt('aniwave', to.origin, 'the site redirected there');
           }
         } catch (e) { /* keep the old address */ }
         return fetchUrl(next, hops + 1);

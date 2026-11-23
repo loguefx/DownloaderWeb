@@ -578,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 62;
+                const EXPECTED_ENGINE_BUILD = 63;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);

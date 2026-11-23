@@ -140,7 +140,7 @@ async function main() {
   const logs = [];
   const log = (m) => logs.push(m);
   let u = await awProfile.findTitle({ title: 'Solo Leveling', season: 1, episode: 3, anime: true, mode: 'dub' }, {}, log);
-  check('anime DUB, dubbed episode -> its Aniwave page', u === 'https://aniwaves.ru/watch/ore-dake-level-up-na-ken-76040/ep-3', u);
+  check('anime DUB, dubbed episode -> its Aniwave page', u === aw.base() + '/watch/ore-dake-level-up-na-ken-76040/ep-3', u);
   u = await awProfile.findTitle({ title: 'Solo Leveling', season: 2, episode: 5, anime: true, mode: 'dub' }, {}, log);
   check('anime DUB, episode with no dub yet -> nothing (says why)', u === null && logs.some((m) => /no English dub for "Solo Leveling Season 2: Arise from the Shadow" E5/.test(m)), logs.join(' | '));
   u = await awProfile.findTitle({ title: 'Solo Leveling', season: 2, episode: 5, anime: true, mode: 'sub' }, {}, log);

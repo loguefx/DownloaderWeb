@@ -28,6 +28,10 @@
 const { lookupMediaId } = require('./findtitle');
 
 const HOSTS = ['https://sv2.nontongo.day', 'https://sv2.nontongo.stream'];
+// The address in use (siteaddress: follows a move, or the user's choice).
+const host = () => {
+  try { return require('../siteaddress').current('nontongo') || HOSTS[0]; } catch (e) { return HOSTS[0]; }
+};
 
 function mirrorUrls(pageUrl) {
   let path = '/';
@@ -49,7 +53,7 @@ function mirrorUrls(pageUrl) {
     out.push(abs);
   };
   if (current) add(current);
-  for (const origin of HOSTS) add(origin);
+  for (const origin of [host(), ...HOSTS]) add(origin);
   return out;
 }
 
@@ -125,12 +129,12 @@ module.exports = {
     let url = '';
     if (season && episode) {
       if (tmdb) {
-        url = `${HOSTS[0]}/01russia/multisourcesoap.php?id=${tmdb}&season=${season}&episode=${episode}&type=tv`;
+        url = `${host()}/01russia/multisourcesoap.php?id=${tmdb}&season=${season}&episode=${episode}&type=tv`;
       } else if (imdb) {
-        url = `${HOSTS[0]}/soap/tv/${imdb}/${season}/${episode}`;
+        url = `${host()}/soap/tv/${imdb}/${season}/${episode}`;
       }
     } else if (tmdb) {
-      url = `${HOSTS[0]}/01russia/multisourcesoap.php?id=${tmdb}&type=movie`;
+      url = `${host()}/01russia/multisourcesoap.php?id=${tmdb}&type=movie`;
     }
     if (!url) return null;
     onLog(`NontonGo: trying ${url}`);

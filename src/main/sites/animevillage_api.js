@@ -27,6 +27,15 @@
 const https = require('https');
 
 const BASE = 'https://www.animevillage.org';
+// The address in use (it can move: siteaddress follows redirects, heals to
+// another known address, or takes the user's).
+function base() {
+  try {
+    return require('../siteaddress').current('animevillage') || BASE;
+  } catch (e) {
+    return BASE;
+  }
+}
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 const CACHE_MS = 6 * 3600 * 1000;
 const DUB_TTL = { yes: 7 * 24 * 3600 * 1000, no: 6 * 3600 * 1000 };
@@ -59,7 +68,24 @@ let get = (pathAndQuery) =>
       clearTimeout(deadline);
       resolve(v);
     };
-    const req = https.get(BASE + pathAndQuery, { headers: { 'User-Agent': UA, Accept: 'application/json' }, timeout: 30000 }, (res) => {
+    let req = null;
+    const fetchUrl = (url, hops) => {
+    req = https.get(url, { headers: { 'User-Agent': UA, Accept: 'application/json' }, timeout: 30000 }, (res) => {
+      // Moved: follow it, and use the new address from now on when the
+      // same page lives there.
+      const loc = res.headers && res.headers.location;
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && loc && hops < 3) {
+        res.resume();
+        let next = '';
+        try { next = new URL(loc, url).href; } catch (e) { next = ''; }
+        if (!next) return finish(null);
+        try {
+          const a = new URL(url);
+          const b = new URL(next);
+          if (a.host !== b.host && a.pathname === b.pathname) require('../siteaddress').adopt('animevillage', b.origin, 'the site redirected there');
+        } catch (e) { /* keep the address */ }
+        return fetchUrl(next, hops + 1);
+      }
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (d) => {
@@ -75,12 +101,14 @@ let get = (pathAndQuery) =>
       res.on('error', () => finish(null));
       res.on('close', () => finish(null)); // closed without 'end': no answer
     });
-    const deadline = setTimeout(() => {
-      try { req.destroy(); } catch (e) { /* ignore */ }
-      finish(null);
-    }, REQUEST_DEADLINE_MS);
     req.on('timeout', () => req.destroy());
     req.on('error', () => finish(null));
+    };
+    const deadline = setTimeout(() => {
+      try { if (req) req.destroy(); } catch (e) { /* ignore */ }
+      finish(null);
+    }, REQUEST_DEADLINE_MS);
+    fetchUrl(base() + pathAndQuery, 0);
   });
 
 // Site health. When the site gives NO answer at all (timeouts, no JSON) every
@@ -93,6 +121,10 @@ const DOWN_MS = 10 * 60 * 1000;
 let downUntil = 0;
 function isDown() {
   return Date.now() < downUntil;
+}
+// It answers again (e.g. at a new address): back in use at once.
+function markUp() {
+  downUntil = 0;
 }
 function markDown(ms = DOWN_MS) {
   downUntil = Date.now() + ms;
@@ -422,6 +454,8 @@ async function resolveEpisode({ title, season = 1, episode, mode = 'dub', names 
 }
 
 module.exports = {
+  base,
+  markUp,
   BASE,
   UA,
   search,

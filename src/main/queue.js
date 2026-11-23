@@ -1012,9 +1012,11 @@ class DownloadManager extends EventEmitter {
                 })
               ]).finally(() => clearTimeout(capTimer));
               if (outcome && outcome.status !== 'resolved' && /40 s/.test(outcome.reason || '')) {
-                // Hanging, not answering: skip it for a while for every item.
-                require('./sites/animevillage_api').markDown();
-                this._log(`${outcome.reason}; trying Aniwave (Anime Village skipped for 10 min).`);
+                // Slow, not necessarily down: these 40 s also cover the season
+                // mapping (Aniwave catalog, AniList names). Marking Anime Village
+                // down here put it "down" for everyone while it answered fine
+                // (its own API calls mark it down when IT gives no answer).
+                this._log(`Anime Village lookup took over 40 s; trying Aniwave for this episode.`);
               }
             } catch (e) {
               this._log('Anime Village lookup failed (' + ((e && e.message) || e) + '); trying Aniwave.');

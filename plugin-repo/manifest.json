@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.63",
+                "changelog": "Needs engine build 63 (source site addresses heal themselves: Aniwave, Anime Village and NontonGo follow redirects and try known alternate addresses; Anime Village is no longer marked down by a slow lookup).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v63/MediaDownloader.12.1.0.63.zip",
+                "checksum": "bb5808d78a725fd03a2f14a35397aae2",
+                "timestamp": "2026-11-23T03:35:03.000Z"
+            },
+            {
+                "version": "10.11.0.63",
+                "changelog": "Needs engine build 63 (source site addresses heal themselves: Aniwave, Anime Village and NontonGo follow redirects and try known alternate addresses; Anime Village is no longer marked down by a slow lookup).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v63/MediaDownloader.10.11.0.63.zip",
+                "checksum": "301116a6ff3dd4ebdbbb8383f57c8c59",
+                "timestamp": "2026-11-23T03:35:03.000Z"
+            },
+            {
+                "version": "10.10.0.63",
+                "changelog": "Needs engine build 63 (source site addresses heal themselves: Aniwave, Anime Village and NontonGo follow redirects and try known alternate addresses; Anime Village is no longer marked down by a slow lookup).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v63/MediaDownloader.10.10.0.63.zip",
+                "checksum": "20453b3c703eeeb49d6f29179c5d3e07",
+                "timestamp": "2026-11-23T03:35:03.000Z"
+            },
+            {
                 "version": "12.1.0.62",
                 "changelog": "Needs engine build 62 (Aniwave address follows the site when it moves; the Sources card says why Aniwave is not answering).",
                 "targetAbi": "12.1.0.0",

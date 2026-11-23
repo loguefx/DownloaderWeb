@@ -1110,11 +1110,22 @@ function settingsPut(patch) {
     if (!ok) throw badSetting('pathMappings must be a list of { jellyfin, engine } folder pairs');
     allowed.pathMappings = list.map((m) => ({ jellyfin: m.jellyfin.trim(), engine: m.engine.trim() }));
   }
+  // A source site's address (they move): { aniwave|animevillage|nontongo: "https://host" | "" }.
+  if (patch && patch.siteAddresses !== undefined) {
+    const sa = patch.siteAddresses || {};
+    const known = Object.keys(require('./siteaddress').KNOWN);
+    for (const [k, v] of Object.entries(sa)) {
+      if (!known.includes(k)) throw badSetting(`siteAddresses: unknown site "${k}" (one of ${known.join(', ')})`);
+      const b = String(v || '').trim().replace(/\/+$/, '');
+      if (b && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(b)) throw badSetting(`siteAddresses.${k} must be an address like https://site.example (no path)`);
+      require('./siteaddress').adopt(k, b, 'set by hand');
+    }
+  }
   // Aniwave's address (it moves now and then): "https://host" or "" for the default.
   if (patch && patch.aniwaveBase !== undefined) {
     const b = String(patch.aniwaveBase || '').trim().replace(/\/+$/, '');
     if (b && !/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(b)) throw badSetting('aniwaveBase must be an address like https://aniwave.example (no path)');
-    allowed.aniwaveBase = b;
+    require('./siteaddress').adopt('aniwave', b, 'set by hand');
   }
   if (patch && patch.minQuality != null) {
     const q = Number(patch.minQuality);
@@ -1544,8 +1555,52 @@ async function sourcesHealth() {
 // When Aniwave stops answering, every anime's dub status turns "unknown" and
 // new dubbed episodes are not picked up - this row says so at once.
 let animeHealthCache = null;
+// One quick GET: does this address answer like the site should? (body test)
+function siteAnswers(url, test) {
+  const mod = url.startsWith('http:') ? require('http') : require('https');
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => { if (!done) { done = true; clearTimeout(t); resolve(v); } };
+    const t = setTimeout(() => { try { req.destroy(); } catch (e) { /* ignore */ } fin(false); }, 20000);
+    const req = mod.get(url, { headers: { 'User-Agent': config.download.userAgent, Accept: '*/*' }, timeout: 15000 }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return fin(false); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => { if (body.length < 400000) body += d; });
+      res.on('end', () => fin(test(body)));
+      res.on('error', () => fin(false));
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => fin(false));
+  });
+}
+// When a source's current address does not answer, its other known
+// addresses are tried and the first that answers properly is used from then
+// on (siteaddress). How the engine keeps up when a site moves.
+const SITE_TESTS = {
+  aniwave: (b) => siteAnswers(b + '/filter?keyword=solo+leveling', (body) => /class="name d-title"/.test(body)),
+  animevillage: (b) => siteAnswers(b + '/api/search?search=solo%20leveling&page=1&perPage=5', (body) => /"media"\s*:/.test(body)),
+  nontongo: (b) => siteAnswers(b + '/01russia/multisourcesoap.php?id=125988&season=1&episode=1&type=tv', (body) => body.length > 200)
+};
+async function healSite(site) {
+  try {
+    const r = await require('./siteaddress').heal(site, SITE_TESTS[site]);
+    return r;
+  } catch (e) {
+    return { ok: false };
+  }
+}
 async function animeSourcesHealth() {
   if (animeHealthCache && Date.now() - animeHealthCache.at < 15 * 60 * 1000) return animeHealthCache.value;
+  // A source that does not answer at its address: try its other addresses
+  // first (it may have moved), then report.
+  for (const site of ['aniwave', 'animevillage']) {
+    const ok = await SITE_TESTS[site](require('./siteaddress').current(site)).catch(() => false);
+    if (!ok) {
+      const h = await healSite(site);
+      if (h.ok && site === 'animevillage') { try { require('./sites/animevillage_api').markUp && require('./sites/animevillage_api').markUp(); } catch (e) { /* ignore */ } }
+    }
+  }
   const out = [];
   const t0 = Date.now();
   try {
@@ -1630,7 +1685,7 @@ async function sourcesHealthFresh() {
   // checked every few hours by vidsrchealth - a bare API call without the
   // token now always answers 403 and read as "IP-blocked".
   const probes = [
-    { id: 'nontongo', name: 'NontonGo', kind: 'page', url: 'https://sv2.nontongo.day/01russia/multisourcesoap.php?id=125988&season=1&episode=1&type=tv' },
+    { id: 'nontongo', name: 'NontonGo', kind: 'page', url: require('./siteaddress').current('nontongo') + '/01russia/multisourcesoap.php?id=125988&season=1&episode=1&type=tv', heal: 'nontongo' },
     { id: 'fmovies', name: 'FMovies', kind: 'cf', url: 'https://movienow.online/' },
     { id: 'flixtor', name: 'Flixtor', kind: 'cf', url: 'https://flixtor.to/' }
   ];
@@ -1668,6 +1723,15 @@ async function sourcesHealthFresh() {
       return { id: p.id, name: p.name, status, detail, ms };
     } catch (e) {
       return { id: p.id, name: p.name, status: 'down', detail: (e && e.message) || 'unreachable', ms: Date.now() - started };
+    }
+  }
+  // NontonGo not answering at its address: try its other addresses, probe again.
+  for (const p of probes) {
+    if (!p.heal) continue;
+    const ok = await SITE_TESTS[p.heal](require('./siteaddress').current(p.heal)).catch(() => false);
+    if (!ok) {
+      const h = await healSite(p.heal);
+      if (h.ok) p.url = h.base + p.url.replace(/^https?:\/\/[^/]+/, '');
     }
   }
   const sources = await Promise.all(probes.map(probe));

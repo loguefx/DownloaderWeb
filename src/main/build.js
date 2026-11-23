@@ -5,4 +5,4 @@
 // were chased that an engine update had already fixed.
 // Raise BOTH together whenever the plugin needs the matching engine
 // (scripts/test-build-match.js keeps them equal).
-module.exports = { ENGINE_BUILD: 62 };
+module.exports = { ENGINE_BUILD: 63 };
