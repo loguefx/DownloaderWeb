@@ -133,6 +133,16 @@ async function main() {
     check('an upgrade download that found nothing is shown so (not "queued")', /no 1080p after all/.test(up.list().find((x) => x.path === b).lastResult));
   }
 
+  console.log('\n[7] A library drive that is offline');
+  {
+    const dir5 = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrades5-'));
+    up._setForTests({ dir: dir5, check: async () => false, queue: async () => {} });
+    const offline = path.join(os.tmpdir(), 'no-such-drive-' + Date.now(), 'Show', 'Season 1', 'Show S01E01.mkv');
+    up.add({ label: 'Show S1E1', series: 'Show', season: 1, episode: 1, tmdb: '1', url: 'u', _floorFallback: 1080, minHeight: 720 }, offline, 0);
+    await up.runDue({ now: up.RECHECK_MS + 5 });
+    check('its entries are kept (not wiped) while the drive is away', up.list().some((x) => x.path === offline));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

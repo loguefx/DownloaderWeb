@@ -188,7 +188,10 @@ async function runDue({ onLog = () => {}, now = Date.now(), perRun = PER_RUN, fo
       if (!force && now - (e.lastCheck || 0) < RECHECK_MS) continue;
       // The file is gone (deleted, renamed, replaced by hand): nothing to upgrade.
       if (!fs.existsSync(e.path)) {
-        delete s[k];
+        // Gone only when its folder is there and it is not: a library drive
+        // that is asleep / unplugged must not wipe its entries (they are
+        // checked again when it is back).
+        if (fs.existsSync(path.dirname(e.path))) delete s[k];
         continue;
       }
       if (now - (e.addedAt || now) > GIVE_UP_MS) {
@@ -311,7 +314,9 @@ function walkVideos(dir, depth = 0, out = []) {
   let ents = [];
   try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
   for (const e of ents) {
-    if (e.name.startsWith('.') || /^\$|^System Volume|trash|backup/i.test(e.name)) continue;
+    if (e.name.startsWith('.') || /^\$|^System Volume/i.test(e.name)) continue;
+    // Trash / backup FOLDERS only (an episode titled "Trash Talk" is still one).
+    if (e.isDirectory() && /trash|backup|recycle/i.test(e.name)) continue;
     // Extras are not part of the show / film (and TV specials are left out).
     if (e.isDirectory() && /^(extras?|featurettes?|behind the scenes|deleted scenes|interviews|scenes|shorts|trailers|samples?|specials|season 0+)$/i.test(e.name)) continue;
     const full = path.join(dir, e.name);

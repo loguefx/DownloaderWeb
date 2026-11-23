@@ -634,6 +634,24 @@ class DownloadManager extends EventEmitter {
     item.eta = dp > 0 ? ((1 - prog) / dp) * dt : null;
   }
 
+  // Free space on the staging drive in GB (null = unknown: never blocks).
+  _stagingFreeGb(item) {
+    const dir = item && item.outputRoot;
+    if (!dir || typeof fs.statfsSync !== 'function') return null;
+    try {
+      let d = dir;
+      while (d && !fs.existsSync(d)) {
+        const up = path.dirname(d);
+        if (up === d) return null;
+        d = up;
+      }
+      const st = fs.statfsSync(d);
+      return (Number(st.bavail) * Number(st.bsize)) / 1024 ** 3;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // One show (the 720p-fallback memory). Per show, not per season: the same
   // sources serve every season the same way (House S1-S8 are all 720p-only on
   // Vidsrc and on no other site), and each season used to pay the full
@@ -797,6 +815,24 @@ class DownloadManager extends EventEmitter {
         return { fatal: false }; // stopped while gated
       }
       if (!this.items.includes(item)) return { fatal: false }; // removed while gated
+
+      // Staging almost full: hold the download (it would fail partway: the
+      // parts and the remuxed file need room together) instead of burning
+      // its tries. It steps aside and is picked up again in 10 min; the daily
+      // staging cleanup and the Overview's Staging card say what is there.
+      const freeGb = this._stagingFreeGb(item);
+      if (freeGb != null && freeGb < MIN_STAGING_FREE_GB) {
+        if (!this._lowSpaceLoggedAt || Date.now() - this._lowSpaceLoggedAt > 30 * 60000) {
+          this._lowSpaceLoggedAt = Date.now();
+          this._log(`Staging drive has only ${freeGb.toFixed(1)} GB free (needs ${MIN_STAGING_FREE_GB} GB): downloads are held until there is room. Free up space or run the staging cleanup (Overview > Staging disk).`);
+        }
+        item.status = 'queued';
+        item.error = `staging drive almost full (${freeGb.toFixed(1)} GB free) - held`;
+        item._notBefore = Date.now() + 10 * 60000;
+        this._emit();
+        setTimeout(() => { try { this._kick(); } catch (e) { /* ignore */ } }, 10 * 60000 + 500).unref?.();
+        return { fatal: false };
+      }
 
       const controller = new AbortController();
       item._controller = controller;
@@ -1796,6 +1832,9 @@ class DownloadManager extends EventEmitter {
     return restored;
   }
 }
+
+// Below this much free space on the staging drive, downloads are held.
+const MIN_STAGING_FREE_GB = 6;
 
 const manager = new DownloadManager();
 module.exports = manager;

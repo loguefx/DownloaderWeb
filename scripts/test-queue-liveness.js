@@ -763,6 +763,27 @@ async function main() {
     config.download.retryBaseDelayMs = savedBase;
   }
 
+  // ---- 6k. Staging drive almost full: held, not failed ----------------------
+  console.log('\n[6k] Staging drive almost full: downloads are held (no try spent), not failed');
+  {
+    const orig = manager._stagingFreeGb;
+    manager._stagingFreeGb = () => 2.5;
+    let asked = 0;
+    const id = manager.add({
+      label: 'Full Disk S1E1', series: 'Full Disk', season: 1, episode: 1, minHeight: 1080,
+      url: 'https://example.invalid/full', outputRoot: path.join(DATA_DIR, 'staging'),
+      discover: () => { asked += 1; return Promise.resolve({ status: 'failed', reason: 'x' }); }
+    });
+    const it = manager.items.find((x) => x.id === id);
+    for (let i = 0; i < 40 && !(it && it._notBefore); i++) await sleep(25);
+    await sleep(50);
+    check('held: queued with a reason, no source asked, no try spent', it && it.status === 'queued' && asked === 0 && it.attempts === 0 && /staging drive almost full/.test(it.error || ''), JSON.stringify(it && [it.status, asked, it.attempts, it.error]));
+    check('its worker was freed', !manager._active.has(it));
+    manager._stagingFreeGb = orig;
+    manager.removeByIds([id]);
+    await sleep(50);
+  }
+
   // ---- 7. Anime DUB: Vidsrc has only Japanese -> dub-aware sites; a
   //         finished file tagged only Japanese is rejected -------------------
   console.log('\n[7] Anime DUB never keeps a Japanese-only file');

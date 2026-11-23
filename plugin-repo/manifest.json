@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.58",
+                "changelog": "Finished card counts the last 24 h (finished episodes leave the queue list). Needs engine build 58 (downloads held while the staging drive is almost full).",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v58/MediaDownloader.12.1.0.58.zip",
+                "checksum": "f6dd568ecceddc0417c2e6b694756792",
+                "timestamp": "2026-11-23T02:12:38.000Z"
+            },
+            {
+                "version": "10.11.0.58",
+                "changelog": "Finished card counts the last 24 h (finished episodes leave the queue list). Needs engine build 58 (downloads held while the staging drive is almost full).",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v58/MediaDownloader.10.11.0.58.zip",
+                "checksum": "dc42e432982e8d74e5e0224a12f7c7fe",
+                "timestamp": "2026-11-23T02:12:38.000Z"
+            },
+            {
+                "version": "10.10.0.58",
+                "changelog": "Finished card counts the last 24 h (finished episodes leave the queue list). Needs engine build 58 (downloads held while the staging drive is almost full).",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v58/MediaDownloader.10.10.0.58.zip",
+                "checksum": "0f45d881352753360d6530a7efffc5f6",
+                "timestamp": "2026-11-23T02:12:38.000Z"
+            },
+            {
                 "version": "12.1.0.57",
                 "changelog": "Sources: 'Find more TV / movie sources' - the engine tests other players itself and adds the ones that deliver a stream. Needs engine build 57.",
                 "targetAbi": "12.1.0.0",

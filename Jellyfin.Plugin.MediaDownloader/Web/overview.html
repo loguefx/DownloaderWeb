@@ -331,7 +331,7 @@
         <div class="mdl-stats">
             <div class="mdl-stat"><div class="k">In queue</div><div class="v" data-st="queue">–</div><div class="s blue" data-st="queue-sub">&nbsp;</div></div>
             <div class="mdl-stat"><div class="k">Waiting for dub</div><div class="v" data-st="dub">–</div><div class="s yellow">Re-checked every 24 h</div></div>
-            <div class="mdl-stat"><div class="k">Finished</div><div class="v" data-st="done">–</div><div class="s green">Verified with ffprobe</div></div>
+            <div class="mdl-stat"><div class="k">Finished</div><div class="v" data-st="done">–</div><div class="s green" data-st="done-sub">Verified with ffprobe</div></div>
             <div class="mdl-stat"><div class="k">Outbox</div><div class="v" data-st="outbox">–</div><div class="s muted" data-st="outbox-sub">Waiting to reach the engine</div></div>
             <div class="mdl-stat"><div class="k">Failed</div><div class="v" data-st="failed">–</div><div class="s"><a data-go="queue" data-queue-tab="failed">Review in queue</a></div></div>
         </div>
@@ -578,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 57;
+                const EXPECTED_ENGINE_BUILD = 58;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
@@ -953,7 +953,13 @@
                         ? (counts.downloading || 0) + ' downloading now' + (d24 ? ' · ' + d24.done + ' done, ' + d24.failed + ' failed in 24 h' : '')
                         : 'Engine offline';
                     $('[data-st="dub"]').textContent = online ? (S.waiting || []).length : '–';
-                    $('[data-st="done"]').textContent = counts ? (counts.done || 0) : '–';
+                    // Finished in the last 24 h (the engine's own count): finished
+                    // episodes leave the queue list once their show is complete,
+                    // so the list's count read 0 after a day of downloads.
+                    const doneNow = counts ? (counts.done || 0) : null;
+                    const done24 = d24 ? d24.done : null;
+                    $('[data-st="done"]').textContent = done24 != null ? Math.max(done24, doneNow || 0) : doneNow == null ? '–' : doneNow;
+                    $('[data-st="done-sub"]').textContent = done24 != null ? 'in the last 24 h · verified with ffprobe' : 'Verified with ffprobe';
                     $('[data-st="outbox"]').textContent = ob.waiting != null ? ob.waiting : '–';
                     $('[data-st="outbox-sub"]').textContent = ob.rejected ? ob.rejected + ' rejected by the engine' : 'Waiting to reach the engine';
                     $('[data-st="outbox-sub"]').className = 's ' + (ob.rejected ? 'red' : 'muted');
