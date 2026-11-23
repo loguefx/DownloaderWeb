@@ -621,6 +621,22 @@ async function runJob(job) {
           }
           if (dubbed === false) {
             const label = organizer.buildBaseName({ series, season, episode: ep });
+            // Already in the library (the plugin sends every selected episode
+            // when its own library check had not finished): nothing to wait for.
+            let have = null;
+            try {
+              const meta = { series, season, episode: ep };
+              if (/^\d+$/.test(dubTmdb)) meta.tmdb = dubTmdb;
+              for (const root of watcher.rootsFor({ outputRoot: staging, library: lib })) {
+                have = organizer.withScanCache(() => organizer.existingEpisodeFile(root, meta, null, epName));
+                if (have) break;
+              }
+            } catch (e) { have = null; }
+            if (have) {
+              skipped += 1;
+              onLog(`${label}: already in the library - not added to the waiting-for-dub list.`);
+              continue;
+            }
             const isNew = pending.add({
               label,
               series,
@@ -842,8 +858,93 @@ function queueRetry(id) {
 
 // ---- waiting for dub ----
 
+// The waiting-for-dub list as it really is. Entries used to stay until the
+// next daily pass (up to 24 h) after their episode was downloaded or landed
+// on disk some other way, episodes whose dub came out showed as waiting while
+// they downloaded, and one episode parked under both numberings (TMDB S4E7
+// and the AniDB-numbered library's S3E7) counted twice. Reading the list
+// reconciles it in the background (at most once a minute):
+//   on disk (any library drive / staging)       -> removed
+//   in the queue (its dub is out, downloading)  -> state 'downloading'
+//   the same TMDB episode under two numberings  -> the newer entry kept
+const WAIT_RECON_MS = 60 * 1000;
+let waitReconAt = 0;
+let waitRecon = null;
 function waitingList() {
+  if (!waitRecon && Date.now() - waitReconAt > WAIT_RECON_MS) {
+    waitReconAt = Date.now();
+    waitRecon = reconcileWaiting()
+      .catch((e) => onLog('Waiting-for-dub check failed: ' + ((e && e.message) || e)))
+      .finally(() => { waitRecon = null; });
+  }
   return pending.list();
+}
+
+async function reconcileWaiting() {
+  const items = pending.list();
+  if (!items.length) return { removed: 0 };
+  const idOf = (x) => pending.constructor.identity(x);
+  const ACTIVE = new Set(['queued', 'ready', 'resolving', 'downloading', 'verifying', 'placing', 'paused']);
+  const busy = new Set(manager.items.filter((i) => ACTIVE.has(i.status)).map(idOf));
+  const tmdbMod = require('./tmdb');
+  const remove = [];
+  const states = {};
+  const removedLabels = [];
+  await organizer.withScanCacheAsync(async () => {
+    let n = 0;
+    for (const it of items) {
+      if ((n += 1) % 20 === 0) await new Promise((r) => setImmediate(r));
+      states[it.key] = busy.has(idOf(it)) ? 'downloading' : 'waiting';
+      const meta = { series: it.series, season: it.season, episode: it.episode };
+      if (/^\d+$/.test(String(it.tmdb || '').trim())) {
+        meta.tmdb = String(it.tmdb).trim();
+        try {
+          meta.alt = await tmdbMod.episodeAlternates(meta.tmdb, { anime: !!it.anime, numbering: it.numbering }, it.season, it.episode);
+        } catch (e) {
+          meta.alt = null;
+        }
+      }
+      for (const root of watcher.rootsFor(it)) {
+        let hit = null;
+        try { hit = root && organizer.existingEpisodeFile(root, meta); } catch (e) { hit = null; }
+        if (hit) {
+          remove.push(it.key);
+          removedLabels.push(it.label || `${it.series} S${it.season}E${it.episode}`);
+          break;
+        }
+      }
+    }
+  });
+  // One TMDB episode under two numberings: keep the newer entry.
+  const byPair = new Map();
+  const mappers = new Map();
+  for (const it of items) {
+    if (remove.includes(it.key) || !/^\d+$/.test(String(it.tmdb || '').trim())) continue;
+    let pair = { season: Number(it.season), episode: Number(it.episode) };
+    if (it.numbering === 'anime') {
+      if (!mappers.has(it.tmdb)) {
+        let m = null;
+        try { m = await tmdbMod.animeToTmdbMapper(String(it.tmdb)); } catch (e) { m = null; }
+        mappers.set(it.tmdb, m);
+      }
+      const m = mappers.get(it.tmdb);
+      if (!m) continue; // the TMDB pair is not known: never guess
+      pair = m(it.season, it.episode);
+    }
+    const k = `${it.tmdb}|${pair.season}|${pair.episode}|${it.mode || 'dub'}`;
+    const prev = byPair.get(k);
+    if (!prev) {
+      byPair.set(k, it);
+      continue;
+    }
+    const older = (it.addedAt || 0) >= (prev.addedAt || 0) ? prev : it;
+    remove.push(older.key);
+    removedLabels.push(`${older.label || older.series} (listed twice)`);
+    if (older === prev) byPair.set(k, it);
+  }
+  const n = pending.applyReconcile({ remove, states });
+  if (n) onLog(`Waiting for dub: ${n} entr${n === 1 ? 'y' : 'ies'} removed (already in the library or listed twice): ${removedLabels.slice(0, 8).join(', ')}${removedLabels.length > 8 ? ', ...' : ''}.`);
+  return { removed: n };
 }
 function waitingRemove(key) {
   return { removed: pending.remove(key) };
@@ -1547,6 +1648,7 @@ module.exports = {
   submitJob,
   queueSnapshot,
   startStagingAutoClean,
+  reconcileWaiting,
   queuePause,
   queueResume,
   queueStop,

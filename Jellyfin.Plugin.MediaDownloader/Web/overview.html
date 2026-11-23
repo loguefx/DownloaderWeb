@@ -578,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 58;
+                const EXPECTED_ENGINE_BUILD = 59;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
@@ -952,7 +952,7 @@
                     $('[data-st="queue-sub"]').textContent = counts
                         ? (counts.downloading || 0) + ' downloading now' + (d24 ? ' · ' + d24.done + ' done, ' + d24.failed + ' failed in 24 h' : '')
                         : 'Engine offline';
-                    $('[data-st="dub"]').textContent = online ? (S.waiting || []).length : '–';
+                    $('[data-st="dub"]').textContent = online ? waitingCount() : '–';
                     // Finished in the last 24 h (the engine's own count): finished
                     // episodes leave the queue list once their show is complete,
                     // so the list's count read 0 after a day of downloads.
@@ -2228,7 +2228,7 @@
                     };
                     const ob = (S.outbox && S.outbox.items) || [];
                     $('[data-qc="queue"]').textContent = lists.queue.length;
-                    $('[data-qc="waiting"]').textContent = (S.waiting || []).length;
+                    $('[data-qc="waiting"]').textContent = waitingCount();
                     $('[data-qc="watching"]').textContent = (S.schedules || []).length;
                     $('[data-qc="failed"]').textContent = lists.failed.length;
                     $('[data-qc="outbox"]').textContent = ob.filter((o) => o.state !== 'sent').length;
@@ -2272,6 +2272,8 @@
                         box.innerHTML = groups.map((k) => {
                             const list = byKey[k].slice().sort((a, b) => (Number(a.season) || 0) - (Number(b.season) || 0) || (Number(a.episode) || 0) - (Number(b.episode) || 0));
                             const open = !!S.waitOpen[k];
+                            const busy = list.filter((x) => x.state === 'downloading').length;
+                            const wait = list.length - busy;
                             // "S2E5-E7, S3E1" - a short summary for the closed row.
                             const bySeason = {};
                             list.forEach((x) => { const sn = x.season != null ? x.season : 1; (bySeason[sn] = bySeason[sn] || []).push(Number(x.episode)); });
@@ -2288,10 +2290,12 @@
                             const head = '<div class="mdl-row" style="cursor:pointer;" data-wait-toggle="' + esc(k) + '">' +
                                 '<span style="width:1.2em;display:inline-block;color:var(--md-muted);">' + (open ? '▾' : '▸') + '</span>' +
                                 '<div class="grow" style="min-width:0;"><div class="t">' + esc(k) + '</div><div class="sub">' + esc(summary) + '</div></div>' +
-                                '<span class="mdl-pill yellow">' + plural(list.length, 'episode') + ' waiting</span>' +
+                                (wait ? '<span class="mdl-pill yellow">' + plural(wait, 'episode') + ' waiting</span>' : '') +
+                                (busy ? '<span class="mdl-pill blue" title="Its dub is out: downloading now">' + busy + ' downloading</span>' : '') +
                                 '<button type="button" class="mdl-btn sm" title="Stop waiting for every episode of this series" data-wait-del-all="' + esc(list.map((x) => x.key).join('\n')) + '">Stop all</button></div>';
                             const rows = open ? list.map((x) => '<div class="mdl-row" style="padding-left:2.4em;"><div class="grow"><div class="t mono" style="font-size:.9em;">' + esc(epOf(x)) + '</div><div class="sub">' +
-                                esc([(x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+                                esc([(x.mode || 'dub').toUpperCase(), x.addedAt ? 'added ' + whenOf(x.addedAt) : '', x.lastChecked ? 'dub checked ' + whenOf(new Date(x.lastChecked).toISOString()) : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+                                (x.state === 'downloading' ? '<span class="mdl-pill blue">Dub out · downloading</span>' : '') +
                                 '<button type="button" class="mdl-btn icon sm" title="Stop waiting" data-wait-del="' + esc(x.key) + '">✕</button></div>').join('') : '';
                             return head + rows;
                         }).join('');
@@ -2449,6 +2453,12 @@
                         return '<div class="mdl-list-h"><span>' + esc(k) + '</span><span>' + ok + ' of ' + list.length + ' upgradable</span></div>' + rows +
                             (list.length > SHOW ? '<div class="mdl-row small muted">+ ' + (list.length - SHOW) + ' more</div>' : '');
                     }).join('');
+                }
+
+                // Episodes really waiting for a dub (one whose dub came out and is
+                // downloading right now is not).
+                function waitingCount() {
+                    return (S.waiting || []).filter((x) => x.state !== 'downloading').length;
                 }
 
                 function renderLog() {

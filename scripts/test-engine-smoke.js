@@ -499,6 +499,42 @@ async function main() {
     layoutMod._setAnilistRequestForTests(null);
   }
 
+  // ---- waiting for dub: the list shows what really waits ----------------
+  {
+    const pending = M('pending');
+    const svc = M('service');
+    const tmdbMod = M('tmdb');
+    const lib3 = path.join(DATA_DIR, 'lib-waiting-test');
+    const put = (p) => { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, 'x'); return p; };
+    put(path.join(lib3, 'Have Show', 'Season 1', 'Have Show S01E02.mkv'));
+    const library = { name: 'Anime', locations: [lib3] };
+    const base = { mode: 'dub', anime: true, outputRoot: path.join(DATA_DIR, 'staging'), library, baseUrl: 'https://example.invalid/x' };
+    pending.add(Object.assign({}, base, { label: 'Have Show S1E2', series: 'Have Show', season: 1, episode: 2 }));
+    pending.add(Object.assign({}, base, { label: 'Busy Show S1E5', series: 'Busy Show', season: 1, episode: 5 }));
+    pending.add(Object.assign({}, base, { label: 'Wait Show S1E7', series: 'Wait Show', season: 1, episode: 7 }));
+    // One episode under both numberings: TMDB S4E7 and AniDB S3E7 (Link Click).
+    pending.add(Object.assign({}, base, { label: 'Twice S4E7', series: 'Twice', season: 4, episode: 7, tmdb: '126318', numbering: 'tmdb', baseUrl: 'https://example.invalid/a' }));
+    const twinOld = pending.list().find((x) => x.series === 'Twice');
+    twinOld.addedAt = Date.now() - 86400000;
+    pending.add(Object.assign({}, base, { label: 'Twice S3E7', series: 'Twice', season: 3, episode: 7, tmdb: '126318', numbering: 'anime', baseUrl: 'https://example.invalid/b' }));
+    const origMapper = tmdbMod.animeToTmdbMapper;
+    tmdbMod.animeToTmdbMapper = async () => (s2, e2) => (Number(s2) === 3 ? { season: 4, episode: Number(e2) } : { season: Number(s2), episode: Number(e2) });
+    const origAlt = tmdbMod.episodeAlternates;
+    tmdbMod.episodeAlternates = async () => null;
+    manager.items.push({ id: 990010, label: 'Busy Show S1E5', series: 'Busy Show', season: 1, episode: 5, mode: 'dub', status: 'downloading' });
+    await svc.reconcileWaiting();
+    const W = pending.list();
+    const has = (lab) => W.find((x) => x.label === lab);
+    check('waiting: an episode already in the library is removed', !has('Have Show S1E2'), JSON.stringify(W.map((x) => x.label)));
+    check('waiting: one whose dub is out and is downloading is marked so', has('Busy Show S1E5') && has('Busy Show S1E5').state === 'downloading');
+    check('waiting: a real one stays, marked waiting', has('Wait Show S1E7') && has('Wait Show S1E7').state === 'waiting');
+    check('waiting: one episode under two numberings counts once (the newer kept)', W.filter((x) => x.series === 'Twice').length === 1 && has('Twice S3E7'), JSON.stringify(W.filter((x) => x.series === 'Twice').map((x) => x.label)));
+    manager.items = manager.items.filter((x) => x.id !== 990010);
+    tmdbMod.animeToTmdbMapper = origMapper;
+    tmdbMod.episodeAlternates = origAlt;
+    for (const x of pending.list()) pending.remove(x.key);
+  }
+
   // ---- staging report / cleanup: only copies already in a library and
   //      capture leftovers are ever deleted ------------------------------
   {

@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.59",
+                "changelog": "Waiting for dub counts only episodes really waiting: ones already in the library are cleared, ones whose dub came out show as downloading, an episode listed under two numberings counts once. Needs engine build 59.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v59/MediaDownloader.12.1.0.59.zip",
+                "checksum": "f2ba70abc2694f294eabd492b4b89322",
+                "timestamp": "2026-11-23T02:27:47.000Z"
+            },
+            {
+                "version": "10.11.0.59",
+                "changelog": "Waiting for dub counts only episodes really waiting: ones already in the library are cleared, ones whose dub came out show as downloading, an episode listed under two numberings counts once. Needs engine build 59.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v59/MediaDownloader.10.11.0.59.zip",
+                "checksum": "fc309be8b40a764fc783af20f48f9112",
+                "timestamp": "2026-11-23T02:27:47.000Z"
+            },
+            {
+                "version": "10.10.0.59",
+                "changelog": "Waiting for dub counts only episodes really waiting: ones already in the library are cleared, ones whose dub came out show as downloading, an episode listed under two numberings counts once. Needs engine build 59.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v59/MediaDownloader.10.10.0.59.zip",
+                "checksum": "92a3c68a846b6124de9fc025cd9acf3d",
+                "timestamp": "2026-11-23T02:27:47.000Z"
+            },
+            {
                 "version": "12.1.0.58",
                 "changelog": "Finished card counts the last 24 h (finished episodes leave the queue list). Needs engine build 58 (downloads held while the staging drive is almost full).",
                 "targetAbi": "12.1.0.0",

@@ -134,6 +134,25 @@ class PendingStore extends EventEmitter {
     return n;
   }
 
+  // Reconcile results (service.reconcileWaiting): remove entries in one go
+  // and note each one's state ('waiting' | 'downloading'). One save.
+  applyReconcile({ remove = [], states = {} } = {}) {
+    this.load();
+    const gone = new Set(remove);
+    const before = this.items.length;
+    this.items = this.items.filter((it) => !gone.has(it.key));
+    let changed = this.items.length !== before;
+    for (const it of this.items) {
+      const st = states[it.key];
+      if (st && it.state !== st) {
+        it.state = st;
+        changed = true;
+      }
+    }
+    if (changed) this._save();
+    return before - this.items.length;
+  }
+
   markChecked(key) {
     this.load();
     const it = this.items.find((x) => x.key === key);
