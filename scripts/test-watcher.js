@@ -659,6 +659,55 @@ async function main() {
   service.watcherModeSet({ dryRun: true });
 
   // ---- summary ----------------------------------------------------------------
+  // ---- stuck passes: never hold the watch list ------------------------------
+  console.log('\n[S] A title whose check hangs does not stop the others; a stuck pass is replaced');
+  {
+    service.watcherModeSet({ dryRun: false });
+    const origCheck = watcher.checkSeriesTmdb;
+    const seen = [];
+    watcher.checkSeriesTmdb = function (s2) {
+      seen.push(s2.series);
+      if (s2.series === 'Hang Show') return new Promise(() => {}); // never answers
+      return Promise.resolve(0);
+    };
+    for (const x of schedule.list()) schedule.remove(x.key);
+    schedule.add({ series: 'Hang Show', season: 1, mode: 'dub', baseUrl: vid('801', 1, 1), outputRoot: staging, library, tmdb: '801' });
+    schedule.add({ series: 'After Show', season: 1, mode: 'dub', baseUrl: vid('802', 1, 1), outputRoot: staging, library, tmdb: '802' });
+    const logsS = [];
+    const origLog = watcher.onLog;
+    watcher.onLog = (m) => logsS.push(String(m));
+    watcher.seriesCapMs = 200;
+    await watcher.checkSchedules();
+    check('the title after the hung one is still checked', seen.includes('After Show'), JSON.stringify(seen));
+    check('...and the hung one is reported', logsS.some((m) => /Hang Show": check took too long/.test(m)), logsS.join(' | '));
+    // A pass that has been running for hours is not joined.
+    watcher._schedulesRun = new Promise(() => {});
+    watcher._schedulesRunAt = Date.now() - 7 * 3600 * 1000;
+    seen.length = 0;
+    await watcher.checkSchedules();
+    check('a pass stuck for hours is replaced by a new one (not joined)', seen.includes('After Show'), JSON.stringify(seen));
+    // A recent one IS joined (no two passes side by side).
+    let release;
+    watcher._schedulesRun = new Promise((r) => { release = r; });
+    watcher._schedulesRunAt = Date.now();
+    seen.length = 0;
+    const joined = watcher.checkSchedules();
+    check('a pass that just started is joined', seen.length === 0);
+    release();
+    await joined;
+    watcher._schedulesRun = null;
+    watcher.seriesCapMs = 0;
+
+    console.log('\n[S2] Explain one title');
+    watcher.checkSeriesTmdb = function (s2) { this.onLog(`"${s2.series}" season 1: 4 aired, 2 already on disk, 0 new queued`); return Promise.resolve(0); };
+    const ex = await watcher.explain("after show");
+    check('finds the watched title and returns what its check saw', ex.found && ex.entry.series === 'After Show' && ex.lines.some((l) => /4 aired, 2 already on disk/.test(l)), JSON.stringify(ex));
+    const nx = await watcher.explain('Nope Show');
+    check('a title not on the watch list says so, with the list', nx.found === false && nx.watched.includes('After Show'));
+    watcher.checkSeriesTmdb = origCheck;
+    watcher.onLog = origLog;
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }

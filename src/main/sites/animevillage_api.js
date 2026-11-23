@@ -46,8 +46,19 @@ function cached(key, fn) {
 }
 
 // Injectable for tests: (pathAndQuery) -> parsed JSON (null on failure).
+// A hard deadline on the WHOLE request: the socket timeout only fires on
+// silence, so a server trickling bytes (or a response that closes without
+// 'end') could hold the caller forever - and with it the daily watch pass.
+const REQUEST_DEADLINE_MS = 45000;
 let get = (pathAndQuery) =>
   new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolve(v);
+    };
     const req = https.get(BASE + pathAndQuery, { headers: { 'User-Agent': UA, Accept: 'application/json' }, timeout: 30000 }, (res) => {
       let body = '';
       res.setEncoding('utf8');
@@ -56,15 +67,20 @@ let get = (pathAndQuery) =>
       });
       res.on('end', () => {
         try {
-          resolve(JSON.parse(body));
+          finish(JSON.parse(body));
         } catch (e) {
-          resolve(null);
+          finish(null);
         }
       });
-      res.on('error', () => resolve(null));
+      res.on('error', () => finish(null));
+      res.on('close', () => finish(null)); // closed without 'end': no answer
     });
+    const deadline = setTimeout(() => {
+      try { req.destroy(); } catch (e) { /* ignore */ }
+      finish(null);
+    }, REQUEST_DEADLINE_MS);
     req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(null));
+    req.on('error', () => finish(null));
   });
 
 // Site health. When the site gives NO answer at all (timeouts, no JSON) every

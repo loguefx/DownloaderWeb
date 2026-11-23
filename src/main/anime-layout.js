@@ -264,7 +264,20 @@ async function anilistGql(query, variables) {
 let anilistRequest = (query, variables) => anilistPost(query, variables);
 function anilistPost(query, variables) {
   const payload = JSON.stringify({ query, variables });
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveRaw, reject) => {
+    // A hard deadline on the whole request (the 10 s socket timeout only
+    // fires on silence) - a hung lookup must never hold a watch pass.
+    let done = false;
+    const resolve = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveRaw(v);
+    };
+    const deadline = setTimeout(() => {
+      try { req.destroy(); } catch (e) { /* ignore */ }
+      resolve(null);
+    }, 30000);
     const req = https.request(
       { hostname: 'graphql.anilist.co', path: '/', method: 'POST', headers: {
         'Content-Type': 'application/json',
@@ -281,6 +294,8 @@ function anilistPost(query, variables) {
           }
           resolve(out);
         });
+        res.on('error', () => resolve(null));
+        res.on('close', () => resolve(null));
       }
     );
     req.on('error', () => resolve(null));

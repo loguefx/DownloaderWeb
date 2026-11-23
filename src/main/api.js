@@ -804,6 +804,16 @@ async function handle(req, res, u) {
     }
 
     // ---- schedules ----
+    if (seg === 'schedules' && parts[2] === 'explain' && req.method === 'POST') {
+      // What the daily check sees for one watched title (nothing queued).
+      const body = (await readBody(req)) || {};
+      if (!body.series) {
+        json(res, 400, { error: 'series is required' });
+        return;
+      }
+      json(res, 200, await require('./watcher').explain(String(body.series)));
+      return;
+    }
     if (seg === 'schedules') {
       const key = parts[2];
       if (req.method === 'GET' && !key) {
@@ -845,8 +855,12 @@ async function handle(req, res, u) {
           anidbMod.ensure(it.tmdb, { title: it.series, season: it.season }).catch(() => {});
           return it;
         });
+        let pass = null;
+        try { pass = require('./watcher').pass || null; } catch (e) { pass = null; }
         json(res, 200, {
           items,
+          // The daily check's last run: when, how long, whether it is running.
+          pass,
           dryRun: service.watcherMode().dryRun,
           riskSeries: service.riskSeriesGet(),
           frozen: service.frozenReport()

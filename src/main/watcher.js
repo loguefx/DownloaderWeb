@@ -14,6 +14,11 @@ const engineconfig = require('./engineconfig');
 const placer = require('./placer');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const STUCK_PASS_MS = 6 * 60 * 60 * 1000; // a pass running this long is stuck
+const SERIES_CAP_MS = 10 * 60 * 1000; // one watched title, at most
+const ENTRY_CAP_MS = 3 * 60 * 1000; // one waiting episode's dub lookup, at most
+const CAPPED = Symbol('capped');
+const fmtSecs = (s) => (s < 90 ? `${Math.round(s)} s` : `${Math.round(s / 60)} min`);
 
 // The episodes of a season that have aired by `today` (YYYY-MM-DD). An
 // episode with no air date is TMDB's "announced, not scheduled yet" (the TBA
@@ -77,8 +82,38 @@ class Watcher {
   // whole pass holds until Mullvad is confirmed up (Part 3).
   async tick() {
     await vpn.waitUntilConnected();
-    await this.checkNow();
-    await this.checkSchedules();
+    const t0 = Date.now();
+    this.pass = Object.assign(this.pass || {}, { startedAt: t0, running: true, phase: 'waiting-for-dub' });
+    try {
+      await this.checkNow();
+    } catch (e) {
+      this.onLog(`Waiting-for-dub check failed: ${(e && e.message) || e}`);
+    }
+    const t1 = Date.now();
+    this.pass.waitingSecs = Math.round((t1 - t0) / 1000);
+    this.pass.phase = 'watch list';
+    try {
+      await this.checkSchedules();
+    } finally {
+      const t2 = Date.now();
+      Object.assign(this.pass, { running: false, phase: '', finishedAt: t2, watchSecs: Math.round((t2 - t1) / 1000) });
+      this.onLog(`Daily check done in ${fmtSecs((t2 - t0) / 1000)} (waiting for dub ${fmtSecs((t1 - t0) / 1000)}, watch list ${fmtSecs((t2 - t1) / 1000)}).`);
+    }
+  }
+
+  // Never wait forever on one title: a hung lookup used to hold the whole
+  // pass - and with it every later daily pass, which joined the stuck one.
+  _capped(promise, ms, onTimeout) {
+    let t = null;
+    return Promise.race([
+      promise,
+      new Promise((resolve) => {
+        t = setTimeout(() => {
+          try { onTimeout && onTimeout(); } catch (e) { /* ignore */ }
+          resolve(CAPPED);
+        }, ms);
+      })
+    ]).finally(() => clearTimeout(t));
   }
 
   // Every root a watched title's files may live in: staging plus each library
@@ -107,11 +142,17 @@ class Watcher {
   // A pass already running (daily tick vs. "Check now") is joined, not run
   // twice side by side.
   checkSchedules() {
-    if (this._schedulesRun) return this._schedulesRun;
-    this._schedulesRun = this._checkSchedules().finally(() => {
-      this._schedulesRun = null;
+    // A pass that has been running for hours is stuck: start a new one
+    // instead of joining it (joining it is how the watch list stopped for
+    // good after one hung lookup).
+    if (this._schedulesRun && Date.now() - (this._schedulesRunAt || 0) < (this.stuckPassMs || STUCK_PASS_MS)) return this._schedulesRun;
+    if (this._schedulesRun) this.onLog('The previous watch-list check has been running for hours (stuck) - starting a new one.');
+    this._schedulesRunAt = Date.now();
+    const run = this._checkSchedules().finally(() => {
+      if (this._schedulesRun === run) this._schedulesRun = null;
     });
-    return this._schedulesRun;
+    this._schedulesRun = run;
+    return run;
   }
 
   async _checkSchedules() {
@@ -154,9 +195,10 @@ class Watcher {
       }
       try {
         if (s.movie) {
-          await this.checkMovie(s, dryRun);
+          await this._capped(this.checkMovie(s, dryRun), this.seriesCapMs || SERIES_CAP_MS, () => this.onLog(`"${s.series}": check took too long - moved on (tried again next pass).`));
         } else if (s.tmdb) {
-          newSeasons += await this.checkSeriesTmdb(s, dryRun);
+          const r = await this._capped(this.checkSeriesTmdb(s, dryRun), this.seriesCapMs || SERIES_CAP_MS, () => this.onLog(`"${s.series}": check took too long - moved on (tried again next pass).`));
+          if (r !== CAPPED) newSeasons += Number(r) || 0;
         } else if (dryRun) {
           // The legacy path downloads (startBatch); in report-only mode it
           // must not run at all - the title is reported as unchecked instead.
@@ -711,8 +753,42 @@ class Watcher {
     return 0;
   }
 
+  // Why is a watched title (not) picking up new episodes? Runs its check in
+  // report-only mode (nothing queued) and returns what it saw.
+  async explain(name) {
+    const want = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const s = schedule.list().find((x) => String(x.series || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() === want) ||
+      schedule.list().find((x) => String(x.series || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').includes(want));
+    if (!s) return { found: false, watched: schedule.list().map((x) => x.series) };
+    const lines = [];
+    const orig = this.onLog;
+    this.onLog = (m) => { lines.push(m); };
+    try {
+      if (this.isFrozen(s)) lines.push(`"${s.series}" is FROZEN (opt-out): the daily check skips it - unfreeze it to have new episodes picked up.`);
+      if (!s.tmdb) lines.push(`"${s.series}" has no TMDB id: only the old source-page check can run for it.`);
+      else await this._capped(this.checkSeriesTmdb(Object.assign({}, s), true), SERIES_CAP_MS, () => lines.push('The check took over 10 min - stopped.'));
+    } catch (e) {
+      lines.push('Check failed: ' + ((e && e.message) || e));
+    } finally {
+      this.onLog = orig;
+    }
+    const waiting = pending.list().filter((w) => String(w.series).toLowerCase() === String(s.series).toLowerCase())
+      .map((w) => `S${w.season}E${w.episode}${w.state === 'downloading' ? ' (downloading)' : ''}`);
+    return {
+      found: true,
+      entry: { series: s.series, tmdb: s.tmdb || null, season: s.season, anime: !!s.anime, numbering: s.numbering || 'tmdb', frozen: this.isFrozen(s), lastChecked: s.lastChecked || null, library: s.library ? s.library.name : null },
+      mode: this.watcherMode().dryRun ? 'report only (nothing is queued by the daily check)' : 'auto-download',
+      waiting,
+      lines,
+      lastPass: this.pass || null
+    };
+  }
+
   // ---- waiting-for-dub list -------------------------------------------------
 
+  // The waiting-for-dub pass. It cannot hang any more: every dub lookup in
+  // it is capped (ENTRY_CAP_MS) and the anime sites' requests have hard
+  // deadlines - so it is never joined or replaced, just run.
   async checkNow() {
     // In episode order, so released episodes download E1, E2, ... (the list
     // keeps insertion order: re-parked E4/E5 used to come last).
@@ -728,7 +804,15 @@ class Watcher {
     );
 
     const animeMappers = new Map(); // tmdb id -> AniDB->TMDB mapper (or null)
+    let lastSeries = null;
     for (const spec of items) {
+      // Progress, one line per series: the pass used to be silent for
+      // minutes after "Checking N pending dub(s)".
+      if (spec.series !== lastSeries) {
+        lastSeries = spec.series;
+        const n = items.filter((x) => x.series === spec.series).length;
+        this.onLog(`Waiting for dub: checking "${spec.series}" (${n} episode${n === 1 ? '' : 's'})...`);
+      }
       // AniDB-numbered entry with a TMDB-keyed (Vidsrc) URL: the URL takes
       // TMDB's pair. Entries parked before this fix carry the anime numbers
       // in their URL ("LINK CLICK S3E11" -> 123542-3-11, a Bridon Arc slot).
@@ -789,7 +873,7 @@ class Watcher {
       if (dubEntry) {
         let dubbed = null;
         try {
-          dubbed = await dubstatus.isDubbedForJob({
+          dubbed = await this._capped(dubstatus.isDubbedForJob({
             numbering: spec.numbering,
             tmdb: spec.tmdb,
             srcSeason: spec.urlSeason != null ? spec.urlSeason : spec.season,
@@ -797,7 +881,8 @@ class Watcher {
             title: spec.series,
             season: spec.season,
             episode: spec.episode
-          });
+          }), ENTRY_CAP_MS);
+          if (dubbed === CAPPED) dubbed = null; // no answer in time: unknown, asked again next pass
         } catch (e) {
           dubbed = null;
         }

@@ -29,14 +29,29 @@ function cached(key, fn) {
 }
 
 // Injectable for tests: (path, { ajax }) -> body string (null on failure).
+// A hard deadline on the whole request (the socket timeout only fires on
+// silence: a trickling or never-ending response held the watch pass forever).
+const REQUEST_DEADLINE_MS = 40000;
 let get = (pathAndQuery, { ajax = false } = {}) =>
-  new Promise((resolve) => {
+  new Promise((resolveRaw) => {
+    let done = false;
+    const resolve = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(deadline);
+      resolveRaw(v);
+    };
+    const deadline = setTimeout(() => {
+      try { if (req) req.destroy(); } catch (e) { /* ignore */ }
+      resolve(null);
+    }, REQUEST_DEADLINE_MS);
+    let req = null;
     const headers = { 'User-Agent': UA, Accept: ajax ? 'application/json, text/javascript, */*' : 'text/html' };
     if (ajax) {
       headers['X-Requested-With'] = 'XMLHttpRequest';
       headers.Referer = BASE + '/';
     }
-    const req = https.get(BASE + pathAndQuery, { headers, timeout: 15000 }, (res) => {
+    req = https.get(BASE + pathAndQuery, { headers, timeout: 15000 }, (res) => {
       if (res.statusCode !== 200) {
         res.resume();
         return resolve(null);
@@ -48,6 +63,7 @@ let get = (pathAndQuery, { ajax = false } = {}) =>
       });
       res.on('end', () => resolve(body));
       res.on('error', () => resolve(null));
+      res.on('close', () => resolve(null)); // closed without 'end': no answer
     });
     req.on('timeout', () => req.destroy());
     req.on('error', () => resolve(null));

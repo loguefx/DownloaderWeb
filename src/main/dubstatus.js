@@ -144,6 +144,7 @@ let animevillageLookup = (title, season, episodes) =>
 const avKey = (title, season, ep) =>
   `av|${String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${Number(season) || 1}|${ep}`;
 const avRunning = new Map(); // "title|season" -> promise
+const AV_RUN_CAP_MS = 4 * 60 * 1000;
 
 // Cached answers only: { map: Map(episode -> true/false), stale, pending }
 function peekAnimevillage(title, season, episodes) {
@@ -184,7 +185,18 @@ function animevillageDubMap(title, season, episodes, { force = false } = {}) {
     const { map } = peekAnimevillage(title, season, episodes);
     return map.size ? map : null;
   };
-  const p = (avRunning.get(rk) || Promise.resolve()).catch(() => {}).then(run);
+  // Each run is capped: runs for one season queue behind each other, so one
+  // that never ended blocked every later lookup of that season, every day
+  // (the watch list stopped finding new dubbed episodes). Over the cap it is
+  // "unknown" (asked again next time), never "not dubbed".
+  const capped = () => Promise.race([
+    run(),
+    new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), AV_RUN_CAP_MS);
+      if (t.unref) t.unref();
+    })
+  ]);
+  const p = (avRunning.get(rk) || Promise.resolve()).catch(() => {}).then(capped);
   const tracked = p.finally(() => {
     if (avRunning.get(rk) === tracked) avRunning.delete(rk);
   });

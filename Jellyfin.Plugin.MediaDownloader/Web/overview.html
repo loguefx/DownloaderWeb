@@ -578,7 +578,7 @@
                 const SETTINGS_PAGE = 'Media Downloader';
                 // The engine build this plugin was made for (src/main/build.js).
                 // An older engine still works, but misses the fixes this page expects.
-                const EXPECTED_ENGINE_BUILD = 59;
+                const EXPECTED_ENGINE_BUILD = 60;
                 function engineOutdated(h) {
                     const b = h && h.health ? Number(h.health.build) || 0 : 0;
                     return !!(h && h.engine === 'online' && b < EXPECTED_ENGINE_BUILD);
@@ -813,7 +813,7 @@
                             // Watch list: a local JSON file on the engine - one
                             // cheap call, no per-title lookups, so the tab is
                             // instant no matter how many titles are watched.
-                            tasks.push(poll('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; S.schedulesDryRun = sc ? !!sc.dryRun : true; }).catch(() => {}));
+                            tasks.push(poll('MediaDownloader/Schedules').then((sc) => { S.schedules = (sc && sc.items) || []; S.schedulesDryRun = sc ? !!sc.dryRun : true; S.schedPass = (sc && sc.pass) || null; }).catch(() => {}));
                             if (S.view === 'queue') {
                                 tasks.push(poll('MediaDownloader/Log?since=' + S.logSince).then((l) => {
                                     const items = (l && l.items) || [];
@@ -2316,7 +2316,17 @@
                                   '<span class="mdl-pill green">Auto-download on</span>' +
                                   '<span class="small" style="flex:1;min-width:14em;">New aired episodes and seasons are queued automatically; files you already have are never touched.</span>' +
                                   '<button type="button" class="mdl-btn sm" data-w-mode="off">Switch to report only</button></div>';
-                        bar.innerHTML = modeBanner +
+                        // When the daily check last ran (a stalled one is visible at once).
+                        const ps = S.schedPass;
+                        const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : m < 2880 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; };
+                        const passLine = !ps ? '' : ps.running
+                            ? '<div class="small muted" style="margin-bottom:.6em;"><span class="mdl-spin"></span> Daily check running (' + esc(ps.phase || '') + '), started ' + ago(ps.startedAt) + '.</div>'
+                            : ps.finishedAt
+                                ? '<div class="small ' + (Date.now() - ps.finishedAt > 26 * 3600000 ? '' : 'muted') + '" style="margin-bottom:.6em;">Last daily check finished ' + ago(ps.finishedAt) +
+                                  ' (waiting for dub ' + (ps.waitingSecs || 0) + ' s, watch list ' + Math.round((ps.watchSecs || 0) / 60) + ' min).' +
+                                  (Date.now() - ps.finishedAt > 26 * 3600000 ? ' <b>Over a day ago - press "Check for new episodes now".</b>' : '') + '</div>'
+                                : '';
+                        bar.innerHTML = modeBanner + passLine +
                             '<p class="small muted" style="margin-bottom:.8em;">Watched titles are re-checked about every 24 h. Only episodes that have AIRED and are not already on disk get queued - new seasons are picked up automatically and your existing files are never touched.</p>' +
                             '<div class="mdl-actions" style="margin-bottom:.9em;"><button type="button" class="mdl-btn sm" data-w-check' + (S.wCheckBusy ? ' disabled' : '') + '>' + (S.wCheckBusy ? '<span class="mdl-spin"></span> Checking…' : 'Check for new episodes now') + '</button></div>' +
                             (S.wCheckMsg ? '<div class="hint" style="margin-bottom:.8em;">' + S.wCheckMsg + '</div>' : '');

@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.60",
+                "changelog": "Watching tab: when the daily check last ran and how long it took (a stalled one is flagged). Needs engine build 60.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v60/MediaDownloader.12.1.0.60.zip",
+                "checksum": "53e0e9320745c916134fa9c3fb590086",
+                "timestamp": "2026-11-23T02:36:24.000Z"
+            },
+            {
+                "version": "10.11.0.60",
+                "changelog": "Watching tab: when the daily check last ran and how long it took (a stalled one is flagged). Needs engine build 60.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v60/MediaDownloader.10.11.0.60.zip",
+                "checksum": "e3b1e1efdcb9fbe1bd3afa1f4939ba01",
+                "timestamp": "2026-11-23T02:36:24.000Z"
+            },
+            {
+                "version": "10.10.0.60",
+                "changelog": "Watching tab: when the daily check last ran and how long it took (a stalled one is flagged). Needs engine build 60.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v60/MediaDownloader.10.10.0.60.zip",
+                "checksum": "9b8fff2ab02eca0b9d84c28df7a92efc",
+                "timestamp": "2026-11-23T02:36:24.000Z"
+            },
+            {
                 "version": "12.1.0.59",
                 "changelog": "Waiting for dub counts only episodes really waiting: ones already in the library are cleared, ones whose dub came out show as downloading, an episode listed under two numberings counts once. Needs engine build 59.",
                 "targetAbi": "12.1.0.0",
