@@ -8,6 +8,30 @@
         "category": "General",
         "versions": [
             {
+                "version": "12.1.0.61",
+                "changelog": "Sources card also shows the anime sources (Aniwave, Anime Village). Needs engine build 61.",
+                "targetAbi": "12.1.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v61/MediaDownloader.12.1.0.61.zip",
+                "checksum": "27da54de6f1d5aadcb4cfc14b6d1e81c",
+                "timestamp": "2026-11-23T03:02:22.000Z"
+            },
+            {
+                "version": "10.11.0.61",
+                "changelog": "Sources card also shows the anime sources (Aniwave, Anime Village). Needs engine build 61.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v61/MediaDownloader.10.11.0.61.zip",
+                "checksum": "0a99334f756f79c07a83aeb6701ab2fb",
+                "timestamp": "2026-11-23T03:02:22.000Z"
+            },
+            {
+                "version": "10.10.0.61",
+                "changelog": "Sources card also shows the anime sources (Aniwave, Anime Village). Needs engine build 61.",
+                "targetAbi": "10.10.0.0",
+                "sourceUrl": "https://raw.githubusercontent.com/loguefx/DownloaderWeb/jellyfin/plugin-repo/releases/v61/MediaDownloader.10.10.0.61.zip",
+                "checksum": "7142ef10e1d4123470c81a4bdaf57b4a",
+                "timestamp": "2026-11-23T03:02:22.000Z"
+            },
+            {
                 "version": "12.1.0.60",
                 "changelog": "Watching tab: when the daily check last ran and how long it took (a stalled one is flagged). Needs engine build 60.",
                 "targetAbi": "12.1.0.0",

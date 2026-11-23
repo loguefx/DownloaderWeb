@@ -139,7 +139,13 @@ function searchQueries(title) {
   const folded = t.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[\u2018\u2019'`]/g, '')
     .replace(/[^A-Za-z0-9 :\-]+/g, ' ').replace(/\s+/g, ' ').trim();
   const head = folded.split(':')[0].trim();
-  return [...new Set([t, folded, head].filter((q) => q && q.length >= 2))];
+  // The site's own spelling is often another one: the apostrophe moved
+  // ("Devils' Crest" -> "Devil's Crest"), or the first word alone finds it
+  // (the match below still needs the same name). Searched last.
+  const moved = t.replace(/([A-Za-z])s['\u2019](?=\s|$)/g, "$1's");
+  const words = head.split(' ').filter(Boolean);
+  const first = words.length > 1 && words[0].length >= 4 ? words[0] : '';
+  return [...new Set([t, folded, head, moved, first, first && first.replace(/s$/i, '')].filter((q) => q && q.length >= 3))];
 }
 
 // The season number a title names ("Season 2", "2nd Season", a trailing
@@ -151,13 +157,24 @@ const { seasonOfTitle, baseName } = require('./animevillage_api');
 // removing a season suffix and anything after a colon), and the season
 // number named in the title must be the one asked for. Movies, specials and
 // spin-offs whose base title differs are never picked.
+// The same name, whatever its spacing / apostrophes: "Ao Ashi" = "Aoashi",
+// "Devil's Crest" = "Devils' Crest" (the watch list's spelling). Only for
+// names long enough not to collide.
+const squash = (x) => String(x || '').replace(/\s+/g, '');
+function sameName(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const sa = squash(a);
+  return sa.length >= 5 && sa === squash(b);
+}
+
 function pickShow(results, title, season = 1) {
   const want = baseName(title);
   const wantSeason = Number(season) > 0 ? Number(season) : 1;
   const base = baseName;
   const candidates = (results || []).filter((r) => {
     const names = [r.title, r.jp].filter(Boolean);
-    const sameWork = names.some((n) => base(n) === want || norm(n) === want);
+    const sameWork = names.some((n) => sameName(base(n), want) || sameName(norm(n), want));
     return sameWork && seasonOfTitle(r.title) === wantSeason;
   });
   // Prefer the plainest name (no ": subtitle" spin-off text).
@@ -207,7 +224,7 @@ async function unnumberedEntries(title, excludeIds = []) {
   const picked = results.filter((r) => {
     if (skip.has(String(r.id))) return false;
     const names = [r.title, r.jp].filter(Boolean);
-    if (!names.some((n) => baseName(n) === want)) return false;
+    if (!names.some((n) => sameName(baseName(n), want))) return false;
     // Named season ("Season 2", "2nd Season", "III") -> a numbered entry.
     if (seasonOfTitle(r.title) !== 1) return false;
     // The plain title is season 1 itself; an arc/part has more after it.
@@ -233,6 +250,8 @@ module.exports = {
   seasonOfTitle,
   seasonInfo,
   unnumberedEntries,
+  searchQueries,
+  sameName,
   episodeUrl,
   _setGetForTests(fn, names = async () => []) {
     get = fn;

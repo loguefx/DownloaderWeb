@@ -59,7 +59,16 @@ async function main() {
   }
 
   // ---- Aniwave ----
-  console.log('\n[Aniwave]');
+  console.log(`\n[Aniwave] (${aw.BASE})`);
+  // What its search returns for each spelling the engine tries: tells a site
+  // that does not answer (no results for anything) from a title it spells
+  // differently (results, but not this one).
+  for (const q of aw.searchQueries(title)) {
+    const st = t0();
+    let res = null;
+    try { res = await aw.search(q); } catch (e) { res = null; }
+    console.log(`  search "${q}": ${res == null ? 'NO ANSWER' : res.length + ' result(s)'}${res && res.length ? ' - ' + res.slice(0, 6).map((r) => `"${r.title}"`).join(', ') : ''} (${secs(st)})`);
+  }
   let s = t0();
   try {
     const info = await aw.seasonInfo(title, season);

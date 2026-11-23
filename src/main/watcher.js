@@ -456,9 +456,10 @@ class Watcher {
       if (d && d.available === true) {
         this.onLog(`"${s.series}" season ${season}: English dub on ${d.sample || 'the anime sources'} - ${d.englishDubReleases} of ${d.totalReleases} episode(s) dubbed.`);
       } else if (d && d.available === false) {
-        this.onLog(`"${s.series}" season ${season}: no English dub on Aniwave or Anime Village yet (${d.totalReleases} episode(s) listed).`);
+        this.onLog(`"${s.series}" season ${season}: no English dub on ${d.aniwaveFound ? 'Aniwave or ' : ''}Anime Village yet (${d.totalReleases} episode(s) listed)` +
+          (d.aniwaveFound ? '.' : ` - NOT FOUND ON ANIWAVE under "${s.series}" (Aniwave not answering, or it spells the title differently): only Anime Village was asked.`));
       } else {
-        this.onLog(`"${s.series}" season ${season}: English-dub status unknown (anime sources unreachable) - checked again next pass.`);
+        this.onLog(`"${s.series}" season ${season}: English-dub status unknown - ${d && d.aniwaveFound === false ? 'not found on Aniwave' : 'Aniwave gave no answer'} and Anime Village gave no answer - checked again next pass.`);
       }
     }
 

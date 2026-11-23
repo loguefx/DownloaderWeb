@@ -1528,9 +1528,45 @@ const SOURCES_CACHE_MS = 10 * 60 * 1000;
 let sourcesCache = null;
 let sourcesInflight = null;
 async function sourcesHealth() {
-  const probes = await sourcesProbes();
+  const [probes, anime] = await Promise.all([sourcesProbes(), animeSourcesHealth()]);
   const live = sourcesLive();
-  return Object.assign({}, probes, { sources: live.sources.concat(probes.sources || []), siteStats: live.siteStats });
+  return Object.assign({}, probes, { sources: live.sources.concat(anime, probes.sources || []), siteStats: live.siteStats });
+}
+
+// The two anime sources, checked the way the engine uses them: a catalog
+// search for a known show (Aniwave also its episode list). Cached 15 min.
+// When Aniwave stops answering, every anime's dub status turns "unknown" and
+// new dubbed episodes are not picked up - this row says so at once.
+let animeHealthCache = null;
+async function animeSourcesHealth() {
+  if (animeHealthCache && Date.now() - animeHealthCache.at < 15 * 60 * 1000) return animeHealthCache.value;
+  const out = [];
+  const t0 = Date.now();
+  try {
+    const aw = require('./sites/aniwave_api');
+    const info = await Promise.race([aw.seasonInfo('Solo Leveling', 1), new Promise((r) => setTimeout(() => r(undefined), 45000))]);
+    out.push(info
+      ? { id: 'aniwave', name: 'Aniwave (anime)', status: 'ok', detail: `answering - "${info.show.title}" ${info.episodes.length} episode(s) listed`, ms: Date.now() - t0, showDetail: false }
+      : { id: 'aniwave', name: 'Aniwave (anime)', status: 'down', detail: info === undefined ? 'no answer in 45 s' : 'search / episode list gave no answer - anime dub status turns "unknown" and new dubbed episodes are not found', ms: Date.now() - t0, showDetail: true });
+  } catch (e) {
+    out.push({ id: 'aniwave', name: 'Aniwave (anime)', status: 'down', detail: (e && e.message) || String(e), ms: Date.now() - t0, showDetail: true });
+  }
+  const t1 = Date.now();
+  try {
+    const av = require('./sites/animevillage_api');
+    if (av.isDown()) {
+      out.push({ id: 'animevillage', name: 'Anime Village (anime)', status: 'down', detail: 'not answering - skipped for a few minutes', ms: 0, showDetail: true });
+    } else {
+      const show = await Promise.race([av.findShow('Solo Leveling', 1), new Promise((r) => setTimeout(() => r(undefined), 45000))]);
+      out.push(show
+        ? { id: 'animevillage', name: 'Anime Village (anime)', status: 'ok', detail: 'answering', ms: Date.now() - t1, showDetail: false }
+        : { id: 'animevillage', name: 'Anime Village (anime)', status: 'down', detail: show === undefined ? 'no answer in 45 s' : 'search gave no answer', ms: Date.now() - t1, showDetail: true });
+    }
+  } catch (e) {
+    out.push({ id: 'animevillage', name: 'Anime Village (anime)', status: 'down', detail: (e && e.message) || String(e), ms: Date.now() - t1, showDetail: true });
+  }
+  animeHealthCache = { at: Date.now(), value: out };
+  return out;
 }
 async function sourcesProbes() {
   if (sourcesCache && Date.now() - sourcesCache.at < SOURCES_CACHE_MS) return sourcesCache.value;

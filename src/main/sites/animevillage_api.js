@@ -217,10 +217,15 @@ const NOT_SERIES = /^(MOVIE|SPECIAL|OVA|MUSIC|TV_SHORT)$/i;
 // (their episode lists load), then the plainest name.
 function pickShow(results, names, season = 1) {
   const want = new Set((Array.isArray(names) ? names : [names]).map(baseName).filter(Boolean));
+  // The same name whatever its spacing / apostrophes ("Ao Ashi" = "Aoashi",
+  // "Devil's Crest" = "Devils' Crest"); long enough names only.
+  const sq = (x) => String(x || '').replace(/\s+/g, '');
+  const wantSq = new Set([...want].map(sq).filter((x) => x.length >= 5));
+  const same = (b) => want.has(b) || wantSq.has(sq(b));
   const wantSeason = Number(season) > 0 ? Number(season) : 1;
   const cands = (results || []).filter((r) => {
     if (NOT_SERIES.test(r.format)) return false;
-    return r.names.some((n) => want.has(baseName(n)) && seasonOfTitle(n) === wantSeason);
+    return r.names.some((n) => same(baseName(n)) && seasonOfTitle(n) === wantSeason);
   });
   cands.sort((a, b) => (b.slug - a.slug) || (Math.min(...a.names.map((n) => n.length)) - Math.min(...b.names.map((n) => n.length))));
   return cands[0] || null;

@@ -239,6 +239,9 @@ async function englishDubForTmdb(tmdbId, { title = '', season = 1, force = false
     englishDubReleases: dubbed,
     totalReleases: eps.size,
     sample: via,
+    // Which source answered (the daily log says which one did not).
+    aniwaveFound: !!(src.aniwave && src.aniwave.size),
+    animevillageFound: !!(src.animevillage && src.animevillage.size),
     reason: available === null ? 'unreachable' : 'ok'
   }));
 }

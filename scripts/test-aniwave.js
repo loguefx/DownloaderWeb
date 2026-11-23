@@ -188,6 +188,19 @@ async function main() {
   check('...none parked on the waiting list', !pending.list().some((x) => x.series === 'Solo Leveling'));
 
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
+  console.log('\n[N] The site spells the title differently (Devils\' Crest, Aoashi)');
+  {
+    const awN = M('sites/aniwave_api');
+    const r1 = awN.pickShow([{ title: "Devil's Crest", jp: '', id: '1' }, { title: "Devil's Crest: Recap", id: '2' }], "Devils' Crest", 1);
+    check('"Devils\' Crest" (watch list) finds Aniwave\'s "Devil\'s Crest"', r1 && r1.id === '1', JSON.stringify(r1));
+    const r2 = awN.pickShow([{ title: 'Ao Ashi Season 2', jp: '', id: '3' }, { title: 'Ao Ashi', id: '4' }], 'Aoashi', 2);
+    check('"Aoashi" season 2 finds "Ao Ashi Season 2"', r2 && r2.id === '3', JSON.stringify(r2));
+    check('a different show is still never taken ("Blue Box" for "Blue Lock")', awN.pickShow([{ title: 'Blue Box', id: '5' }], 'Blue Lock', 1) === null);
+    check('short names are not squashed together ("Ao" vs "A O")', awN.pickShow([{ title: 'A O', id: '6' }], 'Ao', 1) === null);
+    const q = awN.searchQueries("Devils' Crest");
+    check('the search also tries "Devil\'s Crest" and the first word', q.includes("Devil's Crest") && q.includes('Devils') && q.includes('Devil'), JSON.stringify(q));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
