@@ -692,14 +692,14 @@ class DownloadManager extends EventEmitter {
 
   // Do the dub sources list this anime episode as English-dubbed? (Aniwave's
   // episode list, Anime Village's saved answers.) true / false / null, never
-  // slower than 20 s.
+  // slower than 60 s (a 20 s cap parked dubbed episodes on the waiting list when the lookup was merely slow).
   async _knownDubbed(item) {
     if (!item || item.episode == null) return null;
     try {
       const ds = require('./dubstatus');
       return await Promise.race([
         ds.isDubbedForJob({ title: item.series, season: item.season, episode: item.episode, tmdb: item.tmdb, numbering: item.numbering }),
-        new Promise((res) => setTimeout(() => res(null), 20000))
+        new Promise((res) => setTimeout(() => res(null), 60000))
       ]);
     } catch (e) {
       return null;

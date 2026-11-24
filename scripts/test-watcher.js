@@ -737,6 +737,13 @@ async function main() {
     dubstatus._setAniwaveForTests(async () => ({ show: { id: 'g' }, episodes: [1, 2, 3, 4].map((e) => ({ episode: e, dub: e !== 3 })) }));
     const r3 = await watcher.gaps({ queue: true, series: 'gap crest' });
     check('not dubbed yet: said so, and never queued', /not dubbed/.test(r3.series[0].missing[0].state) && queueCalls.length === before + 1, JSON.stringify(r3.series[0]));
+    manager.items.push({ id: 99902, label: 'Gap Crest S1E3', series: 'Gap Crest', season: 1, episode: 3, mode: 'dub', status: 'waiting', error: 'no dub source answered after 2 tries (timeout)' });
+    schedule.add({ series: 'Gap Crest', season: 1, mode: 'dub', baseUrl: 'https://other.example/gap-crest', outputRoot: staging, library, anime: true, tmdb: '8801' });
+    const r4 = await watcher.gaps({ series: 'gap crest' });
+    check('a try that sent it back to the waiting list shows that try\'s error', /tried, sent back: no dub source answered after 2 tries/.test(r4.series[0].missing[0].state), JSON.stringify(r4.series[0]));
+    check('one title watched twice is audited once and says so', r4.audited === 1 && r4.series[0].duplicates === 2, JSON.stringify(r4));
+    check('the watcher mode is reported', r4.mode === 'auto-download' || r4.mode === 'report-only');
+    manager.items = manager.items.filter((it) => it.id !== 99902);
     tmdb.tmdbInfo = realInfo;
     tmdb.tmdbSeason = realSeason;
     dubstatus._setAniwaveForTests(async () => null);

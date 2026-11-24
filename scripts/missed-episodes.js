@@ -43,15 +43,25 @@ function post(p, body) {
 async function main() {
   console.log(`Missed-episode check${series ? ` for "${series}"` : ' (every watched anime)'}${queue ? ' - queueing what can be fetched' : ' - report only'}. This can take a few minutes.\n`);
   const r = await post('/api/schedules/gaps', { queue, series });
+  const ago = (t) => { if (!t) return 'never'; const m = Math.round((Date.now() - t) / 60000); return m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
+  if (r.mode) {
+    console.log(`Watcher mode: ${r.mode === 'report-only' ? 'REPORT ONLY - the daily check lists new episodes but never queues them (only the waiting-for-dub list downloads). Switch it on the plugin\'s Watching tab.' : 'auto-download'}`);
+  }
+  if (r.lastPass) {
+    const p = r.lastPass;
+    console.log(`Daily check: ${p.running ? `RUNNING now (${p.phase}), started ${ago(p.startedAt)} - episodes it has not reached yet still show as missing` : `last finished ${ago(p.finishedAt)}`}`);
+  }
+  console.log('');
   let complete = 0;
   let holes = 0;
   for (const s of r.series) {
     if (!s.missing.length) {
       complete += 1;
+      if (s.duplicates) console.log(`"${s.series}" S${s.season}: complete  [on the watch list ${s.duplicates} times]`);
       if (s.note) console.log(`"${s.series}" S${s.season}: ${s.note}`);
       continue;
     }
-    console.log(`"${s.series}" season ${s.season}: ${s.aired} aired, ${s.onDisk} on disk, ${s.missing.length} missing${s.frozen ? ' (FROZEN - the daily check skips it)' : ''}${s.queued != null ? `, ${s.queued} queued now` : ''}`);
+    console.log(`"${s.series}" season ${s.season}: ${s.aired} aired, ${s.onDisk} on disk, ${s.missing.length} missing${s.frozen ? ' (FROZEN - the daily check skips it)' : ''}${s.queued != null ? `, ${s.queued} queued now` : ''}${s.duplicates ? `  [on the watch list ${s.duplicates} times]` : ''}`);
     for (const m of s.missing) {
       if (m.hole) holes += 1;
       const dub = m.dubbedOnAniwave === true ? 'dubbed on Aniwave' : m.dubbedOnAniwave === false ? 'no dub on Aniwave' : 'Aniwave: unknown';

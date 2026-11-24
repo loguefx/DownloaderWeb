@@ -779,8 +779,16 @@ class Watcher {
     const today = new Date().toISOString().slice(0, 10);
     const dubstatus = require('./dubstatus');
     const out = [];
+    const seen = new Map(); // tmdb|season -> row: one title watched twice is audited once
     for (const s of entries) {
+      const dk = s.tmdb ? `${s.tmdb}|${Number(s.season) || ''}` : '';
+      if (dk && seen.has(dk)) {
+        const first = seen.get(dk);
+        first.duplicates = (first.duplicates || 1) + 1;
+        continue;
+      }
       const row = { series: s.series, season: s.season, tmdb: s.tmdb || null, frozen: this.isFrozen(s), aired: 0, onDisk: 0, missing: [], note: '' };
+      if (dk) seen.set(dk, row);
       out.push(row);
       if (!s.tmdb) { row.note = 'no TMDB id - not audited'; continue; }
       try {
@@ -823,7 +831,8 @@ class Watcher {
           let state;
           if (inQ && !['failed', 'cancelled', 'done', 'waiting'].includes(inQ.status)) state = `in the queue (${inQ.status})`;
           else if (inQ && inQ.status === 'failed') state = `FAILED in the queue: ${inQ.error || 'no reason given'}`;
-          else if (waitIds.has(id) || (inQ && inQ.status === 'waiting')) state = 'on the waiting-for-dub list';
+          else if (inQ && inQ.status === 'waiting') state = `on the waiting-for-dub list - tried, sent back: ${inQ.error || 'no reason given'}`;
+          else if (waitIds.has(id)) state = dub === true ? 'on the waiting-for-dub list (not tried since Aniwave listed it dubbed)' : 'on the waiting-for-dub list';
           else if (dub === false) state = 'not dubbed on Aniwave yet';
           else state = 'MISSED - nothing is fetching it';
           row.missing.push({ episode: ep, hole: ep < top, dubbedOnAniwave: dub, state });
@@ -853,7 +862,12 @@ class Watcher {
         row.note = 'audit failed: ' + ((e && e.message) || e);
       }
     }
-    return { audited: out.length, series: out };
+    return {
+      audited: out.length,
+      series: out,
+      mode: this.watcherMode().dryRun ? 'report-only' : 'auto-download',
+      lastPass: this.pass ? { running: !!this.pass.running, phase: this.pass.phase || '', startedAt: this.pass.startedAt || null, finishedAt: this.pass.finishedAt || null } : null
+    };
   }
 
   // Why is a watched title (not) picking up new episodes? Runs its check in
