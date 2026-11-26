@@ -168,8 +168,20 @@ class Watcher {
         (dryRun ? ' (report only - nothing will be queued)' : '')
     );
     let newSeasons = 0;
+    const seenTitle = new Map(); // tmdb|season|movie -> the first entry's name
     for (const s of items) {
       schedule.markChecked(s.key);
+      // The same title on the watch list twice (HELL MODE, The Ramparts of
+      // Ice): checked once - the second copy only doubled the time and
+      // queued every new episode twice.
+      if (s.tmdb) {
+        const dk = [s.tmdb, s.movie ? 'movie' : Number(s.season) || '', s.mode || 'dub'].join('|');
+        if (seenTitle.has(dk)) {
+          this.onLog(`"${s.series}" is on the watch list twice - checked once. Remove one of the two on the Watching tab.`);
+          continue;
+        }
+        seenTitle.set(dk, s.series);
+      }
       // Opt-out: a frozen series is never auto-downloaded (in either mode).
       // It is reported and skipped - the layout for these titles is being
       // aligned before it is allowed to grab new episodes/seasons.

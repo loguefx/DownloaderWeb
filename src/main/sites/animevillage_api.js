@@ -182,7 +182,13 @@ function seasonOfTitle(t) {
   const m = s.match(/\bseason (\d+)\b/) || s.match(/\b(\d+)(?:st|nd|rd|th) season\b/);
   if (m) return Number(m[1]);
   const r = romanTail(s.replace(/\bpart \d+$/, '').trim());
-  return r ? ROMAN[r] : 1;
+  if (r) return ROMAN[r];
+  // "Name: Long Subtitle Season 2" / "... 2nd Season": the marker can close
+  // the whole title, after the subtitle (HELL MODE season 2 on Aniwave was
+  // read as season 1 and never matched). Only a marker at the very end counts.
+  const whole = norm(String(t || ''));
+  const tail = whole.match(/\bseason (\d+)$/) || whole.match(/\b(\d+)(?:st|nd|rd|th) season$/);
+  return tail ? Number(tail[1]) : 1;
 }
 
 // A title with its season / part markers removed: the "same work" key.

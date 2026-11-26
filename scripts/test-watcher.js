@@ -432,13 +432,13 @@ async function main() {
   const past11 = (d) => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
   tmdb.tmdbInfo = async (id) => {
     if (id === '222') return { tmdb: '222', title: 'Flat Superset', seasons: [{ season: 1, episodes: 6 }, { season: 2, episodes: 4 }] };
-    if (id === '333') return { tmdb: '333', title: 'Flat Partial', seasons: [{ season: 1, episodes: 3 }, { season: 2, episodes: 5 }] };
+    if (id === '3330') return { tmdb: '3330', title: 'Flat Partial', seasons: [{ season: 1, episodes: 3 }, { season: 2, episodes: 5 }] };
     return null;
   };
   tmdb.tmdbSeason = async (id, season) => {
     const mk = (n) => Array.from({ length: n }, (_, k) => ({ episode: k + 1, airDate: past11(30), name: 'Ep ' + (k + 1), runtime: 1000 }));
     if (id === '222') return { tmdb: '222', season, episodes: mk(season === 1 ? 6 : 4) };
-    if (id === '333') return { tmdb: '333', season, episodes: mk(season === 1 ? 3 : 5) };
+    if (id === '3330') return { tmdb: '3330', season, episodes: mk(season === 1 ? 3 : 5) };
     return null;
   };
   {
@@ -450,7 +450,7 @@ async function main() {
   }
   {
     for (let i = 1; i <= 5; i++) mkEp(`Flat Partial/S01/Flat Partial S01E${String(i).padStart(2, '0')}.mp4`);
-    schedule.add({ series: 'Flat Partial', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('333', 1, 1)).template, baseUrl: vid('333', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '333', imdb: '', movie: false });
+    schedule.add({ series: 'Flat Partial', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('3330', 1, 1)).template, baseUrl: vid('3330', 1, 1), outputRoot: staging, library, minHeight: 0, anime: true, tmdb: '3330', imdb: '', movie: false });
     queueCalls.length = 0;
     await watcher.checkSchedules();
     const pp = queueCalls.filter((c) => c.series === 'Flat Partial');
@@ -538,9 +538,9 @@ async function main() {
       title === 'Donghua Show' ? new Map(eps.map((e) => [Number(e), gdDubbed.has(Number(e))])) : new Map(eps.map((e) => [Number(e), true])));
     const realInfo = tmdb.tmdbInfo;
     const realSeason = tmdb.tmdbSeason;
-    tmdb.tmdbInfo = async (id) => (id === '777' ? { tmdb: '777', title: 'Donghua Show', seasons: [{ season: 1, episodes: 3 }], animeLike: true } : realInfo(id));
-    tmdb.tmdbSeason = async (id, season) => (id === '777' ? { tmdb: '777', season: 1, episodes: [1, 2, 3].map((k) => ({ episode: k, airDate: past(30), name: 'Ep ' + k, runtime: 1000 })) } : realSeason(id, season));
-    schedule.add({ series: 'Donghua Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('777', 1, 1)).template, baseUrl: vid('777', 1, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '777', imdb: '', movie: false });
+    tmdb.tmdbInfo = async (id) => (id === '7770' ? { tmdb: '7770', title: 'Donghua Show', seasons: [{ season: 1, episodes: 3 }], animeLike: true } : realInfo(id));
+    tmdb.tmdbSeason = async (id, season) => (id === '7770' ? { tmdb: '7770', season: 1, episodes: [1, 2, 3].map((k) => ({ episode: k, airDate: past(30), name: 'Ep ' + k, runtime: 1000 })) } : realSeason(id, season));
+    schedule.add({ series: 'Donghua Show', season: 1, mode: 'dub', template: urltemplate.toTemplate(vid('7770', 1, 1)).template, baseUrl: vid('7770', 1, 1), outputRoot: staging, library, minHeight: 0, anime: false, tmdb: '7770', imdb: '', movie: false });
     queueCalls.length = 0;
     await watcher.checkSchedules();
     const entry = schedule.list().find((x) => x.series === 'Donghua Show');
@@ -744,6 +744,25 @@ async function main() {
     check('one title watched twice is audited once and says so', r4.audited === 1 && r4.series[0].duplicates === 2, JSON.stringify(r4));
     check('the watcher mode is reported', r4.mode === 'auto-download' || r4.mode === 'report-only');
     manager.items = manager.items.filter((it) => it.id !== 99902);
+
+    // Watched twice: one queue item per episode, one check per pass.
+    const keep = manager.items;
+    manager.items = [{ id: 99903, key: 'k-a', label: 'Twin S1E7', series: 'Twin Show', season: 1, episode: 7, mode: 'dub', status: 'queued' }];
+    const realAdd = Object.getPrototypeOf(manager).add;
+    const dup = realAdd.call(manager, { key: 'k-b', label: 'Twin S1E7', series: "Twin  show", season: 1, episode: 7, mode: 'dub', url: 'https://other.example/x' });
+    const other = realAdd.call(manager, { key: 'k-c', label: 'Twin S1E8', series: 'Twin Show', season: 1, episode: 8, mode: 'dub', url: 'https://other.example/y' });
+    check('the same episode under another key is not queued twice', dup == null && other != null, JSON.stringify([dup, other]));
+    manager.items = keep;
+    const seenT = [];
+    const origC = watcher.checkSeriesTmdb;
+    watcher.checkSeriesTmdb = async (s2) => { seenT.push(s2.series); return 0; };
+    const logsT = [];
+    const origL = watcher.onLog;
+    watcher.onLog = (m) => logsT.push(String(m));
+    await watcher._checkSchedules();
+    watcher.checkSeriesTmdb = origC;
+    watcher.onLog = origL;
+    check('a title on the watch list twice is checked once a pass, and the log says so', seenT.filter((x) => x === 'Gap Crest').length === 1 && logsT.some((l) => /on the watch list twice/.test(l)), JSON.stringify(seenT));
     tmdb.tmdbInfo = realInfo;
     tmdb.tmdbSeason = realSeason;
     dubstatus._setAniwaveForTests(async () => null);

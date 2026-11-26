@@ -125,6 +125,9 @@ async function main() {
   const gg = await aw.seasonInfo("The Gorilla God's Go-To Girl", 1);
   check('"The Gorilla God\'s Go-To Girl" found as "Gorilla Gods" (apostrophe dropped)', gg && gg.show.id === '90002', gg && JSON.stringify(gg.show));
   check('romaji "...ga Ii" is not season II', aw.seasonOfTitle('Raise wa Tanin ga Ii') === 1 && aw.seasonOfTitle('Shiguang Dailiren II') === 2);
+  check('"Name: Subtitle Season 2" (marker closing the whole title) is season 2', aw.seasonOfTitle('HELL MODE: The Hardcore Gamer Dominates in Another World with Garbage Balancing Season 2') === 2 && aw.seasonOfTitle('Hell Mode: Yarikomi Suki no Gamer wa Hai Settei no Isekai de Musou suru 2nd Season') === 2);
+  check('...and matched for season 2 only', !!aw.pickShow([{ id: 1, title: 'HELL MODE: The Hardcore Gamer Dominates in Another World with Garbage Balancing Season 2' }], 'HELL MODE: The Hardcore Gamer Dominates in Another World with Garbage Balancing', 2) && !aw.pickShow([{ id: 1, title: 'HELL MODE: The Hardcore Gamer Dominates in Another World with Garbage Balancing Season 2' }], 'HELL MODE: The Hardcore Gamer Dominates in Another World with Garbage Balancing', 1));
+  check('a season word inside a subtitle is not a season', aw.seasonOfTitle('Spring: The Season of Love') === 1);
   const none = await aw.seasonInfo('Yakuza Fiancé: Raise wa Tanin ga Ii', 2);
   check('...its season 2 is still not invented', none === null);
   aw._setGetForTests(async (p) => {

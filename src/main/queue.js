@@ -103,6 +103,14 @@ class DownloadManager extends EventEmitter {
       if (this.items.some((it) => it.key === item.key && ACTIVE.includes(it.status))) {
         return null;
       }
+      // The same episode under another key (a title on the watch list twice,
+      // each entry with its own source URL): one download, not two.
+      if (item.episode != null && item.series) {
+        const ident = (x) => [String(x.series || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(),
+          x.season != null ? Number(x.season) : '', Number(x.episode), x.mode || 'dub'].join('|');
+        const id = ident(item);
+        if (this.items.some((it) => it.key && it.episode != null && ACTIVE.includes(it.status) && ident(it) === id)) return null;
+      }
       this.items = this.items.filter((it) => it.key !== item.key);
     }
     // A fresh add re-enables the runner after a previous user Stop.
