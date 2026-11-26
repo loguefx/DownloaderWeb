@@ -457,7 +457,8 @@ async function main() {
     const id1 = mk('One Piece S1E1140', 1140, parked1);
     const it1 = manager.items.find((x) => x.id === id1);
     for (let i = 0; i < 100 && !(it1 && (it1.status === 'failed' || it1.status === 'waiting')); i++) await sleep(50);
-    check('listed dubbed + page shows no DUB row -> retried, ends "failed", not "waiting"', it1 && it1.status === 'failed' && parked1.length === 0, JSON.stringify(it1 && [it1.status, it1.attempts, parked1]));
+    check('listed dubbed + page shows no DUB row -> retried, ends "failed", not "waiting"', it1 && it1.status === 'failed', JSON.stringify(it1 && [it1.status, it1.attempts, parked1]));
+    check('...and goes on the waiting-for-dub list too, so tomorrow\'s check tries it again (any watcher mode, survives a restart)', parked1.length === 1 && /tried again by tomorrow/.test(it1.error), JSON.stringify([parked1, it1 && it1.error]));
     manager.removeByIds([id1]);
     await sleep(100);
     // Really not dubbed -> waiting list, as before.

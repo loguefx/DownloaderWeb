@@ -1315,6 +1315,23 @@ class DownloadManager extends EventEmitter {
             }
             item.status = 'failed';
             this._emit();
+            // An anime dub the sources list as out, whose download failed
+            // anyway (Devils' Crest E3: "No DUB server produced a stream").
+            // Shown as failed, AND put on the waiting-for-dub list: that list
+            // is re-checked every day in either watcher mode and survives a
+            // restart, so the episode is tried again tomorrow. Before, one
+            // the watch list had queued was forgotten (report-only mode or a
+            // restart) until someone noticed the gap.
+            if (item.anime && (item.mode || 'dub') === 'dub' && !item._exclusive && !item._unobtainable &&
+                typeof item.onUnavailable === 'function' && !this._interrupted(item)) {
+              try {
+                item.onUnavailable({ status: 'failed', reason });
+                item.error = `${reason} - tried again by tomorrow's waiting-for-dub check`;
+                this._emit();
+              } catch (e) {
+                // bookkeeping only
+              }
+            }
             if (item._exclusive) {
               this._log(
                 `"${item.label}" — ${item._exclusiveHint || 'a licensed exclusive per TMDB'}. ` +
